@@ -22,6 +22,9 @@ import os
 import sqlite3
 
 import fitdecode
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import numpy as np
 import pandas as pd
 
 BASE_DIR = os.path.dirname(__file__)
@@ -249,15 +252,70 @@ def print_mmp_table(db_path: str) -> None:
     print()
 
 
+# ── Chart ─────────────────────────────────────────────────────────────────────
+
+def plot_mmp(db_path: str, out_path: str = "mmp_chart.png") -> None:
+    """Plot MMP curves for every ride on a single log-scale chart."""
+    conn = sqlite3.connect(db_path)
+    rides = pd.read_sql(
+        "SELECT id, name, ride_date FROM rides ORDER BY ride_date, name", conn
+    )
+    mmp = pd.read_sql("SELECT ride_id, duration_s, power FROM mmp", conn)
+    conn.close()
+
+    mmp = mmp.merge(rides.rename(columns={"id": "ride_id"}), on="ride_id")
+
+    fig, ax = plt.subplots(figsize=(13, 7))
+
+    colours = plt.cm.tab20(np.linspace(0, 1, len(rides)))
+    for (_, ride), colour in zip(rides.iterrows(), colours):
+        ride_data = mmp[mmp["ride_id"] == ride["id"]].sort_values("duration_s")
+        ax.plot(
+            ride_data["duration_s"],
+            ride_data["power"],
+            marker="o",
+            markersize=3,
+            linewidth=1.8,
+            color=colour,
+            label=f"{ride['ride_date']}  {ride['name'][:28]}",
+        )
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Duration", fontsize=12)
+    ax.set_ylabel("Power (W)", fontsize=12)
+    ax.set_title("Mean Maximal Power curves — all rides", fontsize=14)
+
+    # Human-readable x-axis ticks
+    tick_s   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+    tick_lbl = ["1s", "5s", "10s", "30s", "1min", "2min",
+                 "5min", "10min", "20min", "30min", "1h"]
+    ax.set_xticks(tick_s)
+    ax.set_xticklabels(tick_lbl, fontsize=9)
+    ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+
+    ax.grid(True, which="major", linestyle="--", linewidth=0.5, alpha=0.7)
+    ax.grid(True, which="minor", linestyle=":",  linewidth=0.3, alpha=0.4)
+
+    ax.legend(fontsize=8, loc="upper right", framealpha=0.9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    print(f"Chart saved → {out_path}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build cycling SQLite database from FIT files.")
     parser.add_argument("--show", action="store_true", help="Print summary tables only, no processing.")
+    parser.add_argument("--plot", action="store_true", help="Save MMP chart to mmp_chart.png.")
     args = parser.parse_args()
 
     if args.show:
         print_mmp_table(DB_PATH)
+        return
+
+    if args.plot:
+        plot_mmp(DB_PATH)
         return
 
     conn = sqlite3.connect(DB_PATH)
