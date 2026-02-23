@@ -1,7 +1,7 @@
 """
 build_database.py
 
-Parse all FIT files in 2026/, store records and mean-maximal-power (MMP)
+Parse all FIT files in raw_data/, store records and mean-maximal-power (MMP)
 curves in a SQLite database (cycling.db), then print a summary table.
 
 Database schema
@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 BASE_DIR = os.path.dirname(__file__)
-FIT_DIR  = os.path.join(BASE_DIR, "2026")
+FIT_DIR  = os.path.join(BASE_DIR, "raw_data")
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
 
 # Standard MMP durations in seconds

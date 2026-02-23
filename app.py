@@ -7,7 +7,7 @@ Usage
 
 Auto-watch
 ──────────
-  Dropping a new .fit file into the 2026/ folder is all that is needed.
+  Dropping a new .fit file into the raw_data/ folder is all that is needed.
   A background watchdog thread detects it, processes it into cycling.db,
   and the UI refreshes automatically within a few seconds.
 
@@ -38,7 +38,7 @@ from build_database import init_db, process_ride
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
-FIT_DIR  = os.path.join(BASE_DIR, "2026")
+FIT_DIR  = os.path.join(BASE_DIR, "raw_data")
 
 # ── Shared data store (updated by watcher, read by callbacks) ─────────────────
 
