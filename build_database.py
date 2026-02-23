@@ -282,8 +282,11 @@ def plot_ride_vs_90day_mmp(
     ride_date = ride["ride_date"]
     cutoff    = (pd.to_datetime(ride_date) - pd.Timedelta(days=90)).date().isoformat()
 
-    # Best at each duration across all rides in the 90-day window ending on ride_date
-    window = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)]
+    # Best at each duration across all rides in the 90-day window, excluding this ride
+    window = mmp_all[
+        mmp_all["ride_date"].between(cutoff, ride_date)
+        & (mmp_all["ride_id"] != ride["id"])
+    ]
     best_90 = (
         window.groupby("duration_s")["power"]
         .max()
