@@ -29,6 +29,7 @@ import time
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from scipy.optimize import curve_fit
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
@@ -151,6 +152,44 @@ def _start_watcher() -> None:
     observer.daemon = True
     observer.start()
     print(f"[watcher] Watching {FIT_DIR} for new .fit files …")
+
+
+# ── Power-duration model ──────────────────────────────────────────────────────
+
+def _power_model(t, AWC, tau, MAP, tau2):
+    """Two-component power-duration model.
+
+    P(t) = AWC/t * (1 - exp(-t/tau))  +  MAP * (1 - exp(-t/tau2))
+
+    Parameters
+    ----------
+    t    : duration in seconds
+    AWC  : Anaerobic Work Capacity (joules)
+    tau  : time constant for the AWC contribution (seconds)
+    MAP  : Maximal Aerobic Power (watts)
+    tau2 : time constant for the aerobic contribution (seconds)
+    """
+    return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
+
+
+def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray):
+    """Fit the two-component model to (duration_s, power) data.
+
+    Returns (popt, True) on success or (None, False) on failure.
+    popt = [AWC, tau, MAP, tau2]
+    """
+    p0     = [20_000, 20.0, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds = ([0, 0.5, 0, 1], [500_000, 600, 3_000, 3_600])
+    try:
+        popt, _ = curve_fit(
+            _power_model, dur, pwr,
+            p0=p0, bounds=bounds,
+            maxfev=10_000,
+        )
+        return popt, True
+    except Exception as exc:
+        print(f"[fit] curve_fit failed: {exc}")
+        return None, False
 
 
 # ── Figure builders ───────────────────────────────────────────────────────────
@@ -291,6 +330,32 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             marker=dict(size=4),
             line=dict(color="steelblue", width=2.5),
         ))
+
+        # ── Model fit ─────────────────────────────────────────────────────
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+        popt, ok = _fit_power_curve(dur, pwr)
+        if ok:
+            AWC, tau, MAP, tau2 = popt
+            t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
+            p_smooth = _power_model(t_smooth, *popt)
+            fig.add_trace(go.Scatter(
+                x=t_smooth, y=p_smooth,
+                mode="lines",
+                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                line=dict(color="darkorange", width=2, dash="dash"),
+            ))
+            fig.add_annotation(
+                xref="paper", yref="paper",
+                x=0.02, y=0.08,
+                text=(
+                    f"AWC = {AWC/1000:.1f} kJ   τ = {tau:.0f} s<br>"
+                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s"
+                ),
+                showarrow=False, align="left",
+                bgcolor="white", bordercolor="#bbb", borderwidth=1,
+                font=dict(size=11),
+            )
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
