@@ -1,8 +1,8 @@
 """
-Extract power and heart rate data vs time from FIT files in the 2026 folder.
+Extract power and heart rate data vs time from FIT files in the raw_data folder.
 
 Outputs:
-  - 2026_fit_data.csv   : combined data from all rides
+  - raw_data_fit_data.csv   : combined data from all rides
   - plots/<ride>.png    : power + heart rate vs time for each ride
 """
 
@@ -16,9 +16,9 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 
-FIT_DIR = os.path.join(os.path.dirname(__file__), "2026")
+FIT_DIR = os.path.join(os.path.dirname(__file__), "raw_data")
 PLOT_DIR = os.path.join(os.path.dirname(__file__), "plots")
-CSV_OUT  = os.path.join(os.path.dirname(__file__), "2026_fit_data.csv")
+CSV_OUT  = os.path.join(os.path.dirname(__file__), "raw_data_fit_data.csv")
 
 
 def read_fit_file(path: str) -> pd.DataFrame:
