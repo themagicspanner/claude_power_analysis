@@ -20,13 +20,16 @@ Pages / sections
   • Ride summary table
 """
 
+import datetime
 import os
 import sqlite3
 import threading
 import time
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from scipy.optimize import curve_fit
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
@@ -151,6 +154,65 @@ def _start_watcher() -> None:
     print(f"[watcher] Watching {FIT_DIR} for new .fit files …")
 
 
+# ── Power-duration model ──────────────────────────────────────────────────────
+
+def _power_model(t, AWC, Pmax, MAP, tau2):
+    """Two-component power-duration model.
+
+    P(t) = AWC/t * (1 - exp(-t/tau))  +  MAP * (1 - exp(-t/tau2))
+
+    where tau = AWC/Pmax  (Pmax is the instantaneous power limit as t → 0).
+
+    Parameters
+    ----------
+    t    : duration in seconds
+    AWC  : Anaerobic Work Capacity (joules)
+    Pmax : Maximum instantaneous power (watts); sets tau = AWC/Pmax
+    MAP  : Maximal Aerobic Power (watts)
+    tau2 : time constant for the aerobic contribution (seconds)
+    """
+    tau = AWC / Pmax
+    return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
+
+
+def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
+                     n_iter: int = 8, asymmetry: float = 10.0):
+    """Skimming fit via iteratively reweighted least squares (IRLS).
+
+    Each iteration re-weights the data points: points where the data lies
+    *above* the current model (genuine hard efforts) receive weight
+    `asymmetry`; points below (sub-maximal efforts) receive weight 1.
+    After a few iterations the curve rides the upper envelope rather than
+    splitting the middle.
+
+    Returns (popt, True) on success or (None, False) on failure.
+    popt = [AWC, Pmax, MAP, tau2]
+    """
+    p0      = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
+    weights = np.ones(len(dur))
+    popt    = None
+
+    for i in range(n_iter):
+        try:
+            popt, _ = curve_fit(
+                _power_model, dur, pwr,
+                p0=p0 if popt is None else popt,
+                bounds=bounds,
+                sigma=1.0 / weights,
+                absolute_sigma=False,
+                maxfev=10_000,
+            )
+        except Exception as exc:
+            print(f"[fit] IRLS iter {i} failed: {exc}")
+            return None, False
+
+        residuals = pwr - _power_model(dur, *popt)
+        weights   = np.where(residuals > 0, asymmetry, 1.0)
+
+    return popt, True
+
+
 # ── Figure builders ───────────────────────────────────────────────────────────
 
 def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
@@ -245,6 +307,97 @@ def fig_all_mmp(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
+    # Sigmoid aging: weight = 1 / (1 + exp(K * (age_days - INFLECTION)))
+    # Inflection at 60 days → ~1 % weight by 90 days → no cliff at day 90
+    K          = 0.15   # steepness of the S-curve
+    INFLECTION = 97     # days to midpoint (weight = 0.5); ~75 % weight at 90 days
+    WINDOW     = 150    # days of data to load; sigmoid handles the fade-out
+
+    today  = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=WINDOW)).isoformat()
+    today_str = today.isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today_str)].copy()
+
+    fig = go.Figure()
+
+    if not window.empty:
+        window["age_days"] = window["ride_date"].apply(
+            lambda d: (today - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]      = 1.0 / (1.0 + np.exp(K * (window["age_days"] - INFLECTION)))
+        window["aged_power"]  = window["power"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        raw = (
+            window.groupby("duration_s")["power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+
+        # Raw hard-max as a faint reference
+        fig.add_trace(go.Scatter(
+            x=raw["duration_s"], y=raw["power"],
+            mode="lines", name="raw max",
+            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
+        ))
+        # Sigmoid-aged curve
+        fig.add_trace(go.Scatter(
+            x=aged["duration_s"], y=aged["aged_power"],
+            mode="lines+markers", name="aged MMP",
+            marker=dict(size=4),
+            line=dict(color="steelblue", width=2.5),
+        ))
+
+        # ── Model fit ─────────────────────────────────────────────────────
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+        popt, ok = _fit_power_curve(dur, pwr)
+        if ok:
+            AWC, Pmax, MAP, tau2 = popt
+            tau = AWC / Pmax
+            t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
+            p_smooth = _power_model(t_smooth, *popt)
+            fig.add_trace(go.Scatter(
+                x=t_smooth, y=p_smooth,
+                mode="lines",
+                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                line=dict(color="darkorange", width=2, dash="dash"),
+            ))
+            fig.add_annotation(
+                xref="paper", yref="paper",
+                x=0.02, y=0.08,
+                text=(
+                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
+                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
+                ),
+                showarrow=False, align="left",
+                bgcolor="white", bordercolor="#bbb", borderwidth=1,
+                font=dict(size=11),
+            )
+
+    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(
+            text=(
+                "90-Day Mean Maximal Power — S-curve aged<br>"
+                f"<sup>Inflection {INFLECTION} days · K={K} · "
+                f"reference date {today_str}</sup>"
+            ),
+            font=dict(size=14),
+        ),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
+        template="plotly_white",
+        legend=dict(x=0.98, xanchor="right", y=0.98),
+    )
+    return fig
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _reload()          # initial load
@@ -321,6 +474,10 @@ app.layout = html.Div(
                 dcc.Tab(label="Fitness", value="tab-fitness", children=[
                     html.Div(style={"paddingTop": "20px"}, children=[
 
+                        dcc.Graph(id="graph-90day-mmp"),
+
+                        html.Hr(),
+
                         html.H2("Mean Maximal Power — all rides", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-all-mmp"),
 
@@ -339,6 +496,7 @@ app.layout = html.Div(
     Output("known-version",   "data"),
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
+    Output("graph-90day-mmp", "figure"),
     Output("graph-all-mmp",   "figure"),
     Output("summary-table",   "data"),
     Output("status-bar",      "children"),
@@ -373,6 +531,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         ver,
         options,
         selected,
+        fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
         rides.to_dict("records"),
         status,
