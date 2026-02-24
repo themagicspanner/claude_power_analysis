@@ -26,6 +26,7 @@ import sqlite3
 import threading
 import time
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -247,37 +248,65 @@ def fig_all_mmp(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 
 def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
-    today  = datetime.date.today().isoformat()
-    cutoff = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+    # Sigmoid aging: weight = 1 / (1 + exp(K * (age_days - INFLECTION)))
+    # Inflection at 60 days → ~1 % weight by 90 days → no cliff at day 90
+    K          = 0.15   # steepness of the S-curve
+    INFLECTION = 60     # days to midpoint (weight = 0.5)
+    WINDOW     = 120    # days of data to load; sigmoid handles the fade-out
 
-    best = (
-        mmp_all[mmp_all["ride_date"].between(cutoff, today)]
-        .groupby("duration_s")["power"]
-        .max()
-        .reset_index()
-        .sort_values("duration_s")
-    )
+    today  = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=WINDOW)).isoformat()
+    today_str = today.isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today_str)].copy()
 
     fig = go.Figure()
-    if not best.empty:
+
+    if not window.empty:
+        window["age_days"] = window["ride_date"].apply(
+            lambda d: (today - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]      = 1.0 / (1.0 + np.exp(K * (window["age_days"] - INFLECTION)))
+        window["aged_power"]  = window["power"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        raw = (
+            window.groupby("duration_s")["power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+
+        # Raw hard-max as a faint reference
         fig.add_trace(go.Scatter(
-            x=best["duration_s"], y=best["power"],
-            mode="lines+markers",
+            x=raw["duration_s"], y=raw["power"],
+            mode="lines", name="raw max",
+            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
+        ))
+        # Sigmoid-aged curve
+        fig.add_trace(go.Scatter(
+            x=aged["duration_s"], y=aged["aged_power"],
+            mode="lines+markers", name="aged MMP",
             marker=dict(size=4),
             line=dict(color="steelblue", width=2.5),
-            name="90-day best",
         ))
+
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(
-            text=f"90-Day Mean Maximal Power<br><sup>{cutoff} → {today}</sup>",
+            text=(
+                "90-Day Mean Maximal Power — S-curve aged<br>"
+                f"<sup>Inflection {INFLECTION} days · K={K} · "
+                f"reference date {today_str}</sup>"
+            ),
             font=dict(size=14),
         ),
-        height=420, margin=dict(t=80, b=50, l=60, r=20),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        showlegend=False,
+        legend=dict(x=0.98, xanchor="right", y=0.98),
     )
     return fig
 
