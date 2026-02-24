@@ -17,7 +17,7 @@ Pages / sections
   • Power + Heart Rate vs time for the selected ride
   • MMP for the selected ride vs 90-day best
   • All-rides MMP overview
-  • Ride summary table
+  • PDC parameter history (AWC, Pmax, MAP over time)
 """
 
 import datetime
@@ -32,7 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State
+from dash import dcc, html, Input, Output, State
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -356,6 +356,59 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_pdc_params_history(pdc_params: pd.DataFrame,
+                           rides: pd.DataFrame) -> go.Figure:
+    """History of the fitted two-component PDC parameters over time.
+
+    Left y-axis  : MAP and Pmax (W)
+    Right y-axis : AWC (kJ)
+    """
+    if pdc_params.empty:
+        return go.Figure()
+
+    df = (
+        pdc_params
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date")
+    )
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(go.Scatter(
+        x=df["ride_date"], y=df["MAP"],
+        mode="lines+markers", name="MAP (W)",
+        line=dict(color="seagreen", width=2),
+        marker=dict(size=5),
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=df["ride_date"], y=df["Pmax"],
+        mode="lines+markers", name="Pmax (W)",
+        line=dict(color="crimson", width=2),
+        marker=dict(size=5),
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
+        x=df["ride_date"], y=df["AWC"] / 1000,
+        mode="lines+markers", name="AWC (kJ)",
+        line=dict(color="steelblue", width=2, dash="dot"),
+        marker=dict(size=5),
+    ), secondary_y=True)
+
+    fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
+                     secondary_y=False)
+    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False, secondary_y=True)
+    fig.update_layout(
+        title=dict(text="PDC Parameter History", font=dict(size=14)),
+        height=380,
+        margin=dict(t=60, b=50, l=60, r=60),
+        template="plotly_white",
+        legend=dict(x=0.02, y=0.98),
+    )
+    return fig
+
+
 def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame,
                     pdc_params: pd.DataFrame) -> go.Figure:
     """Power Duration Curve built from sigmoid-decayed MMP up to this ride.
@@ -504,30 +557,6 @@ app.layout = html.Div(
                         dcc.Graph(id="graph-mmp-vs-90"),
                         dcc.Graph(id="graph-pdc"),
 
-                        html.Hr(),
-
-                        # Summary table
-                        html.H2("Ride Summary", style={"marginBottom": "8px"}),
-                        dash_table.DataTable(
-                            id="summary-table",
-                            columns=[
-                                {"name": "Name",           "id": "name"},
-                                {"name": "Date",           "id": "ride_date"},
-                                {"name": "Duration (min)", "id": "duration_min"},
-                                {"name": "Avg Power (W)",  "id": "avg_power"},
-                                {"name": "Max Power (W)",  "id": "max_power"},
-                                {"name": "Avg HR (bpm)",   "id": "avg_hr"},
-                                {"name": "Max HR (bpm)",   "id": "max_hr"},
-                            ],
-                            sort_action="native",
-                            style_table={"overflowX": "auto"},
-                            style_cell={"textAlign": "left", "padding": "6px 12px", "fontFamily": "sans-serif"},
-                            style_header={"backgroundColor": "#f0f0f0", "fontWeight": "bold"},
-                            style_data_conditional=[
-                                {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
-                            ],
-                        ),
-
                         html.Div(style={"height": "40px"}),
                     ]),
                 ]),
@@ -537,6 +566,11 @@ app.layout = html.Div(
                     html.Div(style={"paddingTop": "20px"}, children=[
 
                         dcc.Graph(id="graph-90day-mmp"),
+
+                        html.Hr(),
+
+                        html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-pdc-params-history"),
 
                         html.Hr(),
 
@@ -558,16 +592,16 @@ app.layout = html.Div(
     Output("known-version",   "data"),
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
-    Output("graph-90day-mmp", "figure"),
-    Output("graph-all-mmp",   "figure"),
-    Output("summary-table",   "data"),
-    Output("status-bar",      "children"),
+    Output("graph-90day-mmp",          "figure"),
+    Output("graph-all-mmp",            "figure"),
+    Output("graph-pdc-params-history", "figure"),
+    Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
 )
 def poll_for_new_data(n_intervals, known_ver, current_ride_id):
-    ver, rides, mmp_all, _pdc = get_data()
+    ver, rides, mmp_all, pdc_params = get_data()
 
     if ver == known_ver and n_intervals > 0:
         # Nothing changed — return no-update for everything
@@ -595,7 +629,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
-        rides.to_dict("records"),
+        fig_pdc_params_history(pdc_params, rides),
         status,
     )
 
