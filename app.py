@@ -507,6 +507,91 @@ def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame,
     return fig
 
 
+# ── W' balance ────────────────────────────────────────────────────────────────
+
+def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,
+                 AWC: float, CP: float) -> np.ndarray:
+    """Skiba (2012) differential W' balance model.
+
+    Parameters
+    ----------
+    elapsed_s : strictly-increasing array of elapsed time in seconds
+    power     : power in watts at each sample (NaN → treated as 0 W)
+    AWC       : W' — anaerobic work capacity in joules
+    CP        : critical power in watts (use MAP from the two-component fit)
+
+    Returns
+    -------
+    wbal : W'bal in joules, same shape as elapsed_s
+    """
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    n = len(elapsed_s)
+    wbal = np.empty(n)
+    wbal[0] = AWC
+    for i in range(1, n):
+        dt = elapsed_s[i] - elapsed_s[i - 1]
+        if dt <= 0:
+            wbal[i] = wbal[i - 1]
+            continue
+        pi = p[i - 1]
+        if pi >= CP:
+            wbal[i] = max(wbal[i - 1] + (CP - pi) * dt, 0.0)
+        else:
+            tau_w = 546.0 * np.exp(-0.01 * (CP - pi)) + 316.0
+            wbal[i] = AWC - (AWC - wbal[i - 1]) * np.exp(-dt / tau_w)
+    return wbal
+
+
+def fig_wbal(records: pd.DataFrame, ride: pd.Series,
+             pdc_params: pd.DataFrame) -> go.Figure:
+    """W' balance versus elapsed time for a single ride."""
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    if params_row.empty or records["power"].isna().all():
+        return go.Figure()
+
+    r      = params_row.iloc[0]
+    AWC    = float(r["AWC"])
+    CP     = float(r["MAP"])   # aerobic asymptote ≡ critical power
+    awc_kj = AWC / 1000.0
+
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+    power   = records["power"].to_numpy(dtype=float)
+    wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
+    t_min   = records["elapsed_min"].to_numpy(dtype=float)
+
+    fig = go.Figure()
+
+    fig.add_hline(y=awc_kj, line=dict(color="grey", dash="dot", width=1),
+                  annotation_text=f"W' = {awc_kj:.1f} kJ",
+                  annotation_position="top right",
+                  annotation_font=dict(size=10, color="grey"))
+    fig.add_hline(y=0, line=dict(color="crimson", dash="dot", width=1))
+
+    fig.add_trace(go.Scatter(
+        x=t_min, y=wbal_kj,
+        mode="lines", name="W'bal",
+        fill="tozeroy", fillcolor="rgba(70,130,180,0.15)",
+        line=dict(color="steelblue", width=2),
+    ))
+
+    fig.update_xaxes(title_text="Elapsed Time (min)",
+                     showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="W'bal (kJ)",
+                     showgrid=True, gridcolor="lightgrey",
+                     range=[-awc_kj * 0.05, awc_kj * 1.12])
+    fig.update_layout(
+        title=dict(
+            text=f"W' Balance — CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ",
+            font=dict(size=14),
+        ),
+        height=280,
+        margin=dict(t=55, b=40, l=60, r=20),
+        showlegend=False,
+        template="plotly_white",
+    )
+    return fig
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _boot_conn = sqlite3.connect(DB_PATH)
@@ -554,6 +639,7 @@ app.layout = html.Div(
 
                         # Per-ride charts
                         dcc.Graph(id="graph-power-hr"),
+                        dcc.Graph(id="graph-wbal"),
                         dcc.Graph(id="graph-mmp-vs-90"),
                         dcc.Graph(id="graph-pdc"),
 
@@ -636,6 +722,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 @app.callback(
     Output("graph-power-hr",  "figure"),
+    Output("graph-wbal",      "figure"),
     Output("graph-mmp-vs-90", "figure"),
     Output("graph-pdc",       "figure"),
     Input("ride-dropdown",    "value"),
@@ -649,6 +736,7 @@ def update_ride_charts(ride_id, _ver):
     records = load_records(ride_id)
     return (
         fig_power_hr(records, ride["name"]),
+        fig_wbal(records, ride, pdc_params),
         fig_mmp_vs_90day(ride, mmp_all),
         fig_pdc_at_date(ride, mmp_all, pdc_params),
     )
