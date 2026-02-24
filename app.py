@@ -300,19 +300,29 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             line=dict(color="steelblue", width=2.5),
         ))
 
-        # ── Model fit ─────────────────────────────────────────────────────
+        # ── Model fit with aerobic / anaerobic contributions ──────────────
         dur = aged["duration_s"].to_numpy(dtype=float)
         pwr = aged["aged_power"].to_numpy(dtype=float)
         popt, ok = _fit_power_curve(dur, pwr)
         if ok:
             AWC, Pmax, MAP, tau2 = popt
-            tau = AWC / Pmax
+            tau      = AWC / Pmax
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_smooth = _power_model(t_smooth, *popt)
+            p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
+            p_total   = _power_model(t_smooth, *popt)
+            # Aerobic component — fills from zero
             fig.add_trace(go.Scatter(
-                x=t_smooth, y=p_smooth,
+                x=t_smooth, y=p_aerobic,
+                mode="lines", name="aerobic (MAP)",
+                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
+                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+            ))
+            # Total model — fills from aerobic line, so the shaded band = anaerobic
+            fig.add_trace(go.Scatter(
+                x=t_smooth, y=p_total,
                 mode="lines",
                 name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
             fig.add_annotation(
@@ -396,11 +406,21 @@ def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame,
             tau  = AWC / Pmax
             dur  = aged["duration_s"].to_numpy(dtype=float)
             t_sm = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_sm = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            p_aerobic = MAP * (1.0 - np.exp(-t_sm / tau2))
+            p_total   = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            # Aerobic component — fills from zero
             fig.add_trace(go.Scatter(
-                x=t_sm, y=p_sm,
+                x=t_sm, y=p_aerobic,
+                mode="lines", name="aerobic (MAP)",
+                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
+                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+            ))
+            # Total model — fills from aerobic line, shaded band = anaerobic
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_total,
                 mode="lines",
                 name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
             fig.add_annotation(
