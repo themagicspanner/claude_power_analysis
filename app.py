@@ -20,6 +20,7 @@ Pages / sections
   • Ride summary table
 """
 
+import datetime
 import os
 import sqlite3
 import threading
@@ -245,6 +246,42 @@ def fig_all_mmp(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
+    today  = datetime.date.today().isoformat()
+    cutoff = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+
+    best = (
+        mmp_all[mmp_all["ride_date"].between(cutoff, today)]
+        .groupby("duration_s")["power"]
+        .max()
+        .reset_index()
+        .sort_values("duration_s")
+    )
+
+    fig = go.Figure()
+    if not best.empty:
+        fig.add_trace(go.Scatter(
+            x=best["duration_s"], y=best["power"],
+            mode="lines+markers",
+            marker=dict(size=4),
+            line=dict(color="steelblue", width=2.5),
+            name="90-day best",
+        ))
+    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(
+            text=f"90-Day Mean Maximal Power<br><sup>{cutoff} → {today}</sup>",
+            font=dict(size=14),
+        ),
+        height=420, margin=dict(t=80, b=50, l=60, r=20),
+        template="plotly_white",
+        showlegend=False,
+    )
+    return fig
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _reload()          # initial load
@@ -321,6 +358,10 @@ app.layout = html.Div(
                 dcc.Tab(label="Fitness", value="tab-fitness", children=[
                     html.Div(style={"paddingTop": "20px"}, children=[
 
+                        dcc.Graph(id="graph-90day-mmp"),
+
+                        html.Hr(),
+
                         html.H2("Mean Maximal Power — all rides", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-all-mmp"),
 
@@ -339,6 +380,7 @@ app.layout = html.Div(
     Output("known-version",   "data"),
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
+    Output("graph-90day-mmp", "figure"),
     Output("graph-all-mmp",   "figure"),
     Output("summary-table",   "data"),
     Output("status-bar",      "children"),
@@ -373,6 +415,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         ver,
         options,
         selected,
+        fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
         rides.to_dict("records"),
         status,
