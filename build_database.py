@@ -17,6 +17,7 @@ Usage
 """
 
 import argparse
+import datetime
 import glob
 import os
 import sqlite3
@@ -24,10 +25,16 @@ import sqlite3
 import fitdecode
 import numpy as np
 import pandas as pd
+from scipy.optimize import curve_fit
 
 BASE_DIR = os.path.dirname(__file__)
 FIT_DIR  = os.path.join(BASE_DIR, "raw_data")
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
+
+# Sigmoid aging constants for decayed MMP / PDC fitting
+PDC_K          = 0.15   # steepness of the S-curve
+PDC_INFLECTION = 97     # days to midpoint (weight = 0.5)
+PDC_WINDOW     = 150    # days of history to include
 
 # Standard MMP durations in seconds
 MMP_DURATIONS = [
@@ -35,6 +42,53 @@ MMP_DURATIONS = [
     60, 90, 120, 180, 240, 300, 420, 600,
     900, 1200, 1800, 2400, 3600,
 ]
+
+
+# ── Power-duration model ──────────────────────────────────────────────────────
+
+def _power_model(t, AWC, Pmax, MAP, tau2):
+    """Two-component power-duration model.
+
+    P(t) = AWC/t * (1 - exp(-t/tau))  +  MAP * (1 - exp(-t/tau2))
+
+    where tau = AWC/Pmax  (Pmax is the instantaneous power limit as t → 0).
+    """
+    tau = AWC / Pmax
+    return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
+
+
+def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
+                     n_iter: int = 8, asymmetry: float = 10.0):
+    """Skimming fit via iteratively reweighted least squares (IRLS).
+
+    Points above the model (hard efforts) receive weight `asymmetry`; points
+    below receive weight 1, so the curve rides the upper envelope.
+
+    Returns (popt, True) on success or (None, False) on failure.
+    popt = [AWC, Pmax, MAP, tau2]
+    """
+    p0      = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
+    weights = np.ones(len(dur))
+    popt    = None
+
+    for i in range(n_iter):
+        try:
+            popt, _ = curve_fit(
+                _power_model, dur, pwr,
+                p0=p0 if popt is None else popt,
+                bounds=bounds,
+                sigma=1.0 / weights,
+                absolute_sigma=False,
+                maxfev=10_000,
+            )
+        except Exception as exc:
+            print(f"[fit] IRLS iter {i} failed: {exc}")
+            return None, False
+        residuals = pwr - _power_model(dur, *popt)
+        weights   = np.where(residuals > 0, asymmetry, 1.0)
+
+    return popt, True
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -69,6 +123,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             duration_s INTEGER NOT NULL,
             power      REAL    NOT NULL,
             PRIMARY KEY (ride_id, duration_s)
+        );
+
+        CREATE TABLE IF NOT EXISTS pdc_params (
+            ride_id      INTEGER PRIMARY KEY REFERENCES rides(id),
+            AWC          REAL    NOT NULL,
+            Pmax         REAL    NOT NULL,
+            MAP          REAL    NOT NULL,
+            tau2         REAL    NOT NULL,
+            computed_at  TEXT    NOT NULL
         );
     """)
     conn.commit()
@@ -132,6 +195,82 @@ def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
     return result
 
 
+# ── PDC fitting ───────────────────────────────────────────────────────────────
+
+def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
+    """Fit the power-duration curve to sigmoid-decayed MMP up to this ride.
+
+    Loads all MMP rows for rides on or before this ride's date (within
+    PDC_WINDOW days), applies sigmoid aging relative to this ride's date,
+    fits the two-component model, and stores the parameters in pdc_params.
+    """
+    row = conn.execute("SELECT ride_date FROM rides WHERE id = ?", (ride_id,)).fetchone()
+    if not row:
+        return
+
+    ride_date = datetime.date.fromisoformat(row[0])
+    cutoff    = (ride_date - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+    end_date  = ride_date.isoformat()
+
+    mmp = pd.read_sql(
+        """SELECT m.duration_s, m.power, r.ride_date
+           FROM mmp m JOIN rides r ON m.ride_id = r.id
+           WHERE r.ride_date BETWEEN ? AND ?""",
+        conn,
+        params=(cutoff, end_date),
+    )
+    if mmp.empty:
+        return
+
+    mmp["age_days"]   = mmp["ride_date"].apply(
+        lambda d: (ride_date - datetime.date.fromisoformat(d)).days
+    )
+    mmp["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (mmp["age_days"] - PDC_INFLECTION)))
+    mmp["aged_power"] = mmp["power"] * mmp["weight"]
+
+    aged = (
+        mmp.groupby("duration_s")["aged_power"]
+        .max().reset_index().sort_values("duration_s")
+    )
+    dur = aged["duration_s"].to_numpy(dtype=float)
+    pwr = aged["aged_power"].to_numpy(dtype=float)
+
+    if len(dur) < 4:
+        return
+
+    popt, ok = _fit_power_curve(dur, pwr)
+    if not ok:
+        return
+
+    AWC, Pmax, MAP, tau2 = popt
+    conn.execute(
+        """INSERT OR REPLACE INTO pdc_params (ride_id, AWC, Pmax, MAP, tau2, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            ride_id,
+            round(float(AWC),  1),
+            round(float(Pmax), 1),
+            round(float(MAP),  1),
+            round(float(tau2), 1),
+            datetime.date.today().isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def backfill_pdc_params(conn: sqlite3.Connection) -> None:
+    """Compute PDC params for any rides that don't have them yet."""
+    rows = conn.execute(
+        """SELECT id FROM rides
+           WHERE id NOT IN (SELECT ride_id FROM pdc_params)
+           ORDER BY ride_date, id"""
+    ).fetchall()
+    for (ride_id,) in rows:
+        compute_pdc_params(conn, ride_id)
+    if rows:
+        print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
+
+
 # ── Per-ride processing ───────────────────────────────────────────────────────
 
 def process_ride(conn: sqlite3.Connection, path: str) -> None:
@@ -192,6 +331,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
 
     conn.commit()
     print(f"  {name}: {len(df)} records, {len(mmp)} MMP points stored.")
+    compute_pdc_params(conn, ride_id)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
@@ -274,6 +414,7 @@ def main() -> None:
     for path in fit_files:
         process_ride(conn, path)
 
+    backfill_pdc_params(conn)
     conn.close()
     print_mmp_table(DB_PATH)
 
