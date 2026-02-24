@@ -172,24 +172,42 @@ def _power_model(t, AWC, tau, MAP, tau2):
     return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
 
 
-def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray):
-    """Fit the two-component model to (duration_s, power) data.
+def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
+                     n_iter: int = 8, asymmetry: float = 10.0):
+    """Skimming fit via iteratively reweighted least squares (IRLS).
+
+    Each iteration re-weights the data points: points where the data lies
+    *above* the current model (genuine hard efforts) receive weight
+    `asymmetry`; points below (sub-maximal efforts) receive weight 1.
+    After a few iterations the curve rides the upper envelope rather than
+    splitting the middle.
 
     Returns (popt, True) on success or (None, False) on failure.
     popt = [AWC, tau, MAP, tau2]
     """
-    p0     = [20_000, 20.0, float(np.percentile(pwr, 90)) * 0.9, 300.0]
-    bounds = ([0, 0.5, 0, 1], [500_000, 600, 3_000, 3_600])
-    try:
-        popt, _ = curve_fit(
-            _power_model, dur, pwr,
-            p0=p0, bounds=bounds,
-            maxfev=10_000,
-        )
-        return popt, True
-    except Exception as exc:
-        print(f"[fit] curve_fit failed: {exc}")
-        return None, False
+    p0      = [20_000, 20.0, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds  = ([0, 0.5, 0, 1], [500_000, 600, 3_000, 3_600])
+    weights = np.ones(len(dur))
+    popt    = None
+
+    for i in range(n_iter):
+        try:
+            popt, _ = curve_fit(
+                _power_model, dur, pwr,
+                p0=p0 if popt is None else popt,
+                bounds=bounds,
+                sigma=1.0 / weights,
+                absolute_sigma=False,
+                maxfev=10_000,
+            )
+        except Exception as exc:
+            print(f"[fit] IRLS iter {i} failed: {exc}")
+            return None, False
+
+        residuals = pwr - _power_model(dur, *popt)
+        weights   = np.where(residuals > 0, asymmetry, 1.0)
+
+    return popt, True
 
 
 # ── Figure builders ───────────────────────────────────────────────────────────
