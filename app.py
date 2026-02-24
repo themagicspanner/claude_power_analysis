@@ -156,19 +156,22 @@ def _start_watcher() -> None:
 
 # ── Power-duration model ──────────────────────────────────────────────────────
 
-def _power_model(t, AWC, tau, MAP, tau2):
+def _power_model(t, AWC, Pmax, MAP, tau2):
     """Two-component power-duration model.
 
     P(t) = AWC/t * (1 - exp(-t/tau))  +  MAP * (1 - exp(-t/tau2))
+
+    where tau = AWC/Pmax  (Pmax is the instantaneous power limit as t → 0).
 
     Parameters
     ----------
     t    : duration in seconds
     AWC  : Anaerobic Work Capacity (joules)
-    tau  : time constant for the AWC contribution (seconds)
+    Pmax : Maximum instantaneous power (watts); sets tau = AWC/Pmax
     MAP  : Maximal Aerobic Power (watts)
     tau2 : time constant for the aerobic contribution (seconds)
     """
+    tau = AWC / Pmax
     return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
 
 
@@ -183,10 +186,10 @@ def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
     splitting the middle.
 
     Returns (popt, True) on success or (None, False) on failure.
-    popt = [AWC, tau, MAP, tau2]
+    popt = [AWC, Pmax, MAP, tau2]
     """
-    p0      = [20_000, 20.0, float(np.percentile(pwr, 90)) * 0.9, 300.0]
-    bounds  = ([0, 0.5, 0, 1], [500_000, 600, 3_000, 3_600])
+    p0      = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
     weights = np.ones(len(dur))
     popt    = None
 
@@ -354,7 +357,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
         pwr = aged["aged_power"].to_numpy(dtype=float)
         popt, ok = _fit_power_curve(dur, pwr)
         if ok:
-            AWC, tau, MAP, tau2 = popt
+            AWC, Pmax, MAP, tau2 = popt
+            tau = AWC / Pmax
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_smooth = _power_model(t_smooth, *popt)
             fig.add_trace(go.Scatter(
@@ -367,8 +371,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
                 xref="paper", yref="paper",
                 x=0.02, y=0.08,
                 text=(
-                    f"AWC = {AWC/1000:.1f} kJ   τ = {tau:.0f} s<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s"
+                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
+                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
                 ),
                 showarrow=False, align="left",
                 bgcolor="white", bordercolor="#bbb", borderwidth=1,
