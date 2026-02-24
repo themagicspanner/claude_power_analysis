@@ -251,8 +251,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
     # Sigmoid aging: weight = 1 / (1 + exp(K * (age_days - INFLECTION)))
     # Inflection at 60 days → ~1 % weight by 90 days → no cliff at day 90
     K          = 0.15   # steepness of the S-curve
-    INFLECTION = 60     # days to midpoint (weight = 0.5)
-    WINDOW     = 120    # days of data to load; sigmoid handles the fade-out
+    INFLECTION = 97     # days to midpoint (weight = 0.5); ~75 % weight at 90 days
+    WINDOW     = 150    # days of data to load; sigmoid handles the fade-out
 
     today  = datetime.date.today()
     cutoff = (today - datetime.timedelta(days=WINDOW)).isoformat()
