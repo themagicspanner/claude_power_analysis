@@ -32,7 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State
+from dash import dcc, html, dash_table, Input, Output, State, ctx
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -1124,81 +1124,112 @@ _start_watcher()   # background thread
 
 app = dash.Dash(__name__, title="Cycling Power Analysis")
 
+_NAV_BASE = {
+    "display": "block", "width": "100%", "padding": "12px 20px",
+    "border": "none", "textAlign": "left", "cursor": "pointer",
+    "fontSize": "14px", "background": "transparent",
+    "borderLeft": "3px solid transparent", "color": "#aab",
+}
+_NAV_ACTIVE = {**_NAV_BASE,
+    "background": "rgba(255,255,255,0.08)", "color": "white",
+    "fontWeight": "bold", "borderLeft": "3px solid #4a9eff",
+}
+
 app.layout = html.Div(
-    style={"fontFamily": "sans-serif", "padding": "20px"},
+    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0"},
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
         dcc.Interval(id="poll-interval", interval=3000, n_intervals=0),  # check every 3 s
 
-        html.H1("Cycling Power Analysis", style={"marginBottom": "4px"}),
+        # ── Sidebar ────────────────────────────────────────────────────────
+        html.Div(style={
+            "width": "220px", "minWidth": "220px", "background": "#1e2433",
+            "display": "flex", "flexDirection": "column", "paddingTop": "24px",
+        }, children=[
+            html.Div("Cycling Power Analysis", style={
+                "color": "white", "fontWeight": "bold", "fontSize": "13px",
+                "padding": "0 20px", "marginBottom": "28px", "lineHeight": "1.4",
+            }),
+            html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
+            html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+        ]),
 
-        # Status bar
-        html.Div(id="status-bar", style={
-            "fontSize": "12px", "color": "#888", "marginBottom": "12px",
-        }),
+        # ── Main content ───────────────────────────────────────────────────
+        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto"}, children=[
 
-        # Current fitness metric boxes
-        html.Div(id="metric-boxes"),
+            # Status bar
+            html.Div(id="status-bar", style={
+                "fontSize": "12px", "color": "#888", "marginBottom": "16px",
+            }),
 
-        dcc.Tabs(
-            id="tabs",
-            value="tab-fitness",
-            children=[
+            # ── Fitness page ───────────────────────────────────────────────
+            html.Div(id="page-fitness", style={"display": "block"}, children=[
 
-                # ── Fitness tab ────────────────────────────────────────────
-                dcc.Tab(label="Fitness", value="tab-fitness", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
+                # Current fitness metric boxes (moved here from global header)
+                html.Div(id="metric-boxes", style={"marginBottom": "16px"}),
 
-                        dcc.Graph(id="graph-90day-mmp"),
+                dcc.Graph(id="graph-90day-mmp"),
 
-                        html.Hr(),
+                html.Hr(),
 
-                        html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pmc"),
+                html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
+                dcc.Graph(id="graph-pmc"),
 
-                        html.Hr(),
+                html.Hr(),
 
-                        html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pdc-params-history"),
+                html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
+                dcc.Graph(id="graph-pdc-params-history"),
 
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
+                html.Div(style={"height": "40px"}),
+            ]),
 
-                # ── Activities tab ─────────────────────────────────────────
-                dcc.Tab(label="Activities", value="tab-activities", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
+            # ── Activities page ────────────────────────────────────────────
+            html.Div(id="page-activities", style={"display": "none"}, children=[
 
-                        # Ride selector
-                        html.Div([
-                            html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
-                            dcc.Dropdown(
-                                id="ride-dropdown",
-                                clearable=False,
-                                style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
-                            ),
-                        ], style={"marginBottom": "20px"}),
+                # Ride selector
+                html.Div([
+                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
+                    dcc.Dropdown(
+                        id="ride-dropdown",
+                        clearable=False,
+                        style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
+                    ),
+                ], style={"marginBottom": "20px"}),
 
-                        # Per-activity metric boxes
-                        html.Div(id="activity-metric-boxes"),
+                # Per-activity metric boxes
+                html.Div(id="activity-metric-boxes"),
 
-                        # Per-ride charts
-                        dcc.Graph(id="graph-power"),
-                        dcc.Graph(id="graph-wbal"),
-                        dcc.Graph(id="graph-tss-components"),
-                        dcc.Graph(id="graph-mmp-pdc"),
+                # Per-ride charts
+                dcc.Graph(id="graph-power"),
+                dcc.Graph(id="graph-wbal"),
+                dcc.Graph(id="graph-tss-components"),
+                dcc.Graph(id="graph-mmp-pdc"),
 
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
-            ],
-        ),
+                html.Div(style={"height": "40px"}),
+            ]),
+        ]),
     ],
 )
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("page-fitness",    "style"),
+    Output("page-activities", "style"),
+    Output("nav-fitness",     "style"),
+    Output("nav-activities",  "style"),
+    Input("nav-fitness",      "n_clicks"),
+    Input("nav-activities",   "n_clicks"),
+)
+def switch_page(_, __):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    if ctx.triggered_id == "nav-activities":
+        return hide, show, _NAV_BASE, _NAV_ACTIVE
+    return show, hide, _NAV_ACTIVE, _NAV_BASE
+
 
 @app.callback(
     Output("known-version",   "data"),
