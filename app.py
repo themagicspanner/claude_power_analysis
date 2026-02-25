@@ -762,6 +762,146 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ── Performance Management Chart ──────────────────────────────────────────────
+
+def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
+    """Exponential-weighted ATL (τ=7 d) and CTL (τ=42 d) from a daily TSS series.
+
+    daily_tss : Series with a DatetimeIndex.  Missing dates → 0 TSS (rest days).
+    Returns DataFrame with columns: date, atl, ctl, tsb
+    where TSB(d) = CTL(d-1) − ATL(d-1)  (form before today's ride).
+    """
+    if daily_tss.empty:
+        return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
+
+    dates = pd.date_range(daily_tss.index.min(), daily_tss.index.max(), freq="D")
+    tss   = daily_tss.reindex(dates, fill_value=0.0)
+
+    k_atl = 1.0 - np.exp(-1.0 / 7.0)
+    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
+
+    n   = len(dates)
+    atl = np.zeros(n)
+    ctl = np.zeros(n)
+    tsb = np.zeros(n)
+
+    for i in range(n):
+        t = float(tss.iloc[i])
+        if i == 0:
+            atl[i] = t * k_atl
+            ctl[i] = t * k_ctl
+        else:
+            tsb[i] = ctl[i - 1] - atl[i - 1]          # form before today's ride
+            atl[i] = atl[i - 1] + k_atl * (t - atl[i - 1])
+            ctl[i] = ctl[i - 1] + k_ctl * (t - ctl[i - 1])
+
+    return pd.DataFrame({"date": dates, "atl": atl, "ctl": ctl, "tsb": tsb})
+
+
+def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
+    """Three-panel Performance Management Chart.
+
+    Row 1 — Total TSS (NP-based):   CTL (42d), ATL (7d), TSB
+    Row 2 — MAP component TSS:      CTL (42d), ATL (7d), TSB
+    Row 3 — AWC component TSS:      CTL (42d), ATL (7d), TSB
+
+    TSB = CTL − ATL from the previous day.
+    Green fill → positive TSB (fresh); red fill → negative TSB (tired).
+    """
+    required = {"tss", "tss_map", "tss_awc"}
+    if pdc_params.empty or not required.issubset(pdc_params.columns):
+        return go.Figure()
+
+    df = (
+        pdc_params.dropna(subset=["tss", "tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+    )
+    if df.empty:
+        return go.Figure()
+
+    df["ride_date"] = pd.to_datetime(df["ride_date"])
+    daily = df.groupby("ride_date")[["tss", "tss_map", "tss_awc"]].sum()
+
+    pmc_tot = _compute_pmc(daily["tss"])
+    pmc_map = _compute_pmc(daily["tss_map"])
+    pmc_awc = _compute_pmc(daily["tss_awc"])
+
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        subplot_titles=[
+            "Total TSS — CTL / ATL / TSB",
+            "Aerobic (MAP) — CTL / ATL / TSB",
+            "Anaerobic (AWC) — CTL / ATL / TSB",
+        ],
+        vertical_spacing=0.07,
+    )
+
+    panels = [
+        (1, pmc_tot, "steelblue",    "crimson",    "Total"),
+        (2, pmc_map, "seagreen",     "darkorange", "MAP"),
+        (3, pmc_awc, "mediumpurple", "tomato",     "AWC"),
+    ]
+
+    for row, pmc, ctl_col, atl_col, label in panels:
+        show = row == 1   # show in legend only for the top panel
+        dates    = pmc["date"].dt.strftime("%Y-%m-%d")
+        tsb_pos  = np.where(pmc["tsb"] >= 0,  pmc["tsb"], 0.0)
+        tsb_neg  = np.where(pmc["tsb"] <  0,  pmc["tsb"], 0.0)
+
+        # TSB shading — drawn first so lines sit on top
+        fig.add_trace(go.Scatter(
+            x=dates, y=tsb_pos.round(1),
+            mode="lines", fill="tozeroy",
+            fillcolor="rgba(46,139,87,0.22)",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            name="TSB (fresh)", showlegend=show,
+            hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
+        ), row=row, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=tsb_neg.round(1),
+            mode="lines", fill="tozeroy",
+            fillcolor="rgba(220,80,30,0.22)",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            name="TSB (tired)", showlegend=show,
+            hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
+        ), row=row, col=1)
+
+        # ATL — short-term fatigue (dashed)
+        fig.add_trace(go.Scatter(
+            x=dates, y=pmc["atl"].round(1),
+            mode="lines", name=f"ATL 7d ({label})",
+            line=dict(color=atl_col, width=1.8, dash="dash"),
+            showlegend=show,
+            hovertemplate=f"ATL ({label}): %{{y:.1f}}<extra></extra>",
+        ), row=row, col=1)
+
+        # CTL — long-term fitness (solid)
+        fig.add_trace(go.Scatter(
+            x=dates, y=pmc["ctl"].round(1),
+            mode="lines", name=f"CTL 42d ({label})",
+            line=dict(color=ctl_col, width=2.2),
+            showlegend=show,
+            hovertemplate=f"CTL ({label}): %{{y:.1f}}<extra></extra>",
+        ), row=row, col=1)
+
+        fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=row, col=1)
+        fig.update_yaxes(title_text="Load", showgrid=True, gridcolor="lightgrey",
+                         zeroline=False, row=row, col=1)
+
+    fig.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig.update_xaxes(title_text="Date", row=3, col=1)
+    fig.update_layout(
+        title=dict(text="Performance Management Chart", font=dict(size=14)),
+        height=800,
+        margin=dict(t=70, b=50, l=70, r=20),
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)"),
+    )
+    return fig
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _boot_conn = sqlite3.connect(DB_PATH)
@@ -826,6 +966,11 @@ app.layout = html.Div(
 
                         html.Hr(),
 
+                        html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-pmc"),
+
+                        html.Hr(),
+
                         html.H2("Training Stress Score", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-tss-history"),
 
@@ -856,6 +1001,7 @@ app.layout = html.Div(
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-all-mmp",            "figure"),
+    Output("graph-pmc",                "figure"),
     Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
@@ -892,6 +1038,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
+        fig_pmc(pdc_params, rides),
         fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
