@@ -14,7 +14,7 @@ Auto-watch
 Pages / sections
 ────────────────
   • Ride selector dropdown (auto-updates when new rides appear)
-  • Power + Heart Rate vs time for the selected ride
+  • Power vs time for the selected ride
   • MMP for the selected ride vs 90-day best
   • All-rides MMP overview
   • PDC parameter history (AWC, Pmax, MAP over time)
@@ -90,7 +90,7 @@ def _load_rides() -> pd.DataFrame:
     df = pd.read_sql(
         """SELECT id, name, ride_date,
                   round(duration_s / 60.0, 1) AS duration_min,
-                  avg_power, max_power, avg_hr, max_hr
+                  avg_power, max_power
            FROM rides ORDER BY ride_date, name""",
         conn,
     )
@@ -123,7 +123,7 @@ def _load_pdc_params() -> pd.DataFrame:
 def load_records(ride_id: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        "SELECT elapsed_s, power FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn,
         params=(ride_id,),
     )
@@ -173,30 +173,19 @@ def _start_watcher() -> None:
 
 # ── Figure builders ───────────────────────────────────────────────────────────
 
-def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        subplot_titles=("Power (W)", "Heart Rate (bpm)"),
-        vertical_spacing=0.08,
-    )
+def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
+    fig = go.Figure()
     if records["power"].notna().any():
-        fig.add_trace(
-            go.Scatter(x=records["elapsed_min"], y=records["power"],
-                       mode="lines", name="Power",
-                       line=dict(color="darkorange", width=1)),
-            row=1, col=1,
-        )
-    if records["heart_rate"].notna().any():
-        fig.add_trace(
-            go.Scatter(x=records["elapsed_min"], y=records["heart_rate"],
-                       mode="lines", name="Heart Rate",
-                       line=dict(color="crimson", width=1)),
-            row=2, col=1,
-        )
-    fig.update_xaxes(title_text="Elapsed Time (min)", row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=records["elapsed_min"], y=records["power"],
+            mode="lines", name="Power",
+            line=dict(color="darkorange", width=1),
+        ))
+    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(text=ride_name.replace("_", " "), font=dict(size=15)),
-        height=420, margin=dict(t=70, b=40, l=60, r=20),
+        height=260, margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False, template="plotly_white",
     )
     return fig
@@ -268,8 +257,6 @@ def _activities_table_data(rides: pd.DataFrame,
             "duration_min": _f1(r.get("duration_min")),
             "avg_power":    _int(r.get("avg_power")),
             "max_power":    _int(r.get("max_power")),
-            "avg_hr":       _int(r.get("avg_hr")),
-            "max_hr":       _int(r.get("max_hr")),
             "ftp":          _int(r.get("ftp")),
             "np":           _int(r.get("normalized_power")),
             "if":           _f2(r.get("intensity_factor")),
@@ -967,7 +954,7 @@ app.layout = html.Div(
                         ], style={"marginBottom": "20px"}),
 
                         # Per-ride charts
-                        dcc.Graph(id="graph-power-hr"),
+                        dcc.Graph(id="graph-power"),
                         dcc.Graph(id="graph-wbal"),
                         dcc.Graph(id="graph-tss-components"),
                         dcc.Graph(id="graph-mmp-vs-90"),
@@ -1009,8 +996,6 @@ app.layout = html.Div(
                                 {"name": "Dur (min)",   "id": "duration_min"},
                                 {"name": "Avg W",       "id": "avg_power"},
                                 {"name": "Max W",       "id": "max_power"},
-                                {"name": "Avg HR",      "id": "avg_hr"},
-                                {"name": "Max HR",      "id": "max_hr"},
                                 {"name": "FTP (W)",     "id": "ftp"},
                                 {"name": "NP (W)",      "id": "np"},
                                 {"name": "IF",          "id": "if"},
@@ -1110,7 +1095,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 
 @app.callback(
-    Output("graph-power-hr",       "figure"),
+    Output("graph-power",       "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
     Output("graph-mmp-vs-90",      "figure"),
@@ -1125,7 +1110,7 @@ def update_ride_charts(ride_id, _ver):
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
     return (
-        fig_power_hr(records, ride["name"]),
+        fig_power(records, ride["name"]),
         fig_wbal(records, ride, pdc_params),
         fig_tss_components(records, ride, pdc_params),
         fig_mmp_vs_90day(ride, mmp_all),

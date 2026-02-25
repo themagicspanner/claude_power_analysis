@@ -7,7 +7,7 @@ curves in a SQLite database (cycling.db), then print a summary table.
 Database schema
 ───────────────
   rides   – one row per ride with summary stats
-  records – raw 1-Hz timestamp / power / heart_rate rows
+  records – raw 1-Hz timestamp / power rows
   mmp     – best average power (W) for every (ride, duration) pair
 
 Usage
@@ -153,17 +153,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             total_records INTEGER,
             duration_s    REAL,
             avg_power     REAL,
-            max_power     INTEGER,
-            avg_hr        REAL,
-            max_hr        INTEGER
+            max_power     INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS records (
             ride_id    INTEGER NOT NULL REFERENCES rides(id),
             timestamp  TEXT    NOT NULL,
             elapsed_s  REAL    NOT NULL,
-            power      INTEGER,
-            heart_rate INTEGER
+            power      INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_records_ride
@@ -214,16 +211,15 @@ def init_db(conn: sqlite3.Connection) -> None:
 # ── FIT parsing ───────────────────────────────────────────────────────────────
 
 def read_fit(path: str) -> pd.DataFrame:
-    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate."""
+    """Return DataFrame with columns: timestamp, elapsed_s, power."""
     rows = []
     with fitdecode.FitReader(path) as fit:
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
                 continue
             rows.append({
-                "timestamp":  frame.get_value("timestamp",  fallback=None),
-                "power":      frame.get_value("power",      fallback=None),
-                "heart_rate": frame.get_value("heart_rate", fallback=None),
+                "timestamp": frame.get_value("timestamp", fallback=None),
+                "power":     frame.get_value("power",     fallback=None),
             })
 
     if not rows:
@@ -392,34 +388,28 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     ride_date = df["timestamp"].iloc[0].date().isoformat()
     duration  = float(df["elapsed_s"].iloc[-1])
     has_power = df["power"].notna().any()
-    has_hr    = df["heart_rate"].notna().any()
 
     cur = conn.execute(
         """INSERT INTO rides
-               (name, ride_date, total_records, duration_s,
-                avg_power, max_power, avg_hr, max_hr)
-           VALUES (?,?,?,?,?,?,?,?)""",
+               (name, ride_date, total_records, duration_s, avg_power, max_power)
+           VALUES (?,?,?,?,?,?)""",
         (
             name, ride_date, len(df), duration,
-            round(float(df["power"].mean()),      1) if has_power else None,
-            int(df["power"].max())                   if has_power else None,
-            round(float(df["heart_rate"].mean()), 1) if has_hr    else None,
-            int(df["heart_rate"].max())              if has_hr    else None,
+            round(float(df["power"].mean()), 1) if has_power else None,
+            int(df["power"].max())               if has_power else None,
         ),
     )
     ride_id = cur.lastrowid
 
     # Raw records
     conn.executemany(
-        "INSERT INTO records (ride_id, timestamp, elapsed_s, power, heart_rate) "
-        "VALUES (?,?,?,?,?)",
+        "INSERT INTO records (ride_id, timestamp, elapsed_s, power) VALUES (?,?,?,?)",
         (
             (
                 ride_id,
                 row.timestamp.isoformat(),
                 row.elapsed_s,
-                int(row.power)      if pd.notna(row.power)      else None,
-                int(row.heart_rate) if pd.notna(row.heart_rate) else None,
+                int(row.power) if pd.notna(row.power) else None,
             )
             for row in df.itertuples()
         ),
@@ -482,7 +472,7 @@ def print_mmp_table(db_path: str) -> None:
     summary = pd.read_sql(
         """SELECT name, ride_date,
                   duration_s / 60.0 AS duration_min,
-                  avg_power, max_power, avg_hr, max_hr
+                  avg_power, max_power
            FROM rides ORDER BY ride_date, name""",
         conn,
     )
