@@ -187,6 +187,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             tss_map          REAL,
             tss_awc          REAL
         );
+
+        CREATE TABLE IF NOT EXISTS db_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     """)
     conn.commit()
 
@@ -370,6 +375,22 @@ def backfill_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
 
 
+def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
+    """Delete and recompute PDC params for all rides in chronological order.
+
+    Use this to bring stored params in sync after a bulk import or code change.
+    """
+    conn.execute("DELETE FROM pdc_params")
+    conn.commit()
+    rows = conn.execute(
+        "SELECT id FROM rides ORDER BY ride_date, id"
+    ).fetchall()
+    for (ride_id,) in rows:
+        compute_pdc_params(conn, ride_id)
+    if rows:
+        print(f"[pdc] Recomputed PDC params for {len(rows)} ride(s).")
+
+
 # ── Per-ride processing ───────────────────────────────────────────────────────
 
 def process_ride(conn: sqlite3.Connection, path: str) -> None:
@@ -424,7 +445,24 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
 
     conn.commit()
     print(f"  {name}: {len(df)} records, {len(mmp)} MMP points stored.")
-    compute_pdc_params(conn, ride_id)
+
+    # Recompute PDC params for this ride AND all subsequent rides whose PDC
+    # window now includes this newly added ride's data.
+    # A ride at date D uses MMP from [D − PDC_WINDOW, D], so any ride at date
+    # D ∈ [ride_date, ride_date + PDC_WINDOW] is now stale.
+    ride_date_obj = datetime.date.fromisoformat(ride_date)
+    end_affected  = (ride_date_obj + datetime.timedelta(days=PDC_WINDOW)).isoformat()
+    conn.execute(
+        "DELETE FROM pdc_params WHERE ride_id IN "
+        "(SELECT id FROM rides WHERE ride_date BETWEEN ? AND ?)",
+        (ride_date, end_affected),
+    )
+    conn.commit()
+    for (rid,) in conn.execute(
+        "SELECT id FROM rides WHERE ride_date BETWEEN ? AND ? ORDER BY ride_date, id",
+        (ride_date, end_affected),
+    ).fetchall():
+        compute_pdc_params(conn, rid)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────

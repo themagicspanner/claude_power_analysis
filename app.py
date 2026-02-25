@@ -37,7 +37,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from build_database import (
-    init_db, process_ride, backfill_pdc_params,
+    init_db, process_ride, backfill_pdc_params, recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
@@ -132,6 +132,34 @@ def load_records(ride_id: int) -> pd.DataFrame:
     return df
 
 
+# ── One-time DB migration ─────────────────────────────────────────────────────
+
+# Bump this when stored PDC params need to be fully recomputed.
+_DB_SCHEMA_VERSION = 2
+
+
+def _maybe_migrate(conn: sqlite3.Connection) -> None:
+    """Recompute all PDC params once if the DB schema version is stale.
+
+    Reads/writes the 'schema_version' key in the db_meta table.  After the
+    first successful migration the version is stored so subsequent startups
+    are fast.
+    """
+    row = conn.execute(
+        "SELECT value FROM db_meta WHERE key='schema_version'"
+    ).fetchone()
+    current = int(row[0]) if row else 0
+    if current < _DB_SCHEMA_VERSION:
+        print(f"[migrate] DB schema v{current} → v{_DB_SCHEMA_VERSION}: recomputing PDC params …")
+        recompute_all_pdc_params(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schema_version', ?)",
+            (str(_DB_SCHEMA_VERSION),),
+        )
+        conn.commit()
+        print("[migrate] Done.")
+
+
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 
 class _FitHandler(FileSystemEventHandler):
@@ -169,6 +197,53 @@ def _start_watcher() -> None:
     observer.daemon = True
     observer.start()
     print(f"[watcher] Watching {FIT_DIR} for new .fit files …")
+
+
+# ── PDC on-the-fly helper ─────────────────────────────────────────────────────
+
+def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
+    """Fit the PDC on-the-fly for a ride using the same method as fig_pdc_at_date.
+
+    Returns a dict with keys AWC, Pmax, MAP, tau2, ftp (all floats), or None
+    if there is insufficient data for a fit.  Using this for W'bal and TSS
+    component charts guarantees they use the same parameters as the PDC chart.
+    """
+    ride_date     = ride["ride_date"]
+    ride_date_obj = datetime.date.fromisoformat(ride_date)
+    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
+    if window.empty:
+        return None
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    aged = (
+        window.groupby("duration_s")["aged_power"]
+        .max().reset_index().sort_values("duration_s")
+    )
+    dur = aged["duration_s"].to_numpy(dtype=float)
+    pwr = aged["aged_power"].to_numpy(dtype=float)
+
+    if len(dur) < 4:
+        return None
+
+    popt, ok = _fit_power_curve(dur, pwr)
+    if not ok:
+        return None
+
+    AWC, Pmax, MAP, tau2 = popt
+    return {
+        "AWC":  float(AWC),
+        "Pmax": float(Pmax),
+        "MAP":  float(MAP),
+        "tau2": float(tau2),
+        "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+    }
 
 
 # ── Figure builders ───────────────────────────────────────────────────────────
@@ -553,23 +628,41 @@ def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,
 
 
 def fig_wbal(records: pd.DataFrame, ride: pd.Series,
-             pdc_params: pd.DataFrame) -> go.Figure:
-    """W' balance versus elapsed time for a single ride."""
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-    if params_row.empty or records["power"].isna().all():
+             pdc_params: pd.DataFrame,
+             live_pdc: dict | None = None) -> go.Figure:
+    """W' balance versus elapsed time for a single ride.
+
+    AWC and CP for the W'bal calculation are taken from live_pdc (on-the-fly
+    fit) when available, so the chart is guaranteed to match fig_pdc_at_date.
+    TSS annotation metrics fall back to stored pdc_params.
+    """
+    if records["power"].isna().all():
         return go.Figure()
 
-    r      = params_row.iloc[0]
-    AWC    = float(r["AWC"])
-    CP     = float(r["MAP"])   # aerobic asymptote ≡ critical power
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+
+    # Use on-the-fly params for the calculation; stored params for annotations.
+    if live_pdc is not None:
+        AWC = live_pdc["AWC"]
+        CP  = live_pdc["MAP"]
+    elif not params_row.empty:
+        r   = params_row.iloc[0]
+        AWC = float(r["AWC"])
+        CP  = float(r["MAP"])
+    else:
+        return go.Figure()
+
     awc_kj = AWC / 1000.0
 
-    tss_val     = r.get("tss")
-    np_val      = r.get("normalized_power")
-    if_val      = r.get("intensity_factor")
-    ftp_val     = r.get("ftp")
-    tss_map_val = r.get("tss_map")
-    tss_awc_val = r.get("tss_awc")
+    tss_val = np_val = if_val = ftp_val = tss_map_val = tss_awc_val = None
+    if not params_row.empty:
+        r           = params_row.iloc[0]
+        tss_val     = r.get("tss")
+        np_val      = r.get("normalized_power")
+        if_val      = r.get("intensity_factor")
+        ftp_val     = r.get("ftp")
+        tss_map_val = r.get("tss_map")
+        tss_awc_val = r.get("tss_awc")
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
@@ -655,15 +748,23 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
-                       pdc_params: pd.DataFrame) -> go.Figure:
+                       pdc_params: pd.DataFrame,
+                       live_pdc: dict | None = None) -> go.Figure:
     """Cumulative TSS_MAP and TSS_AWC stacked area chart over ride time."""
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-    if params_row.empty or records["power"].isna().all():
+    if records["power"].isna().all():
         return go.Figure()
 
-    r   = params_row.iloc[0]
-    CP  = float(r["MAP"])
-    ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+
+    if live_pdc is not None:
+        CP  = live_pdc["MAP"]
+        ftp = live_pdc["ftp"]
+    elif not params_row.empty:
+        r   = params_row.iloc[0]
+        CP  = float(r["MAP"])
+        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+    else:
+        return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
@@ -912,6 +1013,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
+_maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
 _boot_conn.close()
 
@@ -1109,10 +1211,13 @@ def update_ride_charts(ride_id, _ver):
     _, rides, mmp_all, pdc_params = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
+    # Fit on-the-fly once; share params with W'bal and TSS components so all
+    # activity charts use the same PDC parameters as the PDC curve chart.
+    live_pdc = _fit_pdc_for_ride(ride, mmp_all)
     return (
         fig_power(records, ride["name"]),
-        fig_wbal(records, ride, pdc_params),
-        fig_tss_components(records, ride, pdc_params),
+        fig_wbal(records, ride, pdc_params, live_pdc),
+        fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_vs_90day(ride, mmp_all),
         fig_pdc_at_date(ride, mmp_all),
     )
