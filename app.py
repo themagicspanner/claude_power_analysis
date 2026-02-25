@@ -961,6 +961,68 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ── Freshness status ──────────────────────────────────────────────────────────
+
+_FRESHNESS_CFG = {
+    "green": {
+        "color": "#16a34a", "label": "Ready",
+        "desc": "All training",
+        "bg": "#f0fdf4", "border": "#86efac",
+    },
+    "amber": {
+        "color": "#d97706", "label": "Aerobic Only",
+        "desc": "Low intensity",
+        "bg": "#fffbeb", "border": "#fcd34d",
+    },
+    "red": {
+        "color": "#dc2626", "label": "Fatigued",
+        "desc": "Rest / recovery",
+        "bg": "#fef2f2", "border": "#fca5a5",
+    },
+}
+
+
+def _compute_freshness_status(pdc_params: pd.DataFrame,
+                               rides: pd.DataFrame) -> tuple:
+    """Return (status, tsb_map, tsb_awc) based on today's TSB values.
+
+    status is 'green'  — both TSB_MAP and TSB_AWC are positive (ready for anything)
+              'amber'  — only TSB_MAP is positive (aerobic / low-intensity only)
+              'red'    — both TSB_MAP and TSB_AWC are non-positive (rest / recovery)
+    Returns (None, None, None) when there is insufficient data.
+    """
+    if pdc_params.empty or not {"tss_map", "tss_awc"}.issubset(pdc_params.columns):
+        return None, None, None
+
+    df = (
+        pdc_params.dropna(subset=["tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+    )
+    if df.empty:
+        return None, None, None
+
+    df["ride_date"] = pd.to_datetime(df["ride_date"])
+    daily = df.groupby("ride_date")[["tss_map", "tss_awc"]].sum()
+
+    pmc_map = _compute_pmc(daily["tss_map"])
+    pmc_awc = _compute_pmc(daily["tss_awc"])
+
+    if pmc_map.empty or pmc_awc.empty:
+        return None, None, None
+
+    tsb_map = float(pmc_map["tsb"].iloc[-1])
+    tsb_awc = float(pmc_awc["tsb"].iloc[-1])
+
+    if tsb_map > 0 and tsb_awc > 0:
+        status = "green"
+    elif tsb_map > 0:
+        status = "amber"
+    else:
+        status = "red"
+
+    return status, tsb_map, tsb_awc
+
+
 # ── Metric summary boxes ──────────────────────────────────────────────────────
 
 def _make_card(label, value, unit, card_style, label_style, value_style, unit_style):
@@ -1080,34 +1142,68 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     pmax_v = f"{int(round(latest['Pmax']))}"
     as_of  = latest["ride_date"]
 
+    # Freshness status card
+    status, tsb_map, tsb_awc = _compute_freshness_status(pdc_params, rides)
+    if status is not None:
+        cfg = _FRESHNESS_CFG[status]
+        freshness_card = html.Div(style={
+            **card_style,
+            "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
+            "minWidth": "130px",
+        }, children=[
+            html.Div("Freshness", style=label_style),
+            html.Div(style={
+                "display": "flex", "alignItems": "center",
+                "justifyContent": "center", "gap": "7px",
+            }, children=[
+                html.Div(style={
+                    "width": "11px", "height": "11px", "borderRadius": "50%",
+                    "background": cfg["color"], "flexShrink": "0",
+                }),
+                html.Span(cfg["label"], style={
+                    **value_style, "fontSize": "17px", "color": cfg["color"],
+                }),
+            ]),
+            html.Div(
+                f"{cfg['desc']}  ·  MAP {tsb_map:+.1f} / AWC {tsb_awc:+.1f}",
+                style={"fontSize": "10px", "color": "#888", "marginTop": "4px"},
+            ),
+        ])
+    else:
+        freshness_card = None
+
+    children = [
+        html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
+            html.Div("Athlete", style=label_style),
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                html.Img(
+                    src="/assets/athlete_profile.jpg",
+                    style={
+                        "width": "40px", "height": "40px",
+                        "borderRadius": "50%", "objectFit": "cover",
+                        "border": "2px solid #dee2e6",
+                    },
+                ),
+                html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
+            ]),
+        ]),
+        card("FTP",  ftp_v,  "W"),
+        card("MAP",  map_v,  "W"),
+        card("AWC",  awc_v,  "kJ"),
+        card("Pmax", pmax_v, "W"),
+        html.Div(
+            f"as of {as_of}",
+            style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
+        ),
+    ]
+    if freshness_card is not None:
+        children.append(freshness_card)
+
     return [
         html.Div(style={
             "display": "flex", "gap": "12px", "alignItems": "flex-end",
             "flexWrap": "wrap", "marginBottom": "16px",
-        }, children=[
-            html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
-                html.Div("Athlete", style=label_style),
-                html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
-                    html.Img(
-                        src="/assets/athlete_profile.jpg",
-                        style={
-                            "width": "40px", "height": "40px",
-                            "borderRadius": "50%", "objectFit": "cover",
-                            "border": "2px solid #dee2e6",
-                        },
-                    ),
-                    html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
-                ]),
-            ]),
-            card("FTP",  ftp_v,  "W"),
-            card("MAP",  map_v,  "W"),
-            card("AWC",  awc_v,  "kJ"),
-            card("Pmax", pmax_v, "W"),
-            html.Div(
-                f"as of {as_of}",
-                style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
-            ),
-        ]),
+        }, children=children),
     ]
 
 
