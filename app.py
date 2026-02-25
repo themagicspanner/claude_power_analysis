@@ -933,12 +933,17 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     pmc_map = _compute_pmc(daily["tss_map"])
     pmc_awc = _compute_pmc(daily["tss_awc"])
 
+    # Align daily TSS to the continuous date grid used by pmc_tot
+    _idx          = pd.DatetimeIndex(pmc_tot["date"])
+    _tss_map_bars = daily["tss_map"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_awc_bars = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
+
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
         subplot_titles=[
-            "Total TSS — CTL / ATL / TSB",
-            "Aerobic (MAP) — CTL / ATL / TSB",
-            "Anaerobic (AWC) — CTL / ATL / TSB",
+            "Total TSS — Daily bars + CTL / ATL / TSB",
+            "Aerobic (MAP) — Daily bars + CTL / ATL / TSB",
+            "Anaerobic (AWC) — Daily bars + CTL / ATL / TSB",
         ],
         vertical_spacing=0.07,
     )
@@ -955,7 +960,23 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         tsb_pos  = np.where(pmc["tsb"] >= 0,  pmc["tsb"], 0.0)
         tsb_neg  = np.where(pmc["tsb"] <  0,  pmc["tsb"], 0.0)
 
-        # TSB shading — drawn first so lines sit on top
+        # TSS bars — drawn first so ATL/CTL/TSB lines sit on top
+        if row in (1, 2):
+            fig.add_trace(go.Bar(
+                x=dates, y=_tss_map_bars,
+                name="TSS MAP", marker_color="rgba(46,139,87,0.45)",
+                showlegend=show,
+                hovertemplate="TSS MAP: %{y:.0f}<extra></extra>",
+            ), row=row, col=1)
+        if row in (1, 3):
+            fig.add_trace(go.Bar(
+                x=dates, y=_tss_awc_bars,
+                name="TSS AWC", marker_color="rgba(220,80,30,0.45)",
+                showlegend=show,
+                hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
+            ), row=row, col=1)
+
+        # TSB shading — drawn after bars so lines sit on top
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_pos.round(1),
             mode="lines", fill="tozeroy",
@@ -1000,6 +1021,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Date", row=3, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
+        barmode="stack",
         height=800,
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
@@ -1051,11 +1073,6 @@ app.layout = html.Div(
 
                         html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-pmc"),
-
-                        html.Hr(),
-
-                        html.H2("Training Stress Score", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-tss-history"),
 
                         html.Hr(),
 
@@ -1152,7 +1169,6 @@ app.layout = html.Div(
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-pmc",                "figure"),
-    Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("activity-metrics-table",   "data"),
     Output("status-bar",               "children"),
@@ -1189,7 +1205,6 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_pmc(pdc_params, rides),
-        fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         _activities_table_data(rides, pdc_params),
         status,
