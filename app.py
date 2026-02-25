@@ -1027,7 +1027,7 @@ _start_watcher()   # background thread
 app = dash.Dash(__name__, title="Cycling Power Analysis")
 
 app.layout = html.Div(
-    style={"fontFamily": "sans-serif", "maxWidth": "1200px", "margin": "0 auto", "padding": "20px"},
+    style={"fontFamily": "sans-serif", "padding": "20px"},
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
@@ -1170,4 +1170,4 @@ def update_ride_charts(ride_id, _ver):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    app.run(debug=True, port=8050)
