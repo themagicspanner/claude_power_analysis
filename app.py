@@ -111,7 +111,11 @@ def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT ride_id, AWC, Pmax, MAP, tau2 FROM pdc_params", conn)
+    df = pd.read_sql(
+        "SELECT ride_id, AWC, Pmax, MAP, tau2, ftp, normalized_power, intensity_factor,"
+        " tss, tss_map, tss_awc FROM pdc_params",
+        conn,
+    )
     conn.close()
     return df
 
@@ -554,6 +558,13 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     CP     = float(r["MAP"])   # aerobic asymptote ≡ critical power
     awc_kj = AWC / 1000.0
 
+    tss_val     = r.get("tss")
+    np_val      = r.get("normalized_power")
+    if_val      = r.get("intensity_factor")
+    ftp_val     = r.get("ftp")
+    tss_map_val = r.get("tss_map")
+    tss_awc_val = r.get("tss_awc")
+
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
@@ -579,14 +590,173 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
                      range=[-awc_kj * 0.05, awc_kj * 1.12])
+    metrics = f"CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ"
+    if pd.notna(tss_val) and pd.notna(np_val) and pd.notna(if_val):
+        metrics += (
+            f"   |   FTP = {ftp_val:.0f} W   NP = {np_val:.0f} W"
+            f"   IF = {if_val:.2f}   TSS = {tss_val:.0f}"
+        )
+    if pd.notna(tss_map_val) and pd.notna(tss_awc_val):
+        metrics += (
+            f"   (MAP: {tss_map_val:.0f}  AWC: {tss_awc_val:.0f})"
+        )
+
     fig.update_layout(
         title=dict(
-            text=f"W' Balance — CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ",
+            text=f"W' Balance — {metrics}",
             font=dict(size=14),
         ),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
+        template="plotly_white",
+    )
+    return fig
+
+
+# ── TSS component series ──────────────────────────────────────────────────────
+
+def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
+                     ftp: float, CP: float) -> tuple:
+    """Return cumulative TSS_MAP and TSS_AWC series over the ride.
+
+    Uses a 30-second rolling average (same-length via 'same' convolution),
+    splits at CP proportionally, and integrates second-by-second.
+
+    Returns (t_min, cum_tss_map, cum_tss_awc) — all same length as elapsed_s.
+    """
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    kernel = np.ones(30) / 30.0
+    p_30s  = np.convolve(p, kernel, mode="same")
+
+    dt = np.empty_like(elapsed_s)
+    dt[0]  = 0.0
+    dt[1:] = np.diff(elapsed_s)
+    dt     = np.clip(dt, 0.0, None)
+
+    p_map = np.minimum(p_30s, CP)
+    p_awc = np.maximum(p_30s - CP, 0.0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
+        f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
+
+    tss_rate     = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
+    cum_tss_map  = np.cumsum(tss_rate * f_map)
+    cum_tss_awc  = np.cumsum(tss_rate * f_awc)
+    t_min        = elapsed_s / 60.0
+    return t_min, cum_tss_map, cum_tss_awc
+
+
+def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
+                       pdc_params: pd.DataFrame) -> go.Figure:
+    """Cumulative TSS_MAP and TSS_AWC stacked area chart over ride time."""
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    if params_row.empty or records["power"].isna().all():
+        return go.Figure()
+
+    r   = params_row.iloc[0]
+    CP  = float(r["MAP"])
+    ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+    power   = records["power"].to_numpy(dtype=float)
+    t_min, cum_map, cum_awc = _tss_rate_series(elapsed, power, ftp, CP)
+
+    final_map = cum_map[-1]
+    final_awc = cum_awc[-1]
+    cum_total = cum_map + cum_awc
+
+    fig = go.Figure()
+
+    # Aerobic layer (fills from zero)
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_map,
+        mode="lines", name=f"TSS_MAP ({final_map:.0f})",
+        fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
+        line=dict(color="seagreen", width=1.5),
+    ))
+    # Anaerobic layer (fills from aerobic to total)
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_total,
+        mode="lines", name=f"TSS_AWC ({final_awc:.0f})",
+        fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
+        line=dict(color="darkorange", width=1.5),
+    ))
+
+    fig.update_xaxes(title_text="Elapsed Time (min)",
+                     showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Cumulative TSS",
+                     showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"TSS Components — MAP: {final_map:.0f}  "
+                f"AWC: {final_awc:.0f}  "
+                f"Total: {final_map + final_awc:.0f}"
+            ),
+            font=dict(size=14),
+        ),
+        height=260,
+        margin=dict(t=55, b=40, l=60, r=20),
+        template="plotly_white",
+        legend=dict(x=0.02, y=0.98),
+    )
+    return fig
+
+
+def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
+    """TSS per ride as stacked bars — TSS_MAP (aerobic) + TSS_AWC (anaerobic)."""
+    if pdc_params.empty or "tss_map" not in pdc_params.columns:
+        return go.Figure()
+
+    df = (
+        pdc_params.dropna(subset=["tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date", "name"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date")
+    )
+    if df.empty:
+        return go.Figure()
+
+    cd = df[["ftp", "normalized_power", "intensity_factor", "tss_map", "tss_awc"]].values
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["ride_date"], y=df["tss_map"],
+        name="TSS_MAP (aerobic)",
+        marker_color="seagreen",
+        customdata=cd,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "TSS_MAP = %{y:.0f}<br>"
+            "TSS_AWC = %{customdata[4]:.0f}<br>"
+            "Total = %{customdata[3]:.0f}<br>"
+            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "IF = %{customdata[2]:.2f}<extra></extra>"
+        ),
+    ))
+    fig.add_trace(go.Bar(
+        x=df["ride_date"], y=df["tss_awc"],
+        name="TSS_AWC (anaerobic)",
+        marker_color="darkorange",
+        customdata=cd,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "TSS_AWC = %{y:.0f}<br>"
+            "TSS_MAP = %{customdata[3]:.0f}<br>"
+            "Total = %{customdata[3]:.0f}<br>"
+            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "IF = %{customdata[2]:.2f}<extra></extra>"
+        ),
+    ))
+
+    fig.update_xaxes(title_text="Date", showgrid=False)
+    fig.update_yaxes(title_text="TSS", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(text="Training Stress Score per Ride (MAP + AWC split)", font=dict(size=14)),
+        barmode="stack",
+        height=320,
+        margin=dict(t=55, b=50, l=60, r=20),
         template="plotly_white",
     )
     return fig
@@ -640,6 +810,7 @@ app.layout = html.Div(
                         # Per-ride charts
                         dcc.Graph(id="graph-power-hr"),
                         dcc.Graph(id="graph-wbal"),
+                        dcc.Graph(id="graph-tss-components"),
                         dcc.Graph(id="graph-mmp-vs-90"),
                         dcc.Graph(id="graph-pdc"),
 
@@ -652,6 +823,11 @@ app.layout = html.Div(
                     html.Div(style={"paddingTop": "20px"}, children=[
 
                         dcc.Graph(id="graph-90day-mmp"),
+
+                        html.Hr(),
+
+                        html.H2("Training Stress Score", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-tss-history"),
 
                         html.Hr(),
 
@@ -680,6 +856,7 @@ app.layout = html.Div(
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-all-mmp",            "figure"),
+    Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
@@ -715,16 +892,18 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
+        fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
     )
 
 
 @app.callback(
-    Output("graph-power-hr",  "figure"),
-    Output("graph-wbal",      "figure"),
-    Output("graph-mmp-vs-90", "figure"),
-    Output("graph-pdc",       "figure"),
+    Output("graph-power-hr",       "figure"),
+    Output("graph-wbal",           "figure"),
+    Output("graph-tss-components", "figure"),
+    Output("graph-mmp-vs-90",      "figure"),
+    Output("graph-pdc",            "figure"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -737,6 +916,7 @@ def update_ride_charts(ride_id, _ver):
     return (
         fig_power_hr(records, ride["name"]),
         fig_wbal(records, ride, pdc_params),
+        fig_tss_components(records, ride, pdc_params),
         fig_mmp_vs_90day(ride, mmp_all),
         fig_pdc_at_date(ride, mmp_all, pdc_params),
     )

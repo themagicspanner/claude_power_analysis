@@ -46,6 +46,57 @@ MMP_DURATIONS = [
 
 # ── Power-duration model ──────────────────────────────────────────────────────
 
+def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
+    """Coggan normalized power — 4th-root of the mean 4th-power of the
+    30-second rolling average. NaN samples are treated as 0 W."""
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    window = max(1, int(30 * sample_hz))
+    if len(p) < window:
+        return float(np.mean(p))
+    kernel  = np.ones(window) / window
+    rolling = np.convolve(p, kernel, mode="valid")
+    return float(np.mean(rolling ** 4) ** 0.25)
+
+
+def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
+                    ftp: float, CP: float,
+                    sample_hz: float = 1.0) -> tuple[float, float]:
+    """Split TSS into aerobic (MAP) and anaerobic (AWC) components.
+
+    Uses a 30-second rolling average of power (consistent with NP methodology),
+    then at each sample splits the smoothed power at CP:
+
+        P_MAP(t) = min(P_30s(t), CP)        → aerobic contribution
+        P_AWC(t) = max(0, P_30s(t) − CP)    → anaerobic contribution
+
+    The instantaneous TSS rate is (P_30s / FTP)² × Δt / 3600 × 100, split
+    proportionally so that TSS_MAP + TSS_AWC = TSS_total (self-consistent).
+
+    Returns (tss_map, tss_awc).
+    """
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    window = max(1, int(30 * sample_hz))
+    kernel = np.ones(window) / window
+    p_30s  = np.convolve(p, kernel, mode="same")   # same length as input
+
+    dt = np.empty_like(elapsed_s)
+    dt[0]  = 0.0
+    dt[1:] = np.diff(elapsed_s)
+    dt     = np.clip(dt, 0.0, None)
+
+    p_map = np.minimum(p_30s, CP)
+    p_awc = np.maximum(p_30s - CP, 0.0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
+        f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
+
+    tss_rate  = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
+    tss_map   = float(np.sum(tss_rate * f_map))
+    tss_awc   = float(np.sum(tss_rate * f_awc))
+    return tss_map, tss_awc
+
+
 def _power_model(t, AWC, Pmax, MAP, tau2):
     """Two-component power-duration model.
 
@@ -126,14 +177,37 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS pdc_params (
-            ride_id      INTEGER PRIMARY KEY REFERENCES rides(id),
-            AWC          REAL    NOT NULL,
-            Pmax         REAL    NOT NULL,
-            MAP          REAL    NOT NULL,
-            tau2         REAL    NOT NULL,
-            computed_at  TEXT    NOT NULL
+            ride_id          INTEGER PRIMARY KEY REFERENCES rides(id),
+            AWC              REAL    NOT NULL,
+            Pmax             REAL    NOT NULL,
+            MAP              REAL    NOT NULL,
+            tau2             REAL    NOT NULL,
+            computed_at      TEXT    NOT NULL,
+            ftp              REAL,
+            normalized_power REAL,
+            intensity_factor REAL,
+            tss              REAL,
+            tss_map          REAL,
+            tss_awc          REAL
         );
     """)
+    conn.commit()
+
+    # Idempotent migration: add TSS columns to databases created before this
+    # version (ALTER TABLE silently fails if the column already exists via the
+    # OperationalError catch).
+    for col_def in [
+        "ftp              REAL",
+        "normalized_power REAL",
+        "intensity_factor REAL",
+        "tss              REAL",
+        "tss_map          REAL",
+        "tss_awc          REAL",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already present
     conn.commit()
 
 
@@ -243,9 +317,32 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         return
 
     AWC, Pmax, MAP, tau2 = popt
+
+    # ── TSS metrics ───────────────────────────────────────────────────────────
+    ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
+
+    rec = pd.read_sql(
+        "SELECT elapsed_s, power FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        conn, params=(ride_id,),
+    )
+    np_val = if_val = tss = 0.0
+    if not rec.empty and rec["power"].notna().any():
+        elapsed = rec["elapsed_s"].to_numpy(dtype=float)
+        power   = rec["power"].to_numpy(dtype=float)
+        dt      = np.diff(elapsed)
+        hz      = 1.0 / float(np.median(dt[dt > 0])) if dt[dt > 0].size > 0 else 1.0
+        np_val  = _normalized_power(power, hz)
+        if_val  = np_val / ftp if ftp > 0 else 0.0
+        dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
+        tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
+        tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), hz)
+
     conn.execute(
-        """INSERT OR REPLACE INTO pdc_params (ride_id, AWC, Pmax, MAP, tau2, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT OR REPLACE INTO pdc_params
+               (ride_id, AWC, Pmax, MAP, tau2, computed_at,
+                ftp, normalized_power, intensity_factor, tss,
+                tss_map, tss_awc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -253,6 +350,12 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             round(float(MAP),  1),
             round(float(tau2), 1),
             datetime.date.today().isoformat(),
+            round(ftp,     1),
+            round(np_val,  1),
+            round(if_val,  3),
+            round(tss,     1),
+            round(tss_map, 1),
+            round(tss_awc, 1),
         ),
     )
     conn.commit()
