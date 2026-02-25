@@ -1087,7 +1087,17 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         }, children=[
             html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
                 html.Div("Athlete", style=label_style),
-                html.Div("Mike Lauder", style={**value_style, "fontSize": "18px"}),
+                html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                    html.Img(
+                        src="/assets/athlete_profile.jpg",
+                        style={
+                            "width": "40px", "height": "40px",
+                            "borderRadius": "50%", "objectFit": "cover",
+                            "border": "2px solid #dee2e6",
+                        },
+                    ),
+                    html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
+                ]),
             ]),
             card("FTP",  ftp_v,  "W"),
             card("MAP",  map_v,  "W"),
