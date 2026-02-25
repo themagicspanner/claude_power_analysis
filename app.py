@@ -296,10 +296,10 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             window.groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
         )
-        # Best raw MMP from other rides in the window (excludes this ride)
+        # Best aged MMP from other rides in the window (excludes this ride)
         other = (
             window[window["ride_id"] != ride["id"]]
-            .groupby("duration_s")["power"]
+            .groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
         )
         dur = aged["duration_s"].to_numpy(dtype=float)
@@ -348,10 +348,10 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
                 font=dict(size=11),
             )
 
-        # Best MMP from other rides in the PDC window (raw, unaged)
+        # Best aged MMP from other rides in the PDC window
         if not other.empty:
             fig.add_trace(go.Scatter(
-                x=other["duration_s"], y=other["power"],
+                x=other["duration_s"], y=other["aged_power"],
                 mode="lines", name="other rides (best)",
                 line=dict(color="steelblue", width=1.5, dash="dot"),
             ))
