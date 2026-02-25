@@ -32,7 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, Input, Output, State
+from dash import dcc, html, dash_table, Input, Output, State
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -242,27 +242,45 @@ def fig_mmp_vs_90day(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_all_mmp(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
-    fig = go.Figure()
-    for i, (_, ride) in enumerate(rides.iterrows()):
-        rd    = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
-        label = f"{ride['ride_date']}  {ride['name'][:28].replace('_', ' ')}"
-        fig.add_trace(go.Scatter(
-            x=rd["duration_s"], y=rd["power"],
-            mode="lines+markers", name=label,
-            marker=dict(size=3),
-            line=dict(width=1.8, color=COLOURS[i % len(COLOURS)]),
-        ))
-    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
-                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
-    fig.update_layout(
-        title="Mean Maximal Power — all rides",
-        height=480, margin=dict(t=60, b=50, l=60, r=200),
-        template="plotly_white",
-        legend=dict(font=dict(size=10), x=1.01, xanchor="left"),
+def _activities_table_data(rides: pd.DataFrame,
+                           pdc_params: pd.DataFrame) -> list[dict]:
+    """Join rides + pdc_params and return rows for the DataTable, newest first."""
+    df = (
+        rides
+        .merge(pdc_params.rename(columns={"ride_id": "id"}), on="id", how="left")
+        .sort_values("ride_date", ascending=False)
     )
-    return fig
+
+    def _int(v):
+        return int(round(v)) if pd.notna(v) else ""
+
+    def _f1(v):
+        return round(float(v), 1) if pd.notna(v) else ""
+
+    def _f2(v):
+        return round(float(v), 2) if pd.notna(v) else ""
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "date":         r["ride_date"],
+            "name":         r["name"].replace("_", " "),
+            "duration_min": _f1(r.get("duration_min")),
+            "avg_power":    _int(r.get("avg_power")),
+            "max_power":    _int(r.get("max_power")),
+            "avg_hr":       _int(r.get("avg_hr")),
+            "max_hr":       _int(r.get("max_hr")),
+            "ftp":          _int(r.get("ftp")),
+            "np":           _int(r.get("normalized_power")),
+            "if":           _f2(r.get("intensity_factor")),
+            "tss":          _int(r.get("tss")),
+            "tss_map":      _int(r.get("tss_map")),
+            "tss_awc":      _int(r.get("tss_awc")),
+            "map_w":        _int(r.get("MAP")),
+            "awc_kj":       _f1(r["AWC"] / 1000 if pd.notna(r.get("AWC")) else None),
+            "pmax":         _int(r.get("Pmax")),
+        })
+    return rows
 
 
 def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
@@ -982,8 +1000,53 @@ app.layout = html.Div(
 
                         html.Hr(),
 
-                        html.H2("Mean Maximal Power — all rides", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-all-mmp"),
+                        html.H2("Activities", style={"marginBottom": "8px"}),
+                        dash_table.DataTable(
+                            id="activity-metrics-table",
+                            columns=[
+                                {"name": "Date",        "id": "date"},
+                                {"name": "Name",        "id": "name"},
+                                {"name": "Dur (min)",   "id": "duration_min"},
+                                {"name": "Avg W",       "id": "avg_power"},
+                                {"name": "Max W",       "id": "max_power"},
+                                {"name": "Avg HR",      "id": "avg_hr"},
+                                {"name": "Max HR",      "id": "max_hr"},
+                                {"name": "FTP (W)",     "id": "ftp"},
+                                {"name": "NP (W)",      "id": "np"},
+                                {"name": "IF",          "id": "if"},
+                                {"name": "TSS",         "id": "tss"},
+                                {"name": "TSS MAP",     "id": "tss_map"},
+                                {"name": "TSS AWC",     "id": "tss_awc"},
+                                {"name": "MAP (W)",     "id": "map_w"},
+                                {"name": "AWC (kJ)",    "id": "awc_kj"},
+                                {"name": "Pmax (W)",    "id": "pmax"},
+                            ],
+                            sort_action="native",
+                            style_table={"overflowX": "auto"},
+                            style_cell={
+                                "textAlign": "right",
+                                "padding": "5px 12px",
+                                "fontFamily": "sans-serif",
+                                "fontSize": "13px",
+                            },
+                            style_cell_conditional=[
+                                {"if": {"column_id": "date"}, "textAlign": "left"},
+                                {"if": {"column_id": "name"}, "textAlign": "left",
+                                 "minWidth": "160px"},
+                            ],
+                            style_header={
+                                "backgroundColor": "#f0f0f0",
+                                "fontWeight": "bold",
+                                "textAlign": "right",
+                            },
+                            style_header_conditional=[
+                                {"if": {"column_id": c}, "textAlign": "left"}
+                                for c in ("date", "name")
+                            ],
+                            style_data_conditional=[
+                                {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
+                            ],
+                        ),
 
                         html.Div(style={"height": "40px"}),
                     ]),
@@ -1001,10 +1064,10 @@ app.layout = html.Div(
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
-    Output("graph-all-mmp",            "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
+    Output("activity-metrics-table",   "data"),
     Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
@@ -1038,10 +1101,10 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         options,
         selected,
         fig_90day_mmp(mmp_all),
-        fig_all_mmp(mmp_all, rides),
         fig_pmc(pdc_params, rides),
         fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
+        _activities_table_data(rides, pdc_params),
         status,
     )
 
