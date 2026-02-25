@@ -333,20 +333,10 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_tot,
                 mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                name="model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
 
         # Best aged MMP from other rides in the PDC window
         if not other.empty:
@@ -486,21 +476,10 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_total,
                 mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                name="model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
-            fig.add_annotation(
-                xref="paper", yref="paper",
-                x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
@@ -638,16 +617,6 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
 
     awc_kj = AWC / 1000.0
 
-    tss_val = np_val = if_val = ftp_val = tss_map_val = tss_awc_val = None
-    if not params_row.empty:
-        r           = params_row.iloc[0]
-        tss_val     = r.get("tss")
-        np_val      = r.get("normalized_power")
-        if_val      = r.get("intensity_factor")
-        ftp_val     = r.get("ftp")
-        tss_map_val = r.get("tss_map")
-        tss_awc_val = r.get("tss_awc")
-
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
@@ -673,22 +642,8 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
                      range=[-awc_kj * 0.05, awc_kj * 1.12])
-    metrics = f"CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ"
-    if pd.notna(tss_val) and pd.notna(np_val) and pd.notna(if_val):
-        metrics += (
-            f"   |   FTP = {ftp_val:.0f} W   NP = {np_val:.0f} W"
-            f"   IF = {if_val:.2f}   TSS = {tss_val:.0f}"
-        )
-    if pd.notna(tss_map_val) and pd.notna(tss_awc_val):
-        metrics += (
-            f"   (MAP: {tss_map_val:.0f}  AWC: {tss_awc_val:.0f})"
-        )
-
     fig.update_layout(
-        title=dict(
-            text=f"W' Balance — {metrics}",
-            font=dict(size=14),
-        ),
+        title=dict(text="W' Balance", font=dict(size=14)),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
@@ -780,14 +735,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     fig.update_yaxes(title_text="Cumulative TSS",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
-        title=dict(
-            text=(
-                f"TSS Components — MAP: {final_map:.0f}  "
-                f"AWC: {final_awc:.0f}  "
-                f"Total: {final_map + final_awc:.0f}"
-            ),
-            font=dict(size=14),
-        ),
+        title=dict(text="TSS Components", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
@@ -1015,29 +963,100 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 # ── Metric summary boxes ──────────────────────────────────────────────────────
 
-def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
-    """Return a row of stat cards showing the most recent fitted PDC metrics."""
+def _make_card(label, value, unit, card_style, label_style, value_style, unit_style):
+    return html.Div(style=card_style, children=[
+        html.Div(label, style=label_style),
+        html.Div([
+            html.Span(value, style=value_style),
+            html.Span(unit,  style=unit_style),
+        ]),
+    ])
+
+
+def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
+                           live_pdc: dict | None = None) -> list:
+    """Metric cards showing the PDC state and ride metrics for a single activity."""
     card_style = {
-        "background": "#f8f9fa",
-        "border": "1px solid #dee2e6",
-        "borderRadius": "8px",
-        "padding": "12px 20px",
-        "minWidth": "110px",
-        "textAlign": "center",
-        "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
     }
-    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
     value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
     unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
 
     def card(label, value, unit=""):
-        return html.Div(style=card_style, children=[
-            html.Div(label, style=label_style),
-            html.Div([
-                html.Span(value, style=value_style),
-                html.Span(unit,  style=unit_style),
-            ]),
-        ])
+        return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
+
+    def _i(v):
+        return f"{int(round(float(v)))}" if pd.notna(v) else "—"
+
+    def _f2(v):
+        return f"{float(v):.2f}" if pd.notna(v) else "—"
+
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    stored = params_row.iloc[0] if not params_row.empty else None
+
+    # PDC fit params — prefer on-the-fly, fall back to stored
+    if live_pdc is not None:
+        ftp_v  = _i(live_pdc.get("ftp"))
+        map_v  = _i(live_pdc.get("MAP"))
+        awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
+        pmax_v = _i(live_pdc.get("Pmax"))
+    elif stored is not None:
+        ftp_v  = _i(stored.get("ftp"))
+        map_v  = _i(stored.get("MAP"))
+        awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
+        pmax_v = _i(stored.get("Pmax"))
+    else:
+        ftp_v = map_v = awc_v = pmax_v = "—"
+
+    # Ride performance metrics from stored pdc_params
+    np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
+    if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
+    tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
+    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
+    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+
+    divider = html.Div(style={
+        "width": "1px", "background": "#dee2e6",
+        "alignSelf": "stretch", "margin": "0 4px",
+    })
+
+    return [
+        html.Div(style={
+            "display": "flex", "gap": "12px", "alignItems": "flex-end",
+            "flexWrap": "wrap", "marginBottom": "16px",
+        }, children=[
+            card("FTP",  ftp_v,  "W"),
+            card("MAP",  map_v,  "W"),
+            card("AWC",  awc_v,  "kJ"),
+            card("Pmax", pmax_v, "W"),
+            divider,
+            card("NP",      np_v,      "W"),
+            card("IF",      if_v,      ""),
+            card("TSS",     tss_v,     ""),
+            card("TSS MAP", tss_map_v, ""),
+            card("TSS AWC", tss_awc_v, ""),
+        ]),
+    ]
+
+
+def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
+    """Return a row of stat cards showing the most recent fitted PDC metrics."""
+    card_style = {
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "8px", "padding": "12px 20px", "minWidth": "110px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+    }
+    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def card(label, value, unit=""):
+        return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
 
     # Find the most recent ride that has PDC params
     if pdc_params.empty or rides.empty:
@@ -1151,6 +1170,9 @@ app.layout = html.Div(
                             ),
                         ], style={"marginBottom": "20px"}),
 
+                        # Per-activity metric boxes
+                        html.Div(id="activity-metric-boxes"),
+
                         # Per-ride charts
                         dcc.Graph(id="graph-power"),
                         dcc.Graph(id="graph-wbal"),
@@ -1217,10 +1239,11 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 
 @app.callback(
-    Output("graph-power",       "figure"),
+    Output("graph-power",          "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
     Output("graph-mmp-pdc",        "figure"),
+    Output("activity-metric-boxes", "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1238,6 +1261,7 @@ def update_ride_charts(ride_id, _ver):
         fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
+        _activity_metric_boxes(ride, pdc_params, live_pdc),
     )
 
 
