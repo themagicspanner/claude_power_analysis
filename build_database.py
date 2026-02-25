@@ -46,6 +46,18 @@ MMP_DURATIONS = [
 
 # ── Power-duration model ──────────────────────────────────────────────────────
 
+def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
+    """Coggan normalized power — 4th-root of the mean 4th-power of the
+    30-second rolling average. NaN samples are treated as 0 W."""
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    window = max(1, int(30 * sample_hz))
+    if len(p) < window:
+        return float(np.mean(p))
+    kernel  = np.ones(window) / window
+    rolling = np.convolve(p, kernel, mode="valid")
+    return float(np.mean(rolling ** 4) ** 0.25)
+
+
 def _power_model(t, AWC, Pmax, MAP, tau2):
     """Two-component power-duration model.
 
@@ -126,14 +138,33 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS pdc_params (
-            ride_id      INTEGER PRIMARY KEY REFERENCES rides(id),
-            AWC          REAL    NOT NULL,
-            Pmax         REAL    NOT NULL,
-            MAP          REAL    NOT NULL,
-            tau2         REAL    NOT NULL,
-            computed_at  TEXT    NOT NULL
+            ride_id          INTEGER PRIMARY KEY REFERENCES rides(id),
+            AWC              REAL    NOT NULL,
+            Pmax             REAL    NOT NULL,
+            MAP              REAL    NOT NULL,
+            tau2             REAL    NOT NULL,
+            computed_at      TEXT    NOT NULL,
+            ftp              REAL,
+            normalized_power REAL,
+            intensity_factor REAL,
+            tss              REAL
         );
     """)
+    conn.commit()
+
+    # Idempotent migration: add TSS columns to databases created before this
+    # version (ALTER TABLE silently fails if the column already exists via the
+    # OperationalError catch).
+    for col_def in [
+        "ftp              REAL",
+        "normalized_power REAL",
+        "intensity_factor REAL",
+        "tss              REAL",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # column already present
     conn.commit()
 
 
@@ -243,9 +274,30 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         return
 
     AWC, Pmax, MAP, tau2 = popt
+
+    # ── TSS metrics ───────────────────────────────────────────────────────────
+    ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
+
+    rec = pd.read_sql(
+        "SELECT elapsed_s, power FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        conn, params=(ride_id,),
+    )
+    np_val = if_val = tss = 0.0
+    if not rec.empty and rec["power"].notna().any():
+        elapsed = rec["elapsed_s"].to_numpy(dtype=float)
+        power   = rec["power"].to_numpy(dtype=float)
+        dt      = np.diff(elapsed)
+        hz      = 1.0 / float(np.median(dt[dt > 0])) if dt[dt > 0].size > 0 else 1.0
+        np_val  = _normalized_power(power, hz)
+        if_val  = np_val / ftp if ftp > 0 else 0.0
+        dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
+        tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
+
     conn.execute(
-        """INSERT OR REPLACE INTO pdc_params (ride_id, AWC, Pmax, MAP, tau2, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT OR REPLACE INTO pdc_params
+               (ride_id, AWC, Pmax, MAP, tau2, computed_at,
+                ftp, normalized_power, intensity_factor, tss)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -253,6 +305,10 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             round(float(MAP),  1),
             round(float(tau2), 1),
             datetime.date.today().isoformat(),
+            round(ftp,    1),
+            round(np_val, 1),
+            round(if_val, 3),
+            round(tss,    1),
         ),
     )
     conn.commit()

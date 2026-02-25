@@ -111,7 +111,11 @@ def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT ride_id, AWC, Pmax, MAP, tau2 FROM pdc_params", conn)
+    df = pd.read_sql(
+        "SELECT ride_id, AWC, Pmax, MAP, tau2, ftp, normalized_power, intensity_factor, tss"
+        " FROM pdc_params",
+        conn,
+    )
     conn.close()
     return df
 
@@ -554,6 +558,11 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     CP     = float(r["MAP"])   # aerobic asymptote ≡ critical power
     awc_kj = AWC / 1000.0
 
+    tss_val = r.get("tss")
+    np_val  = r.get("normalized_power")
+    if_val  = r.get("intensity_factor")
+    ftp_val = r.get("ftp")
+
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
@@ -579,14 +588,73 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
                      range=[-awc_kj * 0.05, awc_kj * 1.12])
+    metrics = f"CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ"
+    if pd.notna(tss_val) and pd.notna(np_val) and pd.notna(if_val):
+        metrics += (
+            f"   |   FTP = {ftp_val:.0f} W   NP = {np_val:.0f} W"
+            f"   IF = {if_val:.2f}   TSS = {tss_val:.0f}"
+        )
+
     fig.update_layout(
         title=dict(
-            text=f"W' Balance — CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ",
+            text=f"W' Balance — {metrics}",
             font=dict(size=14),
         ),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
+        template="plotly_white",
+    )
+    return fig
+
+
+def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
+    """TSS per ride as a bar chart, with pre-computed FTP / NP / IF in the hover."""
+    if pdc_params.empty or "tss" not in pdc_params.columns:
+        return go.Figure()
+
+    df = (
+        pdc_params.dropna(subset=["tss"])
+        .merge(rides[["id", "ride_date", "name"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date")
+    )
+    if df.empty:
+        return go.Figure()
+
+    hover = (
+        "<b>%{x}</b><br>"
+        "TSS = %{y:.0f}<br>"
+        + df.apply(
+            lambda r: (
+                f"FTP = {r['ftp']:.0f} W  NP = {r['normalized_power']:.0f} W  "
+                f"IF = {r['intensity_factor']:.2f}"
+            ),
+            axis=1,
+        ).reset_index(drop=True)
+    )
+
+    fig = go.Figure(go.Bar(
+        x=df["ride_date"],
+        y=df["tss"],
+        text=df["tss"].round(0).astype(int).astype(str),
+        textposition="outside",
+        customdata=df[["ftp", "normalized_power", "intensity_factor"]].values,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "TSS = %{y:.0f}<br>"
+            "FTP = %{customdata[0]:.0f} W<br>"
+            "NP = %{customdata[1]:.0f} W<br>"
+            "IF = %{customdata[2]:.2f}<extra></extra>"
+        ),
+        marker_color="steelblue",
+    ))
+
+    fig.update_xaxes(title_text="Date", showgrid=False)
+    fig.update_yaxes(title_text="TSS", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(text="Training Stress Score per Ride", font=dict(size=14)),
+        height=320,
+        margin=dict(t=55, b=50, l=60, r=20),
         template="plotly_white",
     )
     return fig
@@ -655,6 +723,11 @@ app.layout = html.Div(
 
                         html.Hr(),
 
+                        html.H2("Training Stress Score", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-tss-history"),
+
+                        html.Hr(),
+
                         html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-pdc-params-history"),
 
@@ -680,6 +753,7 @@ app.layout = html.Div(
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-all-mmp",            "figure"),
+    Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
@@ -715,6 +789,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_all_mmp(mmp_all, rides),
+        fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
     )
