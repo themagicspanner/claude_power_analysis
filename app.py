@@ -266,44 +266,129 @@ def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
     return fig
 
 
-def fig_mmp_vs_90day(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
-    ride_date = ride["ride_date"]
-    cutoff    = (pd.to_datetime(ride_date) - pd.Timedelta(days=90)).date().isoformat()
+def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
+                live_pdc: dict | None = None) -> go.Figure:
+    """Combined MMP and PDC chart for a single ride.
 
-    window = mmp_all[
-        mmp_all["ride_date"].between(cutoff, ride_date)
-        & (mmp_all["ride_id"] != ride["id"])
-    ]
-    best_90   = window.groupby("duration_s")["power"].max().reset_index().sort_values("duration_s")
+    Overlays this ride's raw MMP on the sigmoid-decayed MMP envelope and
+    fitted two-component model (aerobic green fill / anaerobic orange fill).
+
+    If live_pdc is provided its fitted parameters are used directly so the
+    chart shares the same values as the W'bal and TSS component charts.
+    """
+    ride_date     = ride["ride_date"]
+    ride_date_obj = datetime.date.fromisoformat(ride_date)
+    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window    = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
     this_ride = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
 
     fig = go.Figure()
-    if not best_90.empty:
+
+    if not window.empty:
+        window["age_days"]   = window["ride_date"].apply(
+            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+        window["aged_power"] = window["power"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        raw = (
+            window.groupby("duration_s")["power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+
+        # Resolve model parameters
+        ok = False
+        if live_pdc is not None:
+            AWC, Pmax, MAP, tau2 = (
+                live_pdc["AWC"], live_pdc["Pmax"],
+                live_pdc["MAP"], live_pdc["tau2"],
+            )
+            ok = True
+        elif len(dur) >= 4:
+            popt, ok = _fit_power_curve(dur, pwr)
+            if ok:
+                AWC, Pmax, MAP, tau2 = popt
+
+        # Aerobic and total model fills (drawn first = behind data points)
+        if ok:
+            tau   = AWC / Pmax
+            t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
+            p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
+            p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_aer,
+                mode="lines", name="aerobic (MAP)",
+                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
+                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_tot,
+                mode="lines",
+                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
+                line=dict(color="darkorange", width=2, dash="dash"),
+            ))
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.02, y=0.08,
+                text=(
+                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
+                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
+                ),
+                showarrow=False, align="left",
+                bgcolor="white", bordercolor="#bbb", borderwidth=1,
+                font=dict(size=11),
+            )
+
+        # Raw hard max (faint reference, drawn above fills)
         fig.add_trace(go.Scatter(
-            x=best_90["duration_s"], y=best_90["power"],
-            mode="lines", name="90-day best",
-            fill="tozeroy", fillcolor="rgba(70,130,180,0.12)",
-            line=dict(color="steelblue", width=2, dash="dash"),
+            x=raw["duration_s"], y=raw["power"],
+            mode="lines", name="raw max",
+            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
         ))
-    fig.add_trace(go.Scatter(
-        x=this_ride["duration_s"], y=this_ride["power"],
-        mode="lines+markers", name=f"This ride ({ride_date})",
-        marker=dict(size=5), line=dict(color="tomato", width=2.2),
-    ))
+        # Sigmoid-aged MMP (model basis)
+        fig.add_trace(go.Scatter(
+            x=aged["duration_s"], y=aged["aged_power"],
+            mode="lines+markers", name="aged MMP",
+            marker=dict(size=4),
+            line=dict(color="steelblue", width=2.5),
+        ))
+
+    # This ride's MMP on top
+    if not this_ride.empty:
+        fig.add_trace(go.Scatter(
+            x=this_ride["duration_s"], y=this_ride["power"],
+            mode="lines+markers", name=f"this ride ({ride_date})",
+            marker=dict(size=5),
+            line=dict(color="tomato", width=2.2),
+        ))
+
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(
-            text=f"MMP — {ride['name'].replace('_', ' ')}<br>"
-                 f"<sup>vs 90-day best &nbsp;({cutoff} → {ride_date})</sup>",
+            text=(
+                f"MMP & Power Duration Curve — {ride['name'].replace('_', ' ')}<br>"
+                f"<sup>Decayed MMP at {ride_date} "
+                f"(inflection {PDC_INFLECTION} days · K={PDC_K})</sup>"
+            ),
             font=dict(size=14),
         ),
-        height=380, margin=dict(t=80, b=50, l=60, r=20),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
         legend=dict(x=0.98, xanchor="right", y=0.98),
     )
     return fig
+
+
+
 
 
 def _activities_table_data(rides: pd.DataFrame,
@@ -493,103 +578,6 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     return fig
 
 
-def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
-    """Power Duration Curve built from sigmoid-decayed MMP up to this ride.
-
-    Shows the raw-max reference, the decayed MMP envelope, and the fitted
-    two-component model with its key parameters annotated.
-    The model is always fitted on-the-fly from the same aged dataset that is
-    displayed, so the curve is guaranteed to match the plotted data.
-    """
-    ride_date     = ride["ride_date"]
-    ride_date_obj = datetime.date.fromisoformat(ride_date)
-    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
-
-    window = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
-
-    fig = go.Figure()
-
-    if not window.empty:
-        window["age_days"]   = window["ride_date"].apply(
-            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"] = window["power"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-        raw = (
-            window.groupby("duration_s")["power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-
-        fig.add_trace(go.Scatter(
-            x=raw["duration_s"], y=raw["power"],
-            mode="lines", name="raw max",
-            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
-        ))
-        fig.add_trace(go.Scatter(
-            x=aged["duration_s"], y=aged["aged_power"],
-            mode="lines+markers", name="decayed MMP",
-            marker=dict(size=4),
-            line=dict(color="steelblue", width=2.5),
-        ))
-
-        dur   = aged["duration_s"].to_numpy(dtype=float)
-        pwr   = aged["aged_power"].to_numpy(dtype=float)
-        popt, ok = _fit_power_curve(dur, pwr)
-        if ok:
-            AWC, Pmax, MAP, tau2 = popt
-            tau  = AWC / Pmax
-            t_sm = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_aerobic = MAP * (1.0 - np.exp(-t_sm / tau2))
-            p_total   = _power_model(t_sm, AWC, Pmax, MAP, tau2)
-            # Aerobic component — fills from zero
-            fig.add_trace(go.Scatter(
-                x=t_sm, y=p_aerobic,
-                mode="lines", name="aerobic (MAP)",
-                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
-                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
-            ))
-            # Total model — fills from aerobic line, shaded band = anaerobic
-            fig.add_trace(go.Scatter(
-                x=t_sm, y=p_total,
-                mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
-                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
-                line=dict(color="darkorange", width=2, dash="dash"),
-            ))
-            fig.add_annotation(
-                xref="paper", yref="paper",
-                x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
-
-    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
-                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
-    fig.update_layout(
-        title=dict(
-            text=(
-                f"Power Duration Curve — {ride['name'].replace('_', ' ')}<br>"
-                f"<sup>Decayed MMP at {ride_date} "
-                f"(inflection {PDC_INFLECTION} days · K={PDC_K})</sup>"
-            ),
-            font=dict(size=14),
-        ),
-        height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
-    )
-    return fig
 
 
 # ── W' balance ────────────────────────────────────────────────────────────────
@@ -1099,8 +1087,7 @@ app.layout = html.Div(
                         dcc.Graph(id="graph-power"),
                         dcc.Graph(id="graph-wbal"),
                         dcc.Graph(id="graph-tss-components"),
-                        dcc.Graph(id="graph-mmp-vs-90"),
-                        dcc.Graph(id="graph-pdc"),
+                        dcc.Graph(id="graph-mmp-pdc"),
 
                         html.Div(style={"height": "40px"}),
                     ]),
@@ -1163,8 +1150,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("graph-power",       "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
-    Output("graph-mmp-vs-90",      "figure"),
-    Output("graph-pdc",            "figure"),
+    Output("graph-mmp-pdc",        "figure"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1181,8 +1167,7 @@ def update_ride_charts(ride_id, _ver):
         fig_power(records, ride["name"]),
         fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
-        fig_mmp_vs_90day(ride, mmp_all),
-        fig_pdc_at_date(ride, mmp_all),
+        fig_mmp_pdc(ride, mmp_all, live_pdc),
     )
 
 
