@@ -939,19 +939,17 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     _tss_awc_bars = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
 
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
+        rows=2, cols=1, shared_xaxes=True,
         subplot_titles=[
-            "Total TSS — Daily bars + CTL / ATL / TSB",
             "Aerobic (MAP) — Daily bars + CTL / ATL / TSB",
             "Anaerobic (AWC) — Daily bars + CTL / ATL / TSB",
         ],
-        vertical_spacing=0.07,
+        vertical_spacing=0.09,
     )
 
     panels = [
-        (1, pmc_tot, "steelblue",    "crimson",    "Total"),
-        (2, pmc_map, "seagreen",     "darkorange", "MAP"),
-        (3, pmc_awc, "mediumpurple", "tomato",     "AWC"),
+        (1, pmc_map, "seagreen",     "darkorange", "MAP"),
+        (2, pmc_awc, "mediumpurple", "tomato",     "AWC"),
     ]
 
     for row, pmc, ctl_col, atl_col, label in panels:
@@ -961,14 +959,14 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         tsb_neg  = np.where(pmc["tsb"] <  0,  pmc["tsb"], 0.0)
 
         # TSS bars — drawn first so ATL/CTL/TSB lines sit on top
-        if row in (1, 2):
+        if row == 1:
             fig.add_trace(go.Bar(
                 x=dates, y=_tss_map_bars,
                 name="TSS MAP", marker_color="rgba(46,139,87,0.45)",
                 showlegend=show,
                 hovertemplate="TSS MAP: %{y:.0f}<extra></extra>",
             ), row=row, col=1)
-        if row in (1, 3):
+        if row == 2:
             fig.add_trace(go.Bar(
                 x=dates, y=_tss_awc_bars,
                 name="TSS AWC", marker_color="rgba(220,80,30,0.45)",
@@ -1018,11 +1016,11 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                          zeroline=False, row=row, col=1)
 
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey")
-    fig.update_xaxes(title_text="Date", row=3, col=1)
+    fig.update_xaxes(title_text="Date", row=2, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
         barmode="stack",
-        height=800,
+        height=580,
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
@@ -1079,54 +1077,6 @@ app.layout = html.Div(
                         html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
                         dcc.Graph(id="graph-pdc-params-history"),
 
-                        html.Hr(),
-
-                        html.H2("Activities", style={"marginBottom": "8px"}),
-                        dash_table.DataTable(
-                            id="activity-metrics-table",
-                            columns=[
-                                {"name": "Date",        "id": "date"},
-                                {"name": "Name",        "id": "name"},
-                                {"name": "Dur (min)",   "id": "duration_min"},
-                                {"name": "Avg W",       "id": "avg_power"},
-                                {"name": "Max W",       "id": "max_power"},
-                                {"name": "FTP (W)",     "id": "ftp"},
-                                {"name": "NP (W)",      "id": "np"},
-                                {"name": "IF",          "id": "if"},
-                                {"name": "TSS",         "id": "tss"},
-                                {"name": "TSS MAP",     "id": "tss_map"},
-                                {"name": "TSS AWC",     "id": "tss_awc"},
-                                {"name": "MAP (W)",     "id": "map_w"},
-                                {"name": "AWC (kJ)",    "id": "awc_kj"},
-                                {"name": "Pmax (W)",    "id": "pmax"},
-                            ],
-                            sort_action="native",
-                            style_table={"overflowX": "auto"},
-                            style_cell={
-                                "textAlign": "right",
-                                "padding": "5px 12px",
-                                "fontFamily": "sans-serif",
-                                "fontSize": "13px",
-                            },
-                            style_cell_conditional=[
-                                {"if": {"column_id": "date"}, "textAlign": "left"},
-                                {"if": {"column_id": "name"}, "textAlign": "left",
-                                 "minWidth": "160px"},
-                            ],
-                            style_header={
-                                "backgroundColor": "#f0f0f0",
-                                "fontWeight": "bold",
-                                "textAlign": "right",
-                            },
-                            style_header_conditional=[
-                                {"if": {"column_id": c}, "textAlign": "left"}
-                                for c in ("date", "name")
-                            ],
-                            style_data_conditional=[
-                                {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
-                            ],
-                        ),
-
                         html.Div(style={"height": "40px"}),
                     ]),
                 ]),
@@ -1170,7 +1120,6 @@ app.layout = html.Div(
     Output("graph-90day-mmp",          "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
-    Output("activity-metrics-table",   "data"),
     Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
@@ -1206,7 +1155,6 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_90day_mmp(mmp_all),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
-        _activities_table_data(rides, pdc_params),
         status,
     )
 
