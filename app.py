@@ -936,33 +936,8 @@ app.layout = html.Div(
 
         dcc.Tabs(
             id="tabs",
-            value="tab-activities",
+            value="tab-fitness",
             children=[
-
-                # ── Activities tab ─────────────────────────────────────────
-                dcc.Tab(label="Activities", value="tab-activities", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
-
-                        # Ride selector
-                        html.Div([
-                            html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
-                            dcc.Dropdown(
-                                id="ride-dropdown",
-                                clearable=False,
-                                style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
-                            ),
-                        ], style={"marginBottom": "20px"}),
-
-                        # Per-ride charts
-                        dcc.Graph(id="graph-power"),
-                        dcc.Graph(id="graph-wbal"),
-                        dcc.Graph(id="graph-tss-components"),
-                        dcc.Graph(id="graph-mmp-vs-90"),
-                        dcc.Graph(id="graph-pdc"),
-
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
 
                 # ── Fitness tab ────────────────────────────────────────────
                 dcc.Tab(label="Fitness", value="tab-fitness", children=[
@@ -1032,6 +1007,31 @@ app.layout = html.Div(
                                 {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
                             ],
                         ),
+
+                        html.Div(style={"height": "40px"}),
+                    ]),
+                ]),
+
+                # ── Activities tab ─────────────────────────────────────────
+                dcc.Tab(label="Activities", value="tab-activities", children=[
+                    html.Div(style={"paddingTop": "20px"}, children=[
+
+                        # Ride selector
+                        html.Div([
+                            html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
+                            dcc.Dropdown(
+                                id="ride-dropdown",
+                                clearable=False,
+                                style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
+                            ),
+                        ], style={"marginBottom": "20px"}),
+
+                        # Per-ride charts
+                        dcc.Graph(id="graph-power"),
+                        dcc.Graph(id="graph-wbal"),
+                        dcc.Graph(id="graph-tss-components"),
+                        dcc.Graph(id="graph-mmp-vs-90"),
+                        dcc.Graph(id="graph-pdc"),
 
                         html.Div(style={"height": "40px"}),
                     ]),
