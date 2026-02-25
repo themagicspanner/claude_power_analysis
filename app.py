@@ -37,7 +37,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from build_database import (
-    init_db, process_ride, backfill_pdc_params,
+    init_db, process_ride, backfill_pdc_params, recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
@@ -132,6 +132,34 @@ def load_records(ride_id: int) -> pd.DataFrame:
     return df
 
 
+# ── One-time DB migration ─────────────────────────────────────────────────────
+
+# Bump this when stored PDC params need to be fully recomputed.
+_DB_SCHEMA_VERSION = 2
+
+
+def _maybe_migrate(conn: sqlite3.Connection) -> None:
+    """Recompute all PDC params once if the DB schema version is stale.
+
+    Reads/writes the 'schema_version' key in the db_meta table.  After the
+    first successful migration the version is stored so subsequent startups
+    are fast.
+    """
+    row = conn.execute(
+        "SELECT value FROM db_meta WHERE key='schema_version'"
+    ).fetchone()
+    current = int(row[0]) if row else 0
+    if current < _DB_SCHEMA_VERSION:
+        print(f"[migrate] DB schema v{current} → v{_DB_SCHEMA_VERSION}: recomputing PDC params …")
+        recompute_all_pdc_params(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schema_version', ?)",
+            (str(_DB_SCHEMA_VERSION),),
+        )
+        conn.commit()
+        print("[migrate] Done.")
+
+
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 
 class _FitHandler(FileSystemEventHandler):
@@ -171,6 +199,53 @@ def _start_watcher() -> None:
     print(f"[watcher] Watching {FIT_DIR} for new .fit files …")
 
 
+# ── PDC on-the-fly helper ─────────────────────────────────────────────────────
+
+def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
+    """Fit the PDC on-the-fly for a ride using the same method as fig_pdc_at_date.
+
+    Returns a dict with keys AWC, Pmax, MAP, tau2, ftp (all floats), or None
+    if there is insufficient data for a fit.  Using this for W'bal and TSS
+    component charts guarantees they use the same parameters as the PDC chart.
+    """
+    ride_date     = ride["ride_date"]
+    ride_date_obj = datetime.date.fromisoformat(ride_date)
+    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
+    if window.empty:
+        return None
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    aged = (
+        window.groupby("duration_s")["aged_power"]
+        .max().reset_index().sort_values("duration_s")
+    )
+    dur = aged["duration_s"].to_numpy(dtype=float)
+    pwr = aged["aged_power"].to_numpy(dtype=float)
+
+    if len(dur) < 4:
+        return None
+
+    popt, ok = _fit_power_curve(dur, pwr)
+    if not ok:
+        return None
+
+    AWC, Pmax, MAP, tau2 = popt
+    return {
+        "AWC":  float(AWC),
+        "Pmax": float(Pmax),
+        "MAP":  float(MAP),
+        "tau2": float(tau2),
+        "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+    }
+
+
 # ── Figure builders ───────────────────────────────────────────────────────────
 
 def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
@@ -191,44 +266,125 @@ def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
     return fig
 
 
-def fig_mmp_vs_90day(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
-    ride_date = ride["ride_date"]
-    cutoff    = (pd.to_datetime(ride_date) - pd.Timedelta(days=90)).date().isoformat()
+def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
+                live_pdc: dict | None = None) -> go.Figure:
+    """Combined MMP and PDC chart for a single ride.
 
-    window = mmp_all[
-        mmp_all["ride_date"].between(cutoff, ride_date)
-        & (mmp_all["ride_id"] != ride["id"])
-    ]
-    best_90   = window.groupby("duration_s")["power"].max().reset_index().sort_values("duration_s")
+    Overlays this ride's raw MMP on the sigmoid-decayed MMP envelope and
+    fitted two-component model (aerobic green fill / anaerobic orange fill).
+
+    If live_pdc is provided its fitted parameters are used directly so the
+    chart shares the same values as the W'bal and TSS component charts.
+    """
+    ride_date     = ride["ride_date"]
+    ride_date_obj = datetime.date.fromisoformat(ride_date)
+    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window    = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
     this_ride = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
 
     fig = go.Figure()
-    if not best_90.empty:
+
+    if not window.empty:
+        window["age_days"]   = window["ride_date"].apply(
+            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+        window["aged_power"] = window["power"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        # Best aged MMP from other rides in the window (excludes this ride)
+        other = (
+            window[window["ride_id"] != ride["id"]]
+            .groupby("duration_s")["aged_power"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+
+        # Resolve model parameters
+        ok = False
+        if live_pdc is not None:
+            AWC, Pmax, MAP, tau2 = (
+                live_pdc["AWC"], live_pdc["Pmax"],
+                live_pdc["MAP"], live_pdc["tau2"],
+            )
+            ok = True
+        elif len(dur) >= 4:
+            popt, ok = _fit_power_curve(dur, pwr)
+            if ok:
+                AWC, Pmax, MAP, tau2 = popt
+
+        # Aerobic and total model fills (drawn first = behind data points)
+        if ok:
+            tau   = AWC / Pmax
+            t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
+            p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
+            p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_aer,
+                mode="lines", name="aerobic (MAP)",
+                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
+                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_tot,
+                mode="lines",
+                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
+                line=dict(color="darkorange", width=2, dash="dash"),
+            ))
+            fig.add_annotation(
+                xref="paper", yref="paper", x=0.02, y=0.08,
+                text=(
+                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
+                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
+                ),
+                showarrow=False, align="left",
+                bgcolor="white", bordercolor="#bbb", borderwidth=1,
+                font=dict(size=11),
+            )
+
+        # Best aged MMP from other rides in the PDC window
+        if not other.empty:
+            fig.add_trace(go.Scatter(
+                x=other["duration_s"], y=other["aged_power"],
+                mode="lines", name="other rides (best)",
+                line=dict(color="steelblue", width=1.5, dash="dot"),
+            ))
+
+    # This ride's MMP on top
+    if not this_ride.empty:
         fig.add_trace(go.Scatter(
-            x=best_90["duration_s"], y=best_90["power"],
-            mode="lines", name="90-day best",
-            fill="tozeroy", fillcolor="rgba(70,130,180,0.12)",
-            line=dict(color="steelblue", width=2, dash="dash"),
+            x=this_ride["duration_s"], y=this_ride["power"],
+            mode="lines+markers", name=f"this ride ({ride_date})",
+            marker=dict(size=5),
+            line=dict(color="tomato", width=2.2),
         ))
-    fig.add_trace(go.Scatter(
-        x=this_ride["duration_s"], y=this_ride["power"],
-        mode="lines+markers", name=f"This ride ({ride_date})",
-        marker=dict(size=5), line=dict(color="tomato", width=2.2),
-    ))
+
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(
-            text=f"MMP — {ride['name'].replace('_', ' ')}<br>"
-                 f"<sup>vs 90-day best &nbsp;({cutoff} → {ride_date})</sup>",
+            text=(
+                f"MMP & Power Duration Curve — {ride['name'].replace('_', ' ')}<br>"
+                f"<sup>Decayed MMP at {ride_date} "
+                f"(inflection {PDC_INFLECTION} days · K={PDC_K})</sup>"
+            ),
             font=dict(size=14),
         ),
-        height=380, margin=dict(t=80, b=50, l=60, r=20),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
         legend=dict(x=0.98, xanchor="right", y=0.98),
     )
     return fig
+
+
+
 
 
 def _activities_table_data(rides: pd.DataFrame,
@@ -418,103 +574,6 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     return fig
 
 
-def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
-    """Power Duration Curve built from sigmoid-decayed MMP up to this ride.
-
-    Shows the raw-max reference, the decayed MMP envelope, and the fitted
-    two-component model with its key parameters annotated.
-    The model is always fitted on-the-fly from the same aged dataset that is
-    displayed, so the curve is guaranteed to match the plotted data.
-    """
-    ride_date     = ride["ride_date"]
-    ride_date_obj = datetime.date.fromisoformat(ride_date)
-    cutoff        = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
-
-    window = mmp_all[mmp_all["ride_date"].between(cutoff, ride_date)].copy()
-
-    fig = go.Figure()
-
-    if not window.empty:
-        window["age_days"]   = window["ride_date"].apply(
-            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"] = window["power"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-        raw = (
-            window.groupby("duration_s")["power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-
-        fig.add_trace(go.Scatter(
-            x=raw["duration_s"], y=raw["power"],
-            mode="lines", name="raw max",
-            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
-        ))
-        fig.add_trace(go.Scatter(
-            x=aged["duration_s"], y=aged["aged_power"],
-            mode="lines+markers", name="decayed MMP",
-            marker=dict(size=4),
-            line=dict(color="steelblue", width=2.5),
-        ))
-
-        dur   = aged["duration_s"].to_numpy(dtype=float)
-        pwr   = aged["aged_power"].to_numpy(dtype=float)
-        popt, ok = _fit_power_curve(dur, pwr)
-        if ok:
-            AWC, Pmax, MAP, tau2 = popt
-            tau  = AWC / Pmax
-            t_sm = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_aerobic = MAP * (1.0 - np.exp(-t_sm / tau2))
-            p_total   = _power_model(t_sm, AWC, Pmax, MAP, tau2)
-            # Aerobic component — fills from zero
-            fig.add_trace(go.Scatter(
-                x=t_sm, y=p_aerobic,
-                mode="lines", name="aerobic (MAP)",
-                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
-                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
-            ))
-            # Total model — fills from aerobic line, shaded band = anaerobic
-            fig.add_trace(go.Scatter(
-                x=t_sm, y=p_total,
-                mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
-                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
-                line=dict(color="darkorange", width=2, dash="dash"),
-            ))
-            fig.add_annotation(
-                xref="paper", yref="paper",
-                x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
-
-    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
-                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
-    fig.update_layout(
-        title=dict(
-            text=(
-                f"Power Duration Curve — {ride['name'].replace('_', ' ')}<br>"
-                f"<sup>Decayed MMP at {ride_date} "
-                f"(inflection {PDC_INFLECTION} days · K={PDC_K})</sup>"
-            ),
-            font=dict(size=14),
-        ),
-        height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
-    )
-    return fig
 
 
 # ── W' balance ────────────────────────────────────────────────────────────────
@@ -553,23 +612,41 @@ def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,
 
 
 def fig_wbal(records: pd.DataFrame, ride: pd.Series,
-             pdc_params: pd.DataFrame) -> go.Figure:
-    """W' balance versus elapsed time for a single ride."""
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-    if params_row.empty or records["power"].isna().all():
+             pdc_params: pd.DataFrame,
+             live_pdc: dict | None = None) -> go.Figure:
+    """W' balance versus elapsed time for a single ride.
+
+    AWC and CP for the W'bal calculation are taken from live_pdc (on-the-fly
+    fit) when available, so the chart is guaranteed to match fig_pdc_at_date.
+    TSS annotation metrics fall back to stored pdc_params.
+    """
+    if records["power"].isna().all():
         return go.Figure()
 
-    r      = params_row.iloc[0]
-    AWC    = float(r["AWC"])
-    CP     = float(r["MAP"])   # aerobic asymptote ≡ critical power
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+
+    # Use on-the-fly params for the calculation; stored params for annotations.
+    if live_pdc is not None:
+        AWC = live_pdc["AWC"]
+        CP  = live_pdc["MAP"]
+    elif not params_row.empty:
+        r   = params_row.iloc[0]
+        AWC = float(r["AWC"])
+        CP  = float(r["MAP"])
+    else:
+        return go.Figure()
+
     awc_kj = AWC / 1000.0
 
-    tss_val     = r.get("tss")
-    np_val      = r.get("normalized_power")
-    if_val      = r.get("intensity_factor")
-    ftp_val     = r.get("ftp")
-    tss_map_val = r.get("tss_map")
-    tss_awc_val = r.get("tss_awc")
+    tss_val = np_val = if_val = ftp_val = tss_map_val = tss_awc_val = None
+    if not params_row.empty:
+        r           = params_row.iloc[0]
+        tss_val     = r.get("tss")
+        np_val      = r.get("normalized_power")
+        if_val      = r.get("intensity_factor")
+        ftp_val     = r.get("ftp")
+        tss_map_val = r.get("tss_map")
+        tss_awc_val = r.get("tss_awc")
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
@@ -655,15 +732,23 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
-                       pdc_params: pd.DataFrame) -> go.Figure:
+                       pdc_params: pd.DataFrame,
+                       live_pdc: dict | None = None) -> go.Figure:
     """Cumulative TSS_MAP and TSS_AWC stacked area chart over ride time."""
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-    if params_row.empty or records["power"].isna().all():
+    if records["power"].isna().all():
         return go.Figure()
 
-    r   = params_row.iloc[0]
-    CP  = float(r["MAP"])
-    ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+
+    if live_pdc is not None:
+        CP  = live_pdc["MAP"]
+        ftp = live_pdc["ftp"]
+    elif not params_row.empty:
+        r   = params_row.iloc[0]
+        CP  = float(r["MAP"])
+        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+    else:
+        return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
@@ -832,20 +917,23 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     pmc_map = _compute_pmc(daily["tss_map"])
     pmc_awc = _compute_pmc(daily["tss_awc"])
 
+    # Align daily TSS to the continuous date grid used by pmc_tot
+    _idx          = pd.DatetimeIndex(pmc_tot["date"])
+    _tss_map_bars = daily["tss_map"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_awc_bars = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
+
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True,
+        rows=2, cols=1, shared_xaxes=True,
         subplot_titles=[
-            "Total TSS — CTL / ATL / TSB",
-            "Aerobic (MAP) — CTL / ATL / TSB",
-            "Anaerobic (AWC) — CTL / ATL / TSB",
+            "Aerobic (MAP) — Daily bars + CTL / ATL / TSB",
+            "Anaerobic (AWC) — Daily bars + CTL / ATL / TSB",
         ],
-        vertical_spacing=0.07,
+        vertical_spacing=0.09,
     )
 
     panels = [
-        (1, pmc_tot, "steelblue",    "crimson",    "Total"),
-        (2, pmc_map, "seagreen",     "darkorange", "MAP"),
-        (3, pmc_awc, "mediumpurple", "tomato",     "AWC"),
+        (1, pmc_map, "seagreen",     "darkorange", "MAP"),
+        (2, pmc_awc, "mediumpurple", "tomato",     "AWC"),
     ]
 
     for row, pmc, ctl_col, atl_col, label in panels:
@@ -854,7 +942,23 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         tsb_pos  = np.where(pmc["tsb"] >= 0,  pmc["tsb"], 0.0)
         tsb_neg  = np.where(pmc["tsb"] <  0,  pmc["tsb"], 0.0)
 
-        # TSB shading — drawn first so lines sit on top
+        # TSS bars — drawn first so ATL/CTL/TSB lines sit on top
+        if row == 1:
+            fig.add_trace(go.Bar(
+                x=dates, y=_tss_map_bars,
+                name="TSS MAP", marker_color="rgba(46,139,87,0.45)",
+                showlegend=show,
+                hovertemplate="TSS MAP: %{y:.0f}<extra></extra>",
+            ), row=row, col=1)
+        if row == 2:
+            fig.add_trace(go.Bar(
+                x=dates, y=_tss_awc_bars,
+                name="TSS AWC", marker_color="rgba(220,80,30,0.45)",
+                showlegend=show,
+                hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
+            ), row=row, col=1)
+
+        # TSB shading — drawn after bars so lines sit on top
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_pos.round(1),
             mode="lines", fill="tozeroy",
@@ -896,10 +1000,11 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                          zeroline=False, row=row, col=1)
 
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey")
-    fig.update_xaxes(title_text="Date", row=3, col=1)
+    fig.update_xaxes(title_text="Date", row=2, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
-        height=800,
+        barmode="stack",
+        height=580,
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
@@ -912,6 +1017,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
+_maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
 _boot_conn.close()
 
@@ -936,8 +1042,28 @@ app.layout = html.Div(
 
         dcc.Tabs(
             id="tabs",
-            value="tab-activities",
+            value="tab-fitness",
             children=[
+
+                # ── Fitness tab ────────────────────────────────────────────
+                dcc.Tab(label="Fitness", value="tab-fitness", children=[
+                    html.Div(style={"paddingTop": "20px"}, children=[
+
+                        dcc.Graph(id="graph-90day-mmp"),
+
+                        html.Hr(),
+
+                        html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-pmc"),
+
+                        html.Hr(),
+
+                        html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
+                        dcc.Graph(id="graph-pdc-params-history"),
+
+                        html.Div(style={"height": "40px"}),
+                    ]),
+                ]),
 
                 # ── Activities tab ─────────────────────────────────────────
                 dcc.Tab(label="Activities", value="tab-activities", children=[
@@ -957,81 +1083,7 @@ app.layout = html.Div(
                         dcc.Graph(id="graph-power"),
                         dcc.Graph(id="graph-wbal"),
                         dcc.Graph(id="graph-tss-components"),
-                        dcc.Graph(id="graph-mmp-vs-90"),
-                        dcc.Graph(id="graph-pdc"),
-
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
-
-                # ── Fitness tab ────────────────────────────────────────────
-                dcc.Tab(label="Fitness", value="tab-fitness", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
-
-                        dcc.Graph(id="graph-90day-mmp"),
-
-                        html.Hr(),
-
-                        html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pmc"),
-
-                        html.Hr(),
-
-                        html.H2("Training Stress Score", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-tss-history"),
-
-                        html.Hr(),
-
-                        html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pdc-params-history"),
-
-                        html.Hr(),
-
-                        html.H2("Activities", style={"marginBottom": "8px"}),
-                        dash_table.DataTable(
-                            id="activity-metrics-table",
-                            columns=[
-                                {"name": "Date",        "id": "date"},
-                                {"name": "Name",        "id": "name"},
-                                {"name": "Dur (min)",   "id": "duration_min"},
-                                {"name": "Avg W",       "id": "avg_power"},
-                                {"name": "Max W",       "id": "max_power"},
-                                {"name": "FTP (W)",     "id": "ftp"},
-                                {"name": "NP (W)",      "id": "np"},
-                                {"name": "IF",          "id": "if"},
-                                {"name": "TSS",         "id": "tss"},
-                                {"name": "TSS MAP",     "id": "tss_map"},
-                                {"name": "TSS AWC",     "id": "tss_awc"},
-                                {"name": "MAP (W)",     "id": "map_w"},
-                                {"name": "AWC (kJ)",    "id": "awc_kj"},
-                                {"name": "Pmax (W)",    "id": "pmax"},
-                            ],
-                            sort_action="native",
-                            style_table={"overflowX": "auto"},
-                            style_cell={
-                                "textAlign": "right",
-                                "padding": "5px 12px",
-                                "fontFamily": "sans-serif",
-                                "fontSize": "13px",
-                            },
-                            style_cell_conditional=[
-                                {"if": {"column_id": "date"}, "textAlign": "left"},
-                                {"if": {"column_id": "name"}, "textAlign": "left",
-                                 "minWidth": "160px"},
-                            ],
-                            style_header={
-                                "backgroundColor": "#f0f0f0",
-                                "fontWeight": "bold",
-                                "textAlign": "right",
-                            },
-                            style_header_conditional=[
-                                {"if": {"column_id": c}, "textAlign": "left"}
-                                for c in ("date", "name")
-                            ],
-                            style_data_conditional=[
-                                {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
-                            ],
-                        ),
+                        dcc.Graph(id="graph-mmp-pdc"),
 
                         html.Div(style={"height": "40px"}),
                     ]),
@@ -1050,9 +1102,7 @@ app.layout = html.Div(
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-pmc",                "figure"),
-    Output("graph-tss-history",        "figure"),
     Output("graph-pdc-params-history", "figure"),
-    Output("activity-metrics-table",   "data"),
     Output("status-bar",               "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
@@ -1087,9 +1137,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_pmc(pdc_params, rides),
-        fig_tss_history(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
-        _activities_table_data(rides, pdc_params),
         status,
     )
 
@@ -1098,8 +1146,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("graph-power",       "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
-    Output("graph-mmp-vs-90",      "figure"),
-    Output("graph-pdc",            "figure"),
+    Output("graph-mmp-pdc",        "figure"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1109,12 +1156,14 @@ def update_ride_charts(ride_id, _ver):
     _, rides, mmp_all, pdc_params = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
+    # Fit on-the-fly once; share params with W'bal and TSS components so all
+    # activity charts use the same PDC parameters as the PDC curve chart.
+    live_pdc = _fit_pdc_for_ride(ride, mmp_all)
     return (
         fig_power(records, ride["name"]),
-        fig_wbal(records, ride, pdc_params),
-        fig_tss_components(records, ride, pdc_params),
-        fig_mmp_vs_90day(ride, mmp_all),
-        fig_pdc_at_date(ride, mmp_all),
+        fig_wbal(records, ride, pdc_params, live_pdc),
+        fig_tss_components(records, ride, pdc_params, live_pdc),
+        fig_mmp_pdc(ride, mmp_all, live_pdc),
     )
 
 
