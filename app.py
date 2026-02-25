@@ -1059,7 +1059,6 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     map_v  = f"{int(round(latest['MAP']))}"
     awc_v  = f"{latest['AWC']/1000:.1f}"
     pmax_v = f"{int(round(latest['Pmax']))}"
-    tau_v  = f"{int(round(latest['tau2']))}" if pd.notna(latest.get("tau2")) else "—"
     as_of  = latest["ride_date"]
 
     return [
@@ -1067,11 +1066,14 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
             "display": "flex", "gap": "12px", "alignItems": "flex-end",
             "flexWrap": "wrap", "marginBottom": "16px",
         }, children=[
+            html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
+                html.Div("Athlete", style=label_style),
+                html.Div("Mike Lauder", style={**value_style, "fontSize": "18px"}),
+            ]),
             card("FTP",  ftp_v,  "W"),
             card("MAP",  map_v,  "W"),
             card("AWC",  awc_v,  "kJ"),
             card("Pmax", pmax_v, "W"),
-            card("τ₂",   tau_v,  "s"),
             html.Div(
                 f"as of {as_of}",
                 style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
