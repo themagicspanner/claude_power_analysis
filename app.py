@@ -1013,6 +1013,73 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ── Metric summary boxes ──────────────────────────────────────────────────────
+
+def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
+    """Return a row of stat cards showing the most recent fitted PDC metrics."""
+    card_style = {
+        "background": "#f8f9fa",
+        "border": "1px solid #dee2e6",
+        "borderRadius": "8px",
+        "padding": "12px 20px",
+        "minWidth": "110px",
+        "textAlign": "center",
+        "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+    }
+    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px", "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def card(label, value, unit=""):
+        return html.Div(style=card_style, children=[
+            html.Div(label, style=label_style),
+            html.Div([
+                html.Span(value, style=value_style),
+                html.Span(unit,  style=unit_style),
+            ]),
+        ])
+
+    # Find the most recent ride that has PDC params
+    if pdc_params.empty or rides.empty:
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+
+    merged = (
+        pdc_params
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date", ascending=False)
+        .dropna(subset=["MAP", "AWC", "Pmax"])
+    )
+    if merged.empty:
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+
+    latest = merged.iloc[0]
+    ftp_v  = f"{int(round(latest['ftp']))}"  if pd.notna(latest.get("ftp"))  else "—"
+    map_v  = f"{int(round(latest['MAP']))}"
+    awc_v  = f"{latest['AWC']/1000:.1f}"
+    pmax_v = f"{int(round(latest['Pmax']))}"
+    tau_v  = f"{int(round(latest['tau2']))}" if pd.notna(latest.get("tau2")) else "—"
+    as_of  = latest["ride_date"]
+
+    return [
+        html.Div(style={
+            "display": "flex", "gap": "12px", "alignItems": "flex-end",
+            "flexWrap": "wrap", "marginBottom": "16px",
+        }, children=[
+            card("FTP",  ftp_v,  "W"),
+            card("MAP",  map_v,  "W"),
+            card("AWC",  awc_v,  "kJ"),
+            card("Pmax", pmax_v, "W"),
+            card("τ₂",   tau_v,  "s"),
+            html.Div(
+                f"as of {as_of}",
+                style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
+            ),
+        ]),
+    ]
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _boot_conn = sqlite3.connect(DB_PATH)
@@ -1039,6 +1106,9 @@ app.layout = html.Div(
         html.Div(id="status-bar", style={
             "fontSize": "12px", "color": "#888", "marginBottom": "12px",
         }),
+
+        # Current fitness metric boxes
+        html.Div(id="metric-boxes"),
 
         dcc.Tabs(
             id="tabs",
@@ -1104,6 +1174,7 @@ app.layout = html.Div(
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
+    Output("metric-boxes",             "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
@@ -1139,6 +1210,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
+        _metric_boxes(pdc_params, rides),
     )
 
 
