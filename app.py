@@ -413,12 +413,13 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     return fig
 
 
-def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame,
-                    pdc_params: pd.DataFrame) -> go.Figure:
+def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame) -> go.Figure:
     """Power Duration Curve built from sigmoid-decayed MMP up to this ride.
 
     Shows the raw-max reference, the decayed MMP envelope, and the fitted
     two-component model with its key parameters annotated.
+    The model is always fitted on-the-fly from the same aged dataset that is
+    displayed, so the curve is guaranteed to match the plotted data.
     """
     ride_date     = ride["ride_date"]
     ride_date_obj = datetime.date.fromisoformat(ride_date)
@@ -456,12 +457,12 @@ def fig_pdc_at_date(ride: pd.Series, mmp_all: pd.DataFrame,
             line=dict(color="steelblue", width=2.5),
         ))
 
-        params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-        if not params_row.empty:
-            r    = params_row.iloc[0]
-            AWC, Pmax, MAP, tau2 = r["AWC"], r["Pmax"], r["MAP"], r["tau2"]
+        dur   = aged["duration_s"].to_numpy(dtype=float)
+        pwr   = aged["aged_power"].to_numpy(dtype=float)
+        popt, ok = _fit_power_curve(dur, pwr)
+        if ok:
+            AWC, Pmax, MAP, tau2 = popt
             tau  = AWC / Pmax
-            dur  = aged["duration_s"].to_numpy(dtype=float)
             t_sm = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aerobic = MAP * (1.0 - np.exp(-t_sm / tau2))
             p_total   = _power_model(t_sm, AWC, Pmax, MAP, tau2)
@@ -1065,7 +1066,7 @@ def update_ride_charts(ride_id, _ver):
         fig_wbal(records, ride, pdc_params),
         fig_tss_components(records, ride, pdc_params),
         fig_mmp_vs_90day(ride, mmp_all),
-        fig_pdc_at_date(ride, mmp_all, pdc_params),
+        fig_pdc_at_date(ride, mmp_all),
     )
 
 
