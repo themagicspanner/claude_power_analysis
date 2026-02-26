@@ -536,6 +536,13 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
+        x=df["ride_date"], y=df["ltp"],
+        mode="lines+markers", name="LTP (W)",
+        line=dict(color="darkorange", width=2),
+        marker=dict(size=5),
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["AWC"] / 1000,
         mode="lines+markers", name="AWC (kJ)",
         line=dict(color="steelblue", width=2, dash="dot"),

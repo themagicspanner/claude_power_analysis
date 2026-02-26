@@ -185,7 +185,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             intensity_factor REAL,
             tss              REAL,
             tss_map          REAL,
-            tss_awc          REAL
+            tss_awc          REAL,
+            ltp              REAL
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -205,6 +206,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "tss              REAL",
         "tss_map          REAL",
         "tss_awc          REAL",
+        "ltp              REAL",
     ]:
         try:
             conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
@@ -319,6 +321,9 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
 
     AWC, Pmax, MAP, tau2 = popt
 
+    # Lower threshold power (first lactate turn point)
+    ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
     # ── TSS metrics ───────────────────────────────────────────────────────────
     ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
 
@@ -342,8 +347,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, ltp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -357,6 +362,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             round(tss,     1),
             round(tss_map, 1),
             round(tss_awc, 1),
+            round(ltp,     1),
         ),
     )
     conn.commit()
