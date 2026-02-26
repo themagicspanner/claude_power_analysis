@@ -1489,16 +1489,20 @@ app.layout = html.Div(
 
                 # Per-ride charts
                 dcc.Graph(id="graph-power"),
-                html.Hr(),
-                dcc.Graph(id="graph-hr"),
+                html.Div(id="hr-section", children=[
+                    html.Hr(),
+                    dcc.Graph(id="graph-hr"),
+                ]),
                 html.Hr(),
                 dcc.Graph(id="graph-wbal"),
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-mmp-pdc"),
-                html.Hr(),
-                dcc.Graph(id="graph-mmh"),
+                html.Div(id="mmh-section", children=[
+                    html.Hr(),
+                    dcc.Graph(id="graph-mmh"),
+                ]),
 
                 html.Div(style={"height": "40px"}),
             ]),
@@ -1578,6 +1582,8 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("graph-mmp-pdc",        "figure"),
     Output("graph-mmh",            "figure"),
     Output("activity-metric-boxes", "children"),
+    Output("hr-section",           "style"),
+    Output("mmh-section",          "style"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1590,6 +1596,11 @@ def update_ride_charts(ride_id, _ver):
     # Fit on-the-fly once; share params with W'bal and TSS components so all
     # activity charts use the same PDC parameters as the PDC curve chart.
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
+
+    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
+    hr_style  = {} if has_hr else {"display": "none"}
+    mmh_style = {} if has_hr else {"display": "none"}
+
     return (
         fig_power(records, ride["name"]),
         fig_hr(records),
@@ -1598,6 +1609,8 @@ def update_ride_charts(ride_id, _ver):
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
         _activity_metric_boxes(ride, pdc_params, live_pdc),
+        hr_style,
+        mmh_style,
     )
 
 
