@@ -982,9 +982,30 @@ _FRESHNESS_CFG = {
 }
 
 
+def _days_to_trainable(atl: float, ctl: float,
+                        threshold_pct: float = 0.0,
+                        max_days: int = 60) -> int | None:
+    """Days of complete rest until TSB > -threshold_pct * CTL.
+
+    threshold_pct = 0.30 for the MAP aerobic boundary (TSB > -30% CTL),
+                  = 0.0  for the AWC high-intensity boundary (TSB > 0).
+    Uses the same ATL τ=7 d / CTL τ=42 d decay as _compute_pmc.
+    Returns None if the threshold is not crossed within max_days.
+    """
+    k_atl = 1.0 - np.exp(-1.0 / 7.0)
+    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
+    for day in range(1, max_days + 1):
+        tsb = ctl - atl                    # form before that day's TSS
+        atl = atl + k_atl * (0.0 - atl)   # rest: TSS = 0
+        ctl = ctl + k_ctl * (0.0 - ctl)
+        if tsb > -threshold_pct * ctl:
+            return day
+    return None
+
+
 def _compute_freshness_status(pdc_params: pd.DataFrame,
                                rides: pd.DataFrame) -> tuple:
-    """Return (status, tsb_map, tsb_awc, map_threshold) based on today's TSB values.
+    """Return (status, tsb_map, tsb_awc, map_threshold, atl_map, ctl_map, atl_awc, ctl_awc).
 
     The aerobic cutoff is -30 % of the current MAP CTL (training load), so a
     small fatigue deficit doesn't immediately block low-intensity work.
@@ -992,17 +1013,18 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
     status is 'green'  — TSB_MAP > threshold AND TSB_AWC > 0 (ready for anything)
               'amber'  — TSB_MAP > threshold but TSB_AWC ≤ 0  (aerobic / low-intensity only)
               'red'    — TSB_MAP ≤ threshold                   (rest / recovery)
-    Returns (None, None, None, None) when there is insufficient data.
+    Returns a tuple of Nones when there is insufficient data.
     """
+    _none = (None,) * 8
     if pdc_params.empty or not {"tss_map", "tss_awc"}.issubset(pdc_params.columns):
-        return None, None, None, None
+        return _none
 
     df = (
         pdc_params.dropna(subset=["tss_map", "tss_awc"])
         .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
     )
     if df.empty:
-        return None, None, None, None
+        return _none
 
     df["ride_date"] = pd.to_datetime(df["ride_date"])
     daily = df.groupby("ride_date")[["tss_map", "tss_awc"]].sum()
@@ -1011,7 +1033,7 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
     pmc_awc = _compute_pmc(daily["tss_awc"])
 
     if pmc_map.empty or pmc_awc.empty:
-        return None, None, None, None
+        return _none
 
     tsb_map       = float(pmc_map["tsb"].iloc[-1])
     tsb_awc       = float(pmc_awc["tsb"].iloc[-1])
@@ -1025,7 +1047,11 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
     else:
         status = "red"
 
-    return status, tsb_map, tsb_awc, map_threshold
+    return (
+        status, tsb_map, tsb_awc, map_threshold,
+        float(pmc_map["atl"].iloc[-1]), ctl_map,
+        float(pmc_awc["atl"].iloc[-1]), float(pmc_awc["ctl"].iloc[-1]),
+    )
 
 
 # ── Metric summary boxes ──────────────────────────────────────────────────────
@@ -1148,14 +1174,27 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     as_of  = latest["ride_date"]
 
     # Freshness status card
-    status, tsb_map, tsb_awc, map_threshold = _compute_freshness_status(pdc_params, rides)
+    status, tsb_map, tsb_awc, map_threshold, \
+        atl_map, ctl_map, atl_awc, ctl_awc = _compute_freshness_status(pdc_params, rides)
     if status is not None:
         cfg = _FRESHNESS_CFG[status]
-        freshness_card = html.Div(style={
-            **card_style,
-            "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
-            "minWidth": "130px",
-        }, children=[
+
+        # Days-until-trainable countdown
+        if status == "red":
+            days = _days_to_trainable(atl_map, ctl_map, threshold_pct=0.30)
+            days_text  = (f"Aerobic in {days} day{'s' if days != 1 else ''}"
+                          if days is not None else "Recovery > 60 days")
+            days_color = _FRESHNESS_CFG["amber"]["color"]
+        elif status == "amber":
+            days = _days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
+            days_text  = (f"High intensity in {days} day{'s' if days != 1 else ''}"
+                          if days is not None else "High intensity > 60 days")
+            days_color = _FRESHNESS_CFG["green"]["color"]
+        else:
+            days_text  = None
+            days_color = None
+
+        card_children = [
             html.Div("Freshness", style=label_style),
             html.Div(style={
                 "display": "flex", "alignItems": "center",
@@ -1173,7 +1212,18 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
                 f"{cfg['desc']}  ·  MAP {tsb_map:+.1f} (cut {map_threshold:.1f}) / AWC {tsb_awc:+.1f}",
                 style={"fontSize": "10px", "color": "#888", "marginTop": "4px"},
             ),
-        ])
+        ]
+        if days_text is not None:
+            card_children.append(html.Div(days_text, style={
+                "fontSize": "10px", "fontWeight": "600",
+                "color": days_color, "marginTop": "3px",
+            }))
+
+        freshness_card = html.Div(style={
+            **card_style,
+            "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
+            "minWidth": "130px",
+        }, children=card_children)
     else:
         freshness_card = None
 
