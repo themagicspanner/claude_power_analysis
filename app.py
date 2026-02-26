@@ -1350,12 +1350,10 @@ app.layout = html.Div(
 
                 html.Hr(),
 
-                html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
                 dcc.Graph(id="graph-pmc"),
 
                 html.Hr(),
 
-                html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
                 dcc.Graph(id="graph-pdc-params-history"),
 
                 html.Div(style={"height": "40px"}),
