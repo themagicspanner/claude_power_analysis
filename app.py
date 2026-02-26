@@ -1392,8 +1392,11 @@ app.layout = html.Div(
 
                 # Per-ride charts
                 dcc.Graph(id="graph-power"),
+                html.Hr(),
                 dcc.Graph(id="graph-wbal"),
+                html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
+                html.Hr(),
                 dcc.Graph(id="graph-mmp-pdc"),
 
                 html.Div(style={"height": "40px"}),
