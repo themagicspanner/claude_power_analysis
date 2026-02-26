@@ -656,12 +656,13 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
 
 def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
                      ftp: float, CP: float) -> tuple:
-    """Return cumulative TSS_MAP and TSS_AWC series over the ride.
+    """Return TSS rate and cumulative TSS_MAP / TSS_AWC series over the ride.
 
     Uses a 30-second rolling average (same-length via 'same' convolution),
     splits at CP proportionally, and integrates second-by-second.
 
-    Returns (t_min, cum_tss_map, cum_tss_awc) — all same length as elapsed_s.
+    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph)
+    where rate_*_ph are the instantaneous TSS rates in TSS/hour.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     kernel = np.ones(30) / 30.0
@@ -679,17 +680,25 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
         f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
 
-    tss_rate     = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
+    if ftp > 0:
+        tss_rate_ph = (p_30s / ftp) ** 2 * 100.0        # TSS per hour at each point
+        tss_rate    = tss_rate_ph * dt / 3600.0          # TSS increment per sample
+    else:
+        tss_rate_ph = np.zeros_like(p_30s)
+        tss_rate    = np.zeros_like(p_30s)
+
     cum_tss_map  = np.cumsum(tss_rate * f_map)
     cum_tss_awc  = np.cumsum(tss_rate * f_awc)
+    rate_map_ph  = tss_rate_ph * f_map
+    rate_awc_ph  = tss_rate_ph * f_awc
     t_min        = elapsed_s / 60.0
-    return t_min, cum_tss_map, cum_tss_awc
+    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
-    """Cumulative TSS_MAP and TSS_AWC stacked area chart over ride time."""
+    """Instantaneous TSS rate (TSS/h) split into MAP and AWC components."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -707,35 +716,35 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
-    t_min, cum_map, cum_awc = _tss_rate_series(elapsed, power, ftp, CP)
+    t_min, cum_map, cum_awc, rate_map, rate_awc = _tss_rate_series(elapsed, power, ftp, CP)
 
     final_map = cum_map[-1]
     final_awc = cum_awc[-1]
-    cum_total = cum_map + cum_awc
+    rate_total = rate_map + rate_awc
 
     fig = go.Figure()
 
     # Aerobic layer (fills from zero)
     fig.add_trace(go.Scatter(
-        x=t_min, y=cum_map,
-        mode="lines", name=f"TSS_MAP ({final_map:.0f})",
+        x=t_min, y=rate_map,
+        mode="lines", name=f"TSS_MAP (total {final_map:.0f})",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
     ))
     # Anaerobic layer (fills from aerobic to total)
     fig.add_trace(go.Scatter(
-        x=t_min, y=cum_total,
-        mode="lines", name=f"TSS_AWC ({final_awc:.0f})",
+        x=t_min, y=rate_total,
+        mode="lines", name=f"TSS_AWC (total {final_awc:.0f})",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
     ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Cumulative TSS",
+    fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
-        title=dict(text="TSS Components", font=dict(size=14)),
+        title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
