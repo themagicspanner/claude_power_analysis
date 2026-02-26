@@ -822,7 +822,7 @@ def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
     if daily_tss.empty:
         return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
 
-    dates = pd.date_range(daily_tss.index.min(), daily_tss.index.max(), freq="D")
+    dates = pd.date_range(daily_tss.index.min(), pd.Timestamp.today().normalize(), freq="D")
     tss   = daily_tss.reindex(dates, fill_value=0.0)
 
     k_atl = 1.0 - np.exp(-1.0 / 7.0)
