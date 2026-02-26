@@ -2,4 +2,43 @@ html, body {
     margin: 0;
     padding: 0;
     overflow: hidden;
+    background: #12151e;
+    color: #e2e6f0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #2d3448;
+}
+
+/* ── Dash dropdown dark styling ─────────────────────────────────────────── */
+.Select-control {
+    background-color: #1e2433 !important;
+    border-color: #2d3448 !important;
+}
+.Select--single > .Select-control .Select-value,
+.Select-value-label,
+.Select-placeholder {
+    color: #e2e6f0 !important;
+}
+.Select-input > input {
+    color: #e2e6f0 !important;
+}
+.Select-menu-outer {
+    background-color: #1e2433 !important;
+    border-color: #2d3448 !important;
+}
+.VirtualizedSelectOption {
+    background-color: #1e2433 !important;
+    color: #e2e6f0 !important;
+}
+.VirtualizedSelectFocusedOption {
+    background-color: #252b3b !important;
+    color: #ffffff !important;
+}
+.Select-arrow {
+    border-top-color: #8892a4 !important;
+}
+.Select-arrow-zone:hover .Select-arrow {
+    border-top-color: #e2e6f0 !important;
 }

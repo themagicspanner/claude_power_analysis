@@ -260,12 +260,12 @@ def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
         ))
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
+    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="#2d3448")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
         title=dict(text=ride_name.replace("_", " "), font=dict(size=15)),
         height=260, margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False, template="plotly_white",
+        showlegend=False, template="plotly_dark",
     )
     return fig
 
@@ -360,8 +360,8 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
-                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
+                     title_text="Duration", showgrid=True, gridcolor="#2d3448")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
         title=dict(
             text=(
@@ -372,7 +372,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             font=dict(size=14),
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
+        template="plotly_dark",
         legend=dict(x=0.98, xanchor="right", y=0.98),
     )
     return fig
@@ -486,8 +486,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
-                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
+                     title_text="Duration", showgrid=True, gridcolor="#2d3448")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
         title=dict(
             text=(
@@ -498,7 +498,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             font=dict(size=14),
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
+        template="plotly_dark",
         legend=dict(x=0.98, xanchor="right", y=0.98),
     )
     return fig
@@ -550,8 +550,8 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         marker=dict(size=5),
     ), secondary_y=True)
 
-    fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
+    fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="#2d3448")
+    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="#2d3448",
                      rangemode="tozero", secondary_y=False)
     fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
                      rangemode="tozero", secondary_y=True)
@@ -559,7 +559,7 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         title=dict(text="PDC Parameter History", font=dict(size=14)),
         height=380,
         margin=dict(t=60, b=50, l=60, r=60),
-        template="plotly_white",
+        template="plotly_dark",
         legend=dict(x=0.02, y=0.98),
     )
     return fig
@@ -650,16 +650,16 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="#2d3448")
     fig.update_yaxes(title_text="W'bal (kJ)",
-                     showgrid=True, gridcolor="lightgrey",
+                     showgrid=True, gridcolor="#2d3448",
                      range=[-awc_kj * 0.05, awc_kj * 1.12])
     fig.update_layout(
         title=dict(text="W' Balance", font=dict(size=14)),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
-        template="plotly_white",
+        template="plotly_dark",
     )
     return fig
 
@@ -752,14 +752,14 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="#2d3448")
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
-        template="plotly_white",
+        template="plotly_dark",
         legend=dict(x=0.02, y=0.98),
     )
     return fig
@@ -811,13 +811,13 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     ))
 
     fig.update_xaxes(title_text="Date", showgrid=False)
-    fig.update_yaxes(title_text="TSS", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="TSS", showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
         title=dict(text="Training Stress Score per Ride (MAP + AWC split)", font=dict(size=14)),
         barmode="stack",
         height=320,
         margin=dict(t=55, b=50, l=60, r=20),
-        template="plotly_white",
+        template="plotly_dark",
     )
     return fig
 
@@ -965,19 +965,19 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         ), row=row, col=1)
 
         fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=row, col=1)
-        fig.update_yaxes(title_text="Load", showgrid=True, gridcolor="lightgrey",
+        fig.update_yaxes(title_text="Load", showgrid=True, gridcolor="#2d3448",
                          zeroline=False, row=row, col=1)
 
-    fig.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig.update_xaxes(showgrid=True, gridcolor="#2d3448")
     fig.update_xaxes(title_text="Date", row=2, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
         barmode="stack",
         height=580,
         margin=dict(t=70, b=50, l=70, r=20),
-        template="plotly_white",
+        template="plotly_dark",
         hovermode="x unified",
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)"),
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(30,36,51,0.9)"),
     )
     return fig
 
@@ -986,19 +986,19 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 _FRESHNESS_CFG = {
     "green": {
-        "color": "#16a34a", "label": "Ready",
+        "color": "#22c55e", "label": "Ready",
         "desc": "All training",
-        "bg": "#f0fdf4", "border": "#86efac",
+        "bg": "#0f2d1c", "border": "#1d5e36",
     },
     "amber": {
-        "color": "#d97706", "label": "Aerobic Only",
+        "color": "#f59e0b", "label": "Aerobic Only",
         "desc": "Low intensity",
-        "bg": "#fffbeb", "border": "#fcd34d",
+        "bg": "#2d2200", "border": "#7a5f00",
     },
     "red": {
-        "color": "#dc2626", "label": "Fatigued",
+        "color": "#f87171", "label": "Fatigued",
         "desc": "Rest / recovery",
-        "bg": "#fef2f2", "border": "#fca5a5",
+        "bg": "#2d0f0f", "border": "#7a2020",
     },
 }
 
@@ -1091,14 +1091,14 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
                            live_pdc: dict | None = None) -> list:
     """Metric cards showing the PDC state and ride metrics for a single activity."""
     card_style = {
-        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "background": "#1e2433", "border": "1px solid #2d3448",
         "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
-        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.3)",
     }
-    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+    label_style = {"fontSize": "11px", "color": "#8892a4", "marginBottom": "4px",
                    "textTransform": "uppercase", "letterSpacing": "0.05em"}
-    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
-    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#e2e6f0"}
+    unit_style  = {"fontSize": "12px", "color": "#8892a4", "marginLeft": "3px"}
 
     def card(label, value, unit=""):
         return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
@@ -1136,7 +1136,7 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
 
     divider = html.Div(style={
-        "width": "1px", "background": "#dee2e6",
+        "width": "1px", "background": "#2d3448",
         "alignSelf": "stretch", "margin": "0 4px",
     })
 
@@ -1163,14 +1163,14 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
 def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     """Return a row of stat cards showing the most recent fitted PDC metrics."""
     card_style = {
-        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "background": "#1e2433", "border": "1px solid #2d3448",
         "borderRadius": "8px", "padding": "12px 20px", "minWidth": "110px",
-        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.3)",
     }
-    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+    label_style = {"fontSize": "11px", "color": "#8892a4", "marginBottom": "4px",
                    "textTransform": "uppercase", "letterSpacing": "0.05em"}
-    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
-    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#e2e6f0"}
+    unit_style  = {"fontSize": "12px", "color": "#8892a4", "marginLeft": "3px"}
 
     def card(label, value, unit=""):
         return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
@@ -1261,7 +1261,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
                     style={
                         "width": "40px", "height": "40px",
                         "borderRadius": "50%", "objectFit": "cover",
-                        "border": "2px solid #dee2e6",
+                        "border": "2px solid #2d3448",
                     },
                 ),
                 html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
@@ -1313,7 +1313,8 @@ _NAV_ACTIVE = {**_NAV_BASE,
 }
 
 app.layout = html.Div(
-    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0"},
+    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0",
+           "background": "#12151e", "color": "#e2e6f0"},
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
@@ -1338,7 +1339,8 @@ app.layout = html.Div(
         ]),
 
         # ── Main content ───────────────────────────────────────────────────
-        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto"}, children=[
+        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto",
+                        "background": "#12151e"}, children=[
 
             # ── Fitness page ───────────────────────────────────────────────
             html.Div(id="page-fitness", style={"display": "block"}, children=[
@@ -1364,7 +1366,8 @@ app.layout = html.Div(
 
                 # Ride selector
                 html.Div([
-                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
+                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px",
+                                                        "color": "#e2e6f0"}),
                     dcc.Dropdown(
                         id="ride-dropdown",
                         clearable=False,
