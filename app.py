@@ -32,7 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State
+from dash import dcc, html, dash_table, Input, Output, State, ctx
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -113,7 +113,7 @@ def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
         "SELECT ride_id, AWC, Pmax, MAP, tau2, ftp, normalized_power, intensity_factor,"
-        " tss, tss_map, tss_awc FROM pdc_params",
+        " tss, tss_map, tss_awc, ltp FROM pdc_params",
         conn,
     )
     conn.close()
@@ -171,15 +171,18 @@ class _FitHandler(FileSystemEventHandler):
         # Small delay to let the file finish copying before we read it
         time.sleep(1)
         print(f"[watcher] New file detected: {path}")
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             init_db(conn)
             process_ride(conn, path)
-            conn.close()
             _reload()
             print(f"[watcher] Processed and reloaded data.")
         except Exception as exc:
             print(f"[watcher] Error processing {path}: {exc}")
+        finally:
+            if conn is not None:
+                conn.close()
 
     def on_created(self, event):
         if not event.is_directory:
@@ -243,6 +246,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "MAP":  float(MAP),
         "tau2": float(tau2),
         "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+        "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
 
 
@@ -333,20 +337,10 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_tot,
                 mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                name="model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
-            fig.add_annotation(
-                xref="paper", yref="paper", x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
 
         # Best aged MMP from other rides in the PDC window
         if not other.empty:
@@ -486,21 +480,10 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_total,
                 mode="lines",
-                name=f"model  AWC={AWC/1000:.1f} kJ  MAP={MAP:.0f} W",
+                name="model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
-            fig.add_annotation(
-                xref="paper", yref="paper",
-                x=0.02, y=0.08,
-                text=(
-                    f"AWC = {AWC/1000:.1f} kJ   Pmax = {Pmax:.0f} W<br>"
-                    f"MAP = {MAP:.0f} W   τ₂ = {tau2:.0f} s   (τ = {tau:.0f} s)"
-                ),
-                showarrow=False, align="left",
-                bgcolor="white", bordercolor="#bbb", borderwidth=1,
-                font=dict(size=11),
-            )
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
@@ -554,6 +537,13 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
+        x=df["ride_date"], y=df["ltp"],
+        mode="lines+markers", name="LTP (W)",
+        line=dict(color="darkorange", width=2),
+        marker=dict(size=5),
+    ), secondary_y=False)
+
+    fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["AWC"] / 1000,
         mode="lines+markers", name="AWC (kJ)",
         line=dict(color="steelblue", width=2, dash="dot"),
@@ -562,8 +552,9 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
 
     fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
-                     secondary_y=False)
-    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False, secondary_y=True)
+                     rangemode="tozero", secondary_y=False)
+    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
+                     rangemode="tozero", secondary_y=True)
     fig.update_layout(
         title=dict(text="PDC Parameter History", font=dict(size=14)),
         height=380,
@@ -638,16 +629,6 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
 
     awc_kj = AWC / 1000.0
 
-    tss_val = np_val = if_val = ftp_val = tss_map_val = tss_awc_val = None
-    if not params_row.empty:
-        r           = params_row.iloc[0]
-        tss_val     = r.get("tss")
-        np_val      = r.get("normalized_power")
-        if_val      = r.get("intensity_factor")
-        ftp_val     = r.get("ftp")
-        tss_map_val = r.get("tss_map")
-        tss_awc_val = r.get("tss_awc")
-
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
@@ -673,22 +654,8 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
                      range=[-awc_kj * 0.05, awc_kj * 1.12])
-    metrics = f"CP = {CP:.0f} W   W' = {awc_kj:.1f} kJ"
-    if pd.notna(tss_val) and pd.notna(np_val) and pd.notna(if_val):
-        metrics += (
-            f"   |   FTP = {ftp_val:.0f} W   NP = {np_val:.0f} W"
-            f"   IF = {if_val:.2f}   TSS = {tss_val:.0f}"
-        )
-    if pd.notna(tss_map_val) and pd.notna(tss_awc_val):
-        metrics += (
-            f"   (MAP: {tss_map_val:.0f}  AWC: {tss_awc_val:.0f})"
-        )
-
     fig.update_layout(
-        title=dict(
-            text=f"W' Balance — {metrics}",
-            font=dict(size=14),
-        ),
+        title=dict(text="W' Balance", font=dict(size=14)),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
@@ -701,12 +668,13 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
 
 def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
                      ftp: float, CP: float) -> tuple:
-    """Return cumulative TSS_MAP and TSS_AWC series over the ride.
+    """Return TSS rate and cumulative TSS_MAP / TSS_AWC series over the ride.
 
     Uses a 30-second rolling average (same-length via 'same' convolution),
     splits at CP proportionally, and integrates second-by-second.
 
-    Returns (t_min, cum_tss_map, cum_tss_awc) — all same length as elapsed_s.
+    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph)
+    where rate_*_ph are the instantaneous TSS rates in TSS/hour.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     kernel = np.ones(30) / 30.0
@@ -724,17 +692,25 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
         f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
 
-    tss_rate     = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
+    if ftp > 0:
+        tss_rate_ph = (p_30s / ftp) ** 2 * 100.0        # TSS per hour at each point
+        tss_rate    = tss_rate_ph * dt / 3600.0          # TSS increment per sample
+    else:
+        tss_rate_ph = np.zeros_like(p_30s)
+        tss_rate    = np.zeros_like(p_30s)
+
     cum_tss_map  = np.cumsum(tss_rate * f_map)
     cum_tss_awc  = np.cumsum(tss_rate * f_awc)
+    rate_map_ph  = tss_rate_ph * f_map
+    rate_awc_ph  = tss_rate_ph * f_awc
     t_min        = elapsed_s / 60.0
-    return t_min, cum_tss_map, cum_tss_awc
+    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
-    """Cumulative TSS_MAP and TSS_AWC stacked area chart over ride time."""
+    """Instantaneous TSS rate (TSS/h) split into MAP and AWC components."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -752,42 +728,35 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
-    t_min, cum_map, cum_awc = _tss_rate_series(elapsed, power, ftp, CP)
+    t_min, cum_map, cum_awc, rate_map, rate_awc = _tss_rate_series(elapsed, power, ftp, CP)
 
     final_map = cum_map[-1]
     final_awc = cum_awc[-1]
-    cum_total = cum_map + cum_awc
+    rate_total = rate_map + rate_awc
 
     fig = go.Figure()
 
     # Aerobic layer (fills from zero)
     fig.add_trace(go.Scatter(
-        x=t_min, y=cum_map,
-        mode="lines", name=f"TSS_MAP ({final_map:.0f})",
+        x=t_min, y=rate_map,
+        mode="lines", name=f"TSS_MAP (total {final_map:.0f})",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
     ))
     # Anaerobic layer (fills from aerobic to total)
     fig.add_trace(go.Scatter(
-        x=t_min, y=cum_total,
-        mode="lines", name=f"TSS_AWC ({final_awc:.0f})",
+        x=t_min, y=rate_total,
+        mode="lines", name=f"TSS_AWC (total {final_awc:.0f})",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
     ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Cumulative TSS",
+    fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
-        title=dict(
-            text=(
-                f"TSS Components — MAP: {final_map:.0f}  "
-                f"AWC: {final_awc:.0f}  "
-                f"Total: {final_map + final_awc:.0f}"
-            ),
-            font=dict(size=14),
-        ),
+        title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
@@ -865,7 +834,7 @@ def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
     if daily_tss.empty:
         return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
 
-    dates = pd.date_range(daily_tss.index.min(), daily_tss.index.max(), freq="D")
+    dates = pd.date_range(daily_tss.index.min(), pd.Timestamp.today().normalize(), freq="D")
     tss   = daily_tss.reindex(dates, fill_value=0.0)
 
     k_atl = 1.0 - np.exp(-1.0 / 7.0)
@@ -1013,6 +982,312 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# ── Freshness status ──────────────────────────────────────────────────────────
+
+_FRESHNESS_CFG = {
+    "green": {
+        "color": "#16a34a", "label": "Ready",
+        "desc": "All training",
+        "bg": "#f0fdf4", "border": "#86efac",
+    },
+    "amber": {
+        "color": "#d97706", "label": "Aerobic Only",
+        "desc": "Low intensity",
+        "bg": "#fffbeb", "border": "#fcd34d",
+    },
+    "red": {
+        "color": "#dc2626", "label": "Fatigued",
+        "desc": "Rest / recovery",
+        "bg": "#fef2f2", "border": "#fca5a5",
+    },
+}
+
+
+def _days_to_trainable(atl: float, ctl: float,
+                        threshold_pct: float = 0.0,
+                        max_days: int = 60) -> int | None:
+    """Days of complete rest until TSB > -threshold_pct * CTL.
+
+    threshold_pct = 0.30 for the MAP aerobic boundary (TSB > -30% CTL),
+                  = 0.0  for the AWC high-intensity boundary (TSB > 0).
+    Uses the same ATL τ=7 d / CTL τ=42 d decay as _compute_pmc.
+    Returns None if the threshold is not crossed within max_days.
+    """
+    k_atl = 1.0 - np.exp(-1.0 / 7.0)
+    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
+    for day in range(1, max_days + 1):
+        tsb = ctl - atl                    # form before that day's TSS
+        atl = atl + k_atl * (0.0 - atl)   # rest: TSS = 0
+        ctl = ctl + k_ctl * (0.0 - ctl)
+        if tsb > -threshold_pct * ctl:
+            return day
+    return None
+
+
+def _compute_freshness_status(pdc_params: pd.DataFrame,
+                               rides: pd.DataFrame) -> tuple:
+    """Return (status, tsb_map, tsb_awc, map_threshold, atl_map, ctl_map, atl_awc, ctl_awc).
+
+    The aerobic cutoff is -30 % of the current MAP CTL (training load), so a
+    small fatigue deficit doesn't immediately block low-intensity work.
+
+    status is 'green'  — TSB_MAP > threshold AND TSB_AWC > 0 (ready for anything)
+              'amber'  — TSB_MAP > threshold but TSB_AWC ≤ 0  (aerobic / low-intensity only)
+              'red'    — TSB_MAP ≤ threshold                   (rest / recovery)
+    Returns a tuple of Nones when there is insufficient data.
+    """
+    _none = (None,) * 8
+    if pdc_params.empty or not {"tss_map", "tss_awc"}.issubset(pdc_params.columns):
+        return _none
+
+    df = (
+        pdc_params.dropna(subset=["tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+    )
+    if df.empty:
+        return _none
+
+    df["ride_date"] = pd.to_datetime(df["ride_date"])
+    daily = df.groupby("ride_date")[["tss_map", "tss_awc"]].sum()
+
+    pmc_map = _compute_pmc(daily["tss_map"])
+    pmc_awc = _compute_pmc(daily["tss_awc"])
+
+    if pmc_map.empty or pmc_awc.empty:
+        return _none
+
+    tsb_map       = float(pmc_map["tsb"].iloc[-1])
+    tsb_awc       = float(pmc_awc["tsb"].iloc[-1])
+    ctl_map       = float(pmc_map["ctl"].iloc[-1])
+    map_threshold = -0.30 * ctl_map          # −30 % of MAP training load
+
+    if tsb_map > map_threshold and tsb_awc > 0:
+        status = "green"
+    elif tsb_map > map_threshold:
+        status = "amber"
+    else:
+        status = "red"
+
+    return (
+        status, tsb_map, tsb_awc, map_threshold,
+        float(pmc_map["atl"].iloc[-1]), ctl_map,
+        float(pmc_awc["atl"].iloc[-1]), float(pmc_awc["ctl"].iloc[-1]),
+    )
+
+
+# ── Metric summary boxes ──────────────────────────────────────────────────────
+
+def _make_card(label, value, unit, card_style, label_style, value_style, unit_style):
+    return html.Div(style=card_style, children=[
+        html.Div(label, style=label_style),
+        html.Div([
+            html.Span(value, style=value_style),
+            html.Span(unit,  style=unit_style),
+        ]),
+    ])
+
+
+def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
+                           live_pdc: dict | None = None) -> list:
+    """Metric cards showing the PDC state and ride metrics for a single activity."""
+    card_style = {
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+    }
+    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def card(label, value, unit=""):
+        return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
+
+    def _i(v):
+        return f"{int(round(float(v)))}" if pd.notna(v) else "—"
+
+    def _f2(v):
+        return f"{float(v):.2f}" if pd.notna(v) else "—"
+
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    stored = params_row.iloc[0] if not params_row.empty else None
+
+    # PDC fit params — prefer on-the-fly, fall back to stored
+    if live_pdc is not None:
+        ftp_v  = _i(live_pdc.get("ftp"))
+        map_v  = _i(live_pdc.get("MAP"))
+        awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
+        pmax_v = _i(live_pdc.get("Pmax"))
+        ltp_v  = _i(live_pdc.get("ltp"))
+    elif stored is not None:
+        ftp_v  = _i(stored.get("ftp"))
+        map_v  = _i(stored.get("MAP"))
+        awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
+        pmax_v = _i(stored.get("Pmax"))
+        ltp_v  = _i(stored.get("ltp"))
+    else:
+        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
+
+    # Ride performance metrics from stored pdc_params
+    np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
+    if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
+    tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
+    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
+    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+
+    divider = html.Div(style={
+        "width": "1px", "background": "#dee2e6",
+        "alignSelf": "stretch", "margin": "0 4px",
+    })
+
+    return [
+        html.Div(style={
+            "display": "flex", "gap": "12px", "alignItems": "flex-end",
+            "flexWrap": "wrap", "marginBottom": "16px",
+        }, children=[
+            card("FTP",  ftp_v,  "W"),
+            card("MAP",  map_v,  "W"),
+            card("LTP",  ltp_v,  "W"),
+            card("AWC",  awc_v,  "kJ"),
+            card("Pmax", pmax_v, "W"),
+            divider,
+            card("NP",      np_v,      "W"),
+            card("IF",      if_v,      ""),
+            card("TSS",     tss_v,     ""),
+            card("TSS MAP", tss_map_v, ""),
+            card("TSS AWC", tss_awc_v, ""),
+        ]),
+    ]
+
+
+def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
+    """Return a row of stat cards showing the most recent fitted PDC metrics."""
+    card_style = {
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "8px", "padding": "12px 20px", "minWidth": "110px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+    }
+    label_style = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def card(label, value, unit=""):
+        return _make_card(label, value, unit, card_style, label_style, value_style, unit_style)
+
+    # Find the most recent ride that has PDC params
+    if pdc_params.empty or rides.empty:
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+
+    merged = (
+        pdc_params
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date", ascending=False)
+        .dropna(subset=["MAP", "AWC", "Pmax"])
+    )
+    if merged.empty:
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+
+    latest = merged.iloc[0]
+    ftp_v  = f"{int(round(latest['ftp']))}"  if pd.notna(latest.get("ftp"))  else "—"
+    map_v  = f"{int(round(latest['MAP']))}"
+    ltp_v  = f"{int(round(latest['ltp']))}"  if pd.notna(latest.get("ltp"))  else "—"
+    awc_v  = f"{latest['AWC']/1000:.1f}"
+    pmax_v = f"{int(round(latest['Pmax']))}"
+    as_of  = latest["ride_date"]
+
+    # Freshness status card
+    status, tsb_map, tsb_awc, map_threshold, \
+        atl_map, ctl_map, atl_awc, ctl_awc = _compute_freshness_status(pdc_params, rides)
+    if status is not None:
+        cfg = _FRESHNESS_CFG[status]
+
+        # Days-until-trainable countdown
+        if status == "red":
+            days = _days_to_trainable(atl_map, ctl_map, threshold_pct=0.30)
+            days_text  = (f"Aerobic in {days} day{'s' if days != 1 else ''}"
+                          if days is not None else "Recovery > 60 days")
+            days_color = _FRESHNESS_CFG["amber"]["color"]
+        elif status == "amber":
+            days = _days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
+            days_text  = (f"High intensity in {days} day{'s' if days != 1 else ''}"
+                          if days is not None else "High intensity > 60 days")
+            days_color = _FRESHNESS_CFG["green"]["color"]
+        else:
+            days_text  = None
+            days_color = None
+
+        card_children = [
+            html.Div("Freshness", style=label_style),
+            html.Div(style={
+                "display": "flex", "alignItems": "center",
+                "justifyContent": "center", "gap": "7px",
+            }, children=[
+                html.Div(style={
+                    "width": "11px", "height": "11px", "borderRadius": "50%",
+                    "background": cfg["color"], "flexShrink": "0",
+                }),
+                html.Span(cfg["label"], style={
+                    **value_style, "fontSize": "17px", "color": cfg["color"],
+                }),
+            ]),
+            html.Div(
+                f"{cfg['desc']}  ·  MAP {tsb_map:+.1f} (cut {map_threshold:.1f}) / AWC {tsb_awc:+.1f}",
+                style={"fontSize": "10px", "color": "#888", "marginTop": "4px"},
+            ),
+        ]
+        if days_text is not None:
+            card_children.append(html.Div(days_text, style={
+                "fontSize": "10px", "fontWeight": "600",
+                "color": days_color, "marginTop": "3px",
+            }))
+
+        freshness_card = html.Div(style={
+            **card_style,
+            "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
+            "minWidth": "130px",
+        }, children=card_children)
+    else:
+        freshness_card = None
+
+    children = [
+        html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
+            html.Div("Athlete", style=label_style),
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
+                html.Img(
+                    src="/assets/athlete_profile.jpg",
+                    style={
+                        "width": "40px", "height": "40px",
+                        "borderRadius": "50%", "objectFit": "cover",
+                        "border": "2px solid #dee2e6",
+                    },
+                ),
+                html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
+            ]),
+        ]),
+        card("FTP",  ftp_v,  "W"),
+        card("MAP",  map_v,  "W"),
+        card("LTP",  ltp_v,  "W"),
+        card("AWC",  awc_v,  "kJ"),
+        card("Pmax", pmax_v, "W"),
+        html.Div(
+            f"as of {as_of}",
+            style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
+        ),
+    ]
+    if freshness_card is not None:
+        children.append(freshness_card)
+
+    return [
+        html.Div(style={
+            "display": "flex", "gap": "12px", "alignItems": "flex-end",
+            "flexWrap": "wrap", "marginBottom": "16px",
+        }, children=children),
+    ]
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 _boot_conn = sqlite3.connect(DB_PATH)
@@ -1026,75 +1301,112 @@ _start_watcher()   # background thread
 
 app = dash.Dash(__name__, title="Cycling Power Analysis")
 
+_NAV_BASE = {
+    "display": "block", "width": "100%", "padding": "12px 20px",
+    "border": "none", "textAlign": "left", "cursor": "pointer",
+    "fontSize": "14px", "background": "transparent",
+    "borderLeft": "3px solid transparent", "color": "#aab",
+}
+_NAV_ACTIVE = {**_NAV_BASE,
+    "background": "rgba(255,255,255,0.08)", "color": "white",
+    "fontWeight": "bold", "borderLeft": "3px solid #4a9eff",
+}
+
 app.layout = html.Div(
-    style={"fontFamily": "sans-serif", "maxWidth": "1200px", "margin": "0 auto", "padding": "20px"},
+    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0"},
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
         dcc.Interval(id="poll-interval", interval=3000, n_intervals=0),  # check every 3 s
 
-        html.H1("Cycling Power Analysis", style={"marginBottom": "4px"}),
+        # ── Sidebar ────────────────────────────────────────────────────────
+        html.Div(style={
+            "width": "220px", "minWidth": "220px", "background": "#1e2433",
+            "display": "flex", "flexDirection": "column", "paddingTop": "24px",
+        }, children=[
+            html.Div("Cycling Power Analysis", style={
+                "color": "white", "fontWeight": "bold", "fontSize": "13px",
+                "padding": "0 20px", "marginBottom": "28px", "lineHeight": "1.4",
+            }),
+            html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
+            html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+            html.Div(id="status-bar", style={
+                "marginTop": "auto", "padding": "12px 20px",
+                "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
+                "borderTop": "1px solid rgba(255,255,255,0.06)",
+            }),
+        ]),
 
-        # Status bar
-        html.Div(id="status-bar", style={
-            "fontSize": "12px", "color": "#888", "marginBottom": "12px",
-        }),
+        # ── Main content ───────────────────────────────────────────────────
+        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto"}, children=[
 
-        dcc.Tabs(
-            id="tabs",
-            value="tab-fitness",
-            children=[
+            # ── Fitness page ───────────────────────────────────────────────
+            html.Div(id="page-fitness", style={"display": "block"}, children=[
 
-                # ── Fitness tab ────────────────────────────────────────────
-                dcc.Tab(label="Fitness", value="tab-fitness", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
+                # Current fitness metric boxes (moved here from global header)
+                html.Div(id="metric-boxes", style={"marginBottom": "16px"}),
 
-                        dcc.Graph(id="graph-90day-mmp"),
+                dcc.Graph(id="graph-90day-mmp"),
 
-                        html.Hr(),
+                html.Hr(),
 
-                        html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pmc"),
+                html.H2("Performance Management Chart", style={"marginBottom": "4px"}),
+                dcc.Graph(id="graph-pmc"),
 
-                        html.Hr(),
+                html.Hr(),
 
-                        html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
-                        dcc.Graph(id="graph-pdc-params-history"),
+                html.H2("PDC Parameters over time", style={"marginBottom": "4px"}),
+                dcc.Graph(id="graph-pdc-params-history"),
 
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
+                html.Div(style={"height": "40px"}),
+            ]),
 
-                # ── Activities tab ─────────────────────────────────────────
-                dcc.Tab(label="Activities", value="tab-activities", children=[
-                    html.Div(style={"paddingTop": "20px"}, children=[
+            # ── Activities page ────────────────────────────────────────────
+            html.Div(id="page-activities", style={"display": "none"}, children=[
 
-                        # Ride selector
-                        html.Div([
-                            html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
-                            dcc.Dropdown(
-                                id="ride-dropdown",
-                                clearable=False,
-                                style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
-                            ),
-                        ], style={"marginBottom": "20px"}),
+                # Ride selector
+                html.Div([
+                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
+                    dcc.Dropdown(
+                        id="ride-dropdown",
+                        clearable=False,
+                        style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
+                    ),
+                ], style={"marginBottom": "20px"}),
 
-                        # Per-ride charts
-                        dcc.Graph(id="graph-power"),
-                        dcc.Graph(id="graph-wbal"),
-                        dcc.Graph(id="graph-tss-components"),
-                        dcc.Graph(id="graph-mmp-pdc"),
+                # Per-activity metric boxes
+                html.Div(id="activity-metric-boxes"),
 
-                        html.Div(style={"height": "40px"}),
-                    ]),
-                ]),
-            ],
-        ),
+                # Per-ride charts
+                dcc.Graph(id="graph-power"),
+                dcc.Graph(id="graph-wbal"),
+                dcc.Graph(id="graph-tss-components"),
+                dcc.Graph(id="graph-mmp-pdc"),
+
+                html.Div(style={"height": "40px"}),
+            ]),
+        ]),
     ],
 )
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("page-fitness",    "style"),
+    Output("page-activities", "style"),
+    Output("nav-fitness",     "style"),
+    Output("nav-activities",  "style"),
+    Input("nav-fitness",      "n_clicks"),
+    Input("nav-activities",   "n_clicks"),
+)
+def switch_page(_, __):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    if ctx.triggered_id == "nav-activities":
+        return hide, show, _NAV_BASE, _NAV_ACTIVE
+    return show, hide, _NAV_ACTIVE, _NAV_BASE
+
 
 @app.callback(
     Output("known-version",   "data"),
@@ -1104,6 +1416,7 @@ app.layout = html.Div(
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
+    Output("metric-boxes",             "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
@@ -1126,10 +1439,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected = int(rides.iloc[-1]["id"])
 
     ride_count = len(rides)
-    status = (
-        f"Watching {FIT_DIR} for new .fit files — "
-        f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
-    )
+    status = f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
 
     return (
         ver,
@@ -1139,14 +1449,16 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
+        _metric_boxes(pdc_params, rides),
     )
 
 
 @app.callback(
-    Output("graph-power",       "figure"),
+    Output("graph-power",          "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
     Output("graph-mmp-pdc",        "figure"),
+    Output("activity-metric-boxes", "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1164,10 +1476,11 @@ def update_ride_charts(ride_id, _ver):
         fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
+        _activity_metric_boxes(ride, pdc_params, live_pdc),
     )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    app.run(debug=True, port=8050)

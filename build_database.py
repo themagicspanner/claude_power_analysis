@@ -185,7 +185,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             intensity_factor REAL,
             tss              REAL,
             tss_map          REAL,
-            tss_awc          REAL
+            tss_awc          REAL,
+            ltp              REAL
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -195,7 +196,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
-    # Idempotent migration: add TSS columns to databases created before this
+    # Idempotent migration: add columns to databases created before this
     # version (ALTER TABLE silently fails if the column already exists via the
     # OperationalError catch).
     for col_def in [
@@ -205,11 +206,15 @@ def init_db(conn: sqlite3.Connection) -> None:
         "tss              REAL",
         "tss_map          REAL",
         "tss_awc          REAL",
+        "ltp              REAL",
     ]:
         try:
             conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass  # column already present
+
+    # Purge any rows that pre-date the ltp column so backfill recomputes them.
+    conn.execute("DELETE FROM pdc_params WHERE ltp IS NULL")
     conn.commit()
 
 
@@ -319,6 +324,9 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
 
     AWC, Pmax, MAP, tau2 = popt
 
+    # Lower threshold power (first lactate turn point)
+    ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
     # ── TSS metrics ───────────────────────────────────────────────────────────
     ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
 
@@ -342,8 +350,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, ltp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -357,6 +365,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             round(tss,     1),
             round(tss_map, 1),
             round(tss_awc, 1),
+            round(ltp,     1),
         ),
     )
     conn.commit()
@@ -411,7 +420,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     has_power = df["power"].notna().any()
 
     cur = conn.execute(
-        """INSERT INTO rides
+        """INSERT OR IGNORE INTO rides
                (name, ride_date, total_records, duration_s, avg_power, max_power)
            VALUES (?,?,?,?,?,?)""",
         (
@@ -420,6 +429,10 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
             int(df["power"].max())               if has_power else None,
         ),
     )
+    if cur.rowcount == 0:
+        # Another concurrent call already inserted this ride (race condition).
+        print(f"  {name}: already in database, skipping.")
+        return
     ride_id = cur.lastrowid
 
     # Raw records
