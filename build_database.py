@@ -173,6 +173,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (ride_id, duration_s)
         );
 
+        CREATE TABLE IF NOT EXISTS mmh (
+            ride_id    INTEGER NOT NULL REFERENCES rides(id),
+            duration_s INTEGER NOT NULL,
+            heart_rate REAL    NOT NULL,
+            PRIMARY KEY (ride_id, duration_s)
+        );
+
         CREATE TABLE IF NOT EXISTS pdc_params (
             ride_id          INTEGER PRIMARY KEY REFERENCES rides(id),
             AWC              REAL    NOT NULL,
@@ -213,6 +220,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already present
 
+    for col_def in ["heart_rate INTEGER"]:
+        try:
+            conn.execute(f"ALTER TABLE records ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
+
+    for col_def in ["avg_heart_rate REAL", "max_heart_rate INTEGER"]:
+        try:
+            conn.execute(f"ALTER TABLE rides ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
+
     # Purge any rows that pre-date the ltp column so backfill recomputes them.
     conn.execute("DELETE FROM pdc_params WHERE ltp IS NULL")
     conn.commit()
@@ -221,15 +240,16 @@ def init_db(conn: sqlite3.Connection) -> None:
 # ── FIT parsing ───────────────────────────────────────────────────────────────
 
 def read_fit(path: str) -> pd.DataFrame:
-    """Return DataFrame with columns: timestamp, elapsed_s, power."""
+    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate."""
     rows = []
     with fitdecode.FitReader(path) as fit:
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
                 continue
             rows.append({
-                "timestamp": frame.get_value("timestamp", fallback=None),
-                "power":     frame.get_value("power",     fallback=None),
+                "timestamp":  frame.get_value("timestamp",  fallback=None),
+                "power":      frame.get_value("power",      fallback=None),
+                "heart_rate": frame.get_value("heart_rate", fallback=None),
             })
 
     if not rows:
@@ -268,6 +288,30 @@ def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
         if n < d:
             continue
         # window sums: sum[i..i+d-1] = cumsum[i+d-1] - cumsum[i-1]
+        window_sums = cumsum[d - 1:].copy()
+        window_sums[1:] -= cumsum[:n - d]
+        result[d] = float(window_sums.max() / d)
+
+    return result
+
+
+def calculate_mmh(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
+    """Return {duration_s: best_avg_heart_rate} for each requested duration.
+
+    Uses the same rolling-window algorithm as calculate_mmp.
+    Rides without heart rate data return an empty dict.
+    """
+    if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
+        return {}
+
+    hr = df["heart_rate"].fillna(0).to_numpy(dtype=float)
+    n  = len(hr)
+    cumsum = hr.cumsum()
+
+    result: dict[int, float] = {}
+    for d in durations:
+        if n < d:
+            continue
         window_sums = cumsum[d - 1:].copy()
         window_sums[1:] -= cumsum[:n - d]
         result[d] = float(window_sums.max() / d)
@@ -384,6 +428,48 @@ def backfill_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
 
 
+def backfill_mmh(conn: sqlite3.Connection) -> None:
+    """Compute MMH for any ride that has no MMH rows yet.
+
+    Re-reads the original .fit file so that rides processed before heart rate
+    support was added get their curves populated retrospectively.
+    Also updates rides.avg_heart_rate / max_heart_rate where missing.
+    """
+    rows = conn.execute(
+        """SELECT r.id, r.name FROM rides r
+           WHERE NOT EXISTS (SELECT 1 FROM mmh m WHERE m.ride_id = r.id)
+           ORDER BY r.ride_date, r.id"""
+    ).fetchall()
+    if not rows:
+        return
+
+    print(f"[mmh] Backfilling MMH for {len(rows)} ride(s) …")
+    for ride_id, name in rows:
+        fit_path = os.path.join(FIT_DIR, name + ".fit")
+        if not os.path.exists(fit_path):
+            continue
+        df = read_fit(fit_path)
+        if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
+            continue
+
+        mmh = calculate_mmh(df, MMP_DURATIONS)
+        if mmh:
+            conn.executemany(
+                "INSERT OR IGNORE INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
+                [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
+            )
+        conn.execute(
+            "UPDATE rides SET avg_heart_rate = ?, max_heart_rate = ? WHERE id = ?",
+            (
+                round(float(df["heart_rate"].mean()), 1),
+                int(df["heart_rate"].max()),
+                ride_id,
+            ),
+        )
+        conn.commit()
+    print("[mmh] Backfill complete.")
+
+
 def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
     """Delete and recompute PDC params for all rides in chronological order.
 
@@ -418,15 +504,19 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     ride_date = df["timestamp"].iloc[0].date().isoformat()
     duration  = float(df["elapsed_s"].iloc[-1])
     has_power = df["power"].notna().any()
+    has_hr    = "heart_rate" in df.columns and df["heart_rate"].notna().any()
 
     cur = conn.execute(
         """INSERT OR IGNORE INTO rides
-               (name, ride_date, total_records, duration_s, avg_power, max_power)
-           VALUES (?,?,?,?,?,?)""",
+               (name, ride_date, total_records, duration_s, avg_power, max_power,
+                avg_heart_rate, max_heart_rate)
+           VALUES (?,?,?,?,?,?,?,?)""",
         (
             name, ride_date, len(df), duration,
-            round(float(df["power"].mean()), 1) if has_power else None,
-            int(df["power"].max())               if has_power else None,
+            round(float(df["power"].mean()),      1) if has_power else None,
+            int(df["power"].max())                   if has_power else None,
+            round(float(df["heart_rate"].mean()), 1) if has_hr    else None,
+            int(df["heart_rate"].max())              if has_hr    else None,
         ),
     )
     if cur.rowcount == 0:
@@ -437,13 +527,14 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
 
     # Raw records
     conn.executemany(
-        "INSERT INTO records (ride_id, timestamp, elapsed_s, power) VALUES (?,?,?,?)",
+        "INSERT INTO records (ride_id, timestamp, elapsed_s, power, heart_rate) VALUES (?,?,?,?,?)",
         (
             (
                 ride_id,
                 row.timestamp.isoformat(),
                 row.elapsed_s,
-                int(row.power) if pd.notna(row.power) else None,
+                int(row.power)      if pd.notna(row.power)      else None,
+                int(row.heart_rate) if pd.notna(row.heart_rate) else None,
             )
             for row in df.itertuples()
         ),
@@ -456,8 +547,17 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         [(ride_id, d, round(p, 1)) for d, p in mmp.items()],
     )
 
+    # MMH
+    mmh = calculate_mmh(df, MMP_DURATIONS)
+    if mmh:
+        conn.executemany(
+            "INSERT INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
+            [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
+        )
+
     conn.commit()
-    print(f"  {name}: {len(df)} records, {len(mmp)} MMP points stored.")
+    hr_note = f", {len(mmh)} MMH points" if mmh else ""
+    print(f"  {name}: {len(df)} records, {len(mmp)} MMP points{hr_note} stored.")
 
     # Recompute PDC params for this ride AND all subsequent rides whose PDC
     # window now includes this newly added ride's data.
