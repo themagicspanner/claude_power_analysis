@@ -1313,15 +1313,15 @@ app.layout = html.Div(
             }),
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+            html.Div(id="status-bar", style={
+                "marginTop": "auto", "padding": "12px 20px",
+                "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
+                "borderTop": "1px solid rgba(255,255,255,0.06)",
+            }),
         ]),
 
         # ── Main content ───────────────────────────────────────────────────
         html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto"}, children=[
-
-            # Status bar
-            html.Div(id="status-bar", style={
-                "fontSize": "12px", "color": "#888", "marginBottom": "16px",
-            }),
 
             # ── Fitness page ───────────────────────────────────────────────
             html.Div(id="page-fitness", style={"display": "block"}, children=[
