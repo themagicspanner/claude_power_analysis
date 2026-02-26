@@ -984,22 +984,25 @@ _FRESHNESS_CFG = {
 
 def _compute_freshness_status(pdc_params: pd.DataFrame,
                                rides: pd.DataFrame) -> tuple:
-    """Return (status, tsb_map, tsb_awc) based on today's TSB values.
+    """Return (status, tsb_map, tsb_awc, map_threshold) based on today's TSB values.
 
-    status is 'green'  — both TSB_MAP and TSB_AWC are positive (ready for anything)
-              'amber'  — only TSB_MAP is positive (aerobic / low-intensity only)
-              'red'    — both TSB_MAP and TSB_AWC are non-positive (rest / recovery)
-    Returns (None, None, None) when there is insufficient data.
+    The aerobic cutoff is -30 % of the current MAP CTL (training load), so a
+    small fatigue deficit doesn't immediately block low-intensity work.
+
+    status is 'green'  — TSB_MAP > threshold AND TSB_AWC > 0 (ready for anything)
+              'amber'  — TSB_MAP > threshold but TSB_AWC ≤ 0  (aerobic / low-intensity only)
+              'red'    — TSB_MAP ≤ threshold                   (rest / recovery)
+    Returns (None, None, None, None) when there is insufficient data.
     """
     if pdc_params.empty or not {"tss_map", "tss_awc"}.issubset(pdc_params.columns):
-        return None, None, None
+        return None, None, None, None
 
     df = (
         pdc_params.dropna(subset=["tss_map", "tss_awc"])
         .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
     )
     if df.empty:
-        return None, None, None
+        return None, None, None, None
 
     df["ride_date"] = pd.to_datetime(df["ride_date"])
     daily = df.groupby("ride_date")[["tss_map", "tss_awc"]].sum()
@@ -1008,19 +1011,21 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
     pmc_awc = _compute_pmc(daily["tss_awc"])
 
     if pmc_map.empty or pmc_awc.empty:
-        return None, None, None
+        return None, None, None, None
 
-    tsb_map = float(pmc_map["tsb"].iloc[-1])
-    tsb_awc = float(pmc_awc["tsb"].iloc[-1])
+    tsb_map       = float(pmc_map["tsb"].iloc[-1])
+    tsb_awc       = float(pmc_awc["tsb"].iloc[-1])
+    ctl_map       = float(pmc_map["ctl"].iloc[-1])
+    map_threshold = -0.30 * ctl_map          # −30 % of MAP training load
 
-    if tsb_map > 0 and tsb_awc > 0:
+    if tsb_map > map_threshold and tsb_awc > 0:
         status = "green"
-    elif tsb_map > 0:
+    elif tsb_map > map_threshold:
         status = "amber"
     else:
         status = "red"
 
-    return status, tsb_map, tsb_awc
+    return status, tsb_map, tsb_awc, map_threshold
 
 
 # ── Metric summary boxes ──────────────────────────────────────────────────────
@@ -1143,7 +1148,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     as_of  = latest["ride_date"]
 
     # Freshness status card
-    status, tsb_map, tsb_awc = _compute_freshness_status(pdc_params, rides)
+    status, tsb_map, tsb_awc, map_threshold = _compute_freshness_status(pdc_params, rides)
     if status is not None:
         cfg = _FRESHNESS_CFG[status]
         freshness_card = html.Div(style={
@@ -1165,7 +1170,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
                 }),
             ]),
             html.Div(
-                f"{cfg['desc']}  ·  MAP {tsb_map:+.1f} / AWC {tsb_awc:+.1f}",
+                f"{cfg['desc']}  ·  MAP {tsb_map:+.1f} (cut {map_threshold:.1f}) / AWC {tsb_awc:+.1f}",
                 style={"fontSize": "10px", "color": "#888", "marginTop": "4px"},
             ),
         ])
