@@ -113,7 +113,7 @@ def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
         "SELECT ride_id, AWC, Pmax, MAP, tau2, ftp, normalized_power, intensity_factor,"
-        " tss, tss_map, tss_awc FROM pdc_params",
+        " tss, tss_map, tss_awc, ltp FROM pdc_params",
         conn,
     )
     conn.close()

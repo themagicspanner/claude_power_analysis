@@ -196,7 +196,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
-    # Idempotent migration: add TSS columns to databases created before this
+    # Idempotent migration: add columns to databases created before this
     # version (ALTER TABLE silently fails if the column already exists via the
     # OperationalError catch).
     for col_def in [
@@ -212,6 +212,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass  # column already present
+
+    # Purge any rows that pre-date the ltp column so backfill recomputes them.
+    conn.execute("DELETE FROM pdc_params WHERE ltp IS NULL")
     conn.commit()
 
 
