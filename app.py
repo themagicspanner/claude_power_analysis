@@ -246,6 +246,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "MAP":  float(MAP),
         "tau2": float(tau2),
         "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+        "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
 
 
@@ -1117,13 +1118,15 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
         map_v  = _i(live_pdc.get("MAP"))
         awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
         pmax_v = _i(live_pdc.get("Pmax"))
+        ltp_v  = _i(live_pdc.get("ltp"))
     elif stored is not None:
         ftp_v  = _i(stored.get("ftp"))
         map_v  = _i(stored.get("MAP"))
         awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
         pmax_v = _i(stored.get("Pmax"))
+        ltp_v  = _i(stored.get("ltp"))
     else:
-        ftp_v = map_v = awc_v = pmax_v = "—"
+        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
 
     # Ride performance metrics from stored pdc_params
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
@@ -1144,6 +1147,7 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
         }, children=[
             card("FTP",  ftp_v,  "W"),
             card("MAP",  map_v,  "W"),
+            card("LTP",  ltp_v,  "W"),
             card("AWC",  awc_v,  "kJ"),
             card("Pmax", pmax_v, "W"),
             divider,
@@ -1173,7 +1177,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
 
     # Find the most recent ride that has PDC params
     if pdc_params.empty or rides.empty:
-        return [card("FTP", "—", "W"), card("MAP", "—", "W"),
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
                 card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
 
     merged = (
@@ -1183,12 +1187,13 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         .dropna(subset=["MAP", "AWC", "Pmax"])
     )
     if merged.empty:
-        return [card("FTP", "—", "W"), card("MAP", "—", "W"),
+        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
                 card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
 
     latest = merged.iloc[0]
     ftp_v  = f"{int(round(latest['ftp']))}"  if pd.notna(latest.get("ftp"))  else "—"
     map_v  = f"{int(round(latest['MAP']))}"
+    ltp_v  = f"{int(round(latest['ltp']))}"  if pd.notna(latest.get("ltp"))  else "—"
     awc_v  = f"{latest['AWC']/1000:.1f}"
     pmax_v = f"{int(round(latest['Pmax']))}"
     as_of  = latest["ride_date"]
@@ -1264,6 +1269,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         ]),
         card("FTP",  ftp_v,  "W"),
         card("MAP",  map_v,  "W"),
+        card("LTP",  ltp_v,  "W"),
         card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
         html.Div(
