@@ -544,8 +544,9 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
 
     fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
-                     secondary_y=False)
-    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False, secondary_y=True)
+                     rangemode="tozero", secondary_y=False)
+    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
+                     rangemode="tozero", secondary_y=True)
     fig.update_layout(
         title=dict(text="PDC Parameter History", font=dict(size=14)),
         height=380,
