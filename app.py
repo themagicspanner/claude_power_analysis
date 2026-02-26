@@ -1325,7 +1325,8 @@ _NAV_ACTIVE = {**_NAV_BASE,
 }
 
 app.layout = html.Div(
-    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0"},
+    style={"fontFamily": "sans-serif", "display": "flex", "height": "100vh", "margin": "0",
+           "background": "#0d1117"},
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
@@ -1350,7 +1351,8 @@ app.layout = html.Div(
         ]),
 
         # ── Main content ───────────────────────────────────────────────────
-        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto"}, children=[
+        html.Div(style={"flex": "1", "padding": "24px", "overflowY": "auto",
+                        "background": "#0d1117"}, children=[
 
             # ── Fitness page ───────────────────────────────────────────────
             html.Div(id="page-fitness", style={"display": "block"}, children=[
