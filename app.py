@@ -1143,8 +1143,8 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
         html.Div(style={"display": "flex", "alignItems": "baseline",
                         "gap": "12px", "marginBottom": "12px"}, children=[
             html.Span(ride_title, style={"fontSize": "20px", "fontWeight": "bold",
-                                         "color": "#222"}),
-            html.Span(ride_date,  style={"fontSize": "13px", "color": "#888"}),
+                                         "color": "#e8edf5"}),
+            html.Span(ride_date,  style={"fontSize": "13px", "color": "#7a8fbb"}),
         ]),
         # ── Metrics row: ride stats left, PDC params right ─────────────────
         html.Div(style={
@@ -1378,7 +1378,8 @@ app.layout = html.Div(
 
                 # Ride selector
                 html.Div([
-                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px"}),
+                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px",
+                                                        "color": "#e8edf5"}),
                     dcc.Dropdown(
                         id="ride-dropdown",
                         clearable=False,
