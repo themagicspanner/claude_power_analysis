@@ -411,7 +411,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     has_power = df["power"].notna().any()
 
     cur = conn.execute(
-        """INSERT INTO rides
+        """INSERT OR IGNORE INTO rides
                (name, ride_date, total_records, duration_s, avg_power, max_power)
            VALUES (?,?,?,?,?,?)""",
         (
@@ -420,6 +420,10 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
             int(df["power"].max())               if has_power else None,
         ),
     )
+    if cur.rowcount == 0:
+        # Another concurrent call already inserted this ride (race condition).
+        print(f"  {name}: already in database, skipping.")
+        return
     ride_id = cur.lastrowid
 
     # Raw records

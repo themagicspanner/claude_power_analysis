@@ -171,15 +171,18 @@ class _FitHandler(FileSystemEventHandler):
         # Small delay to let the file finish copying before we read it
         time.sleep(1)
         print(f"[watcher] New file detected: {path}")
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             init_db(conn)
             process_ride(conn, path)
-            conn.close()
             _reload()
             print(f"[watcher] Processed and reloaded data.")
         except Exception as exc:
             print(f"[watcher] Error processing {path}: {exc}")
+        finally:
+            if conn is not None:
+                conn.close()
 
     def on_created(self, event):
         if not event.is_directory:
