@@ -263,7 +263,7 @@ def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
     fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="#2d3448")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="#2d3448")
     fig.update_layout(
-        title=dict(text=ride_name.replace("_", " "), font=dict(size=15)),
+        title=dict(text="Power", font=dict(size=15)),
         height=260, margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False, template="plotly_dark",
     )
@@ -1135,27 +1135,39 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
     tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
 
-    divider = html.Div(style={
-        "width": "1px", "background": "#2d3448",
-        "alignSelf": "stretch", "margin": "0 4px",
-    })
+    ride_title = ride["name"].replace("_", " ")
+    ride_date  = ride["ride_date"]
 
     return [
+        # ── Title row ──────────────────────────────────────────────────────
+        html.Div(style={"display": "flex", "alignItems": "baseline",
+                        "gap": "12px", "marginBottom": "12px"}, children=[
+            html.Span(ride_title, style={"fontSize": "20px", "fontWeight": "bold",
+                                         "color": "#e2e6f0"}),
+            html.Span(ride_date,  style={"fontSize": "13px", "color": "#8892a4"}),
+        ]),
+        # ── Metrics row: ride stats left, PDC params right ─────────────────
         html.Div(style={
-            "display": "flex", "gap": "12px", "alignItems": "flex-end",
-            "flexWrap": "wrap", "marginBottom": "16px",
+            "display": "flex", "justifyContent": "space-between",
+            "alignItems": "flex-end", "flexWrap": "wrap", "gap": "12px",
+            "marginBottom": "16px",
         }, children=[
-            card("FTP",  ftp_v,  "W"),
-            card("MAP",  map_v,  "W"),
-            card("LTP",  ltp_v,  "W"),
-            card("AWC",  awc_v,  "kJ"),
-            card("Pmax", pmax_v, "W"),
-            divider,
-            card("NP",      np_v,      "W"),
-            card("IF",      if_v,      ""),
-            card("TSS",     tss_v,     ""),
-            card("TSS MAP", tss_map_v, ""),
-            card("TSS AWC", tss_awc_v, ""),
+            # Left — ride performance metrics
+            html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}, children=[
+                card("NP",      np_v,      "W"),
+                card("IF",      if_v,      ""),
+                card("TSS",     tss_v,     ""),
+                card("TSS MAP", tss_map_v, ""),
+                card("TSS AWC", tss_awc_v, ""),
+            ]),
+            # Right — PDC fitness parameters
+            html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}, children=[
+                card("FTP",  ftp_v,  "W"),
+                card("MAP",  map_v,  "W"),
+                card("LTP",  ltp_v,  "W"),
+                card("AWC",  awc_v,  "kJ"),
+                card("Pmax", pmax_v, "W"),
+            ]),
         ]),
     ]
 
