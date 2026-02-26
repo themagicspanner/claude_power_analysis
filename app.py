@@ -1422,10 +1422,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected = int(rides.iloc[-1]["id"])
 
     ride_count = len(rides)
-    status = (
-        f"Watching {FIT_DIR} for new .fit files — "
-        f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
-    )
+    status = f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
 
     return (
         ver,
