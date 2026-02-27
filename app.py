@@ -20,6 +20,7 @@ Pages / sections
   • PDC parameter history (AWC, Pmax, MAP over time)
 """
 
+import base64
 import datetime
 import os
 import sqlite3
@@ -32,12 +33,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, ctx
+from dash import dcc, html, dash_table, Input, Output, State, ctx, Patch
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from build_database import (
-    init_db, process_ride, backfill_pdc_params, backfill_mmh,
+    init_db, process_ride, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
@@ -55,28 +56,31 @@ _rides        = None
 _mmp_all      = None
 _mmh_all      = None
 _pdc_params   = None
+_gps_traces   = None  # dict: ride_id → [(lat, lon), ...] (downsampled)
 
 
 def _reload():
-    """Re-read rides, mmp, mmh and pdc_params from the DB and bump the version counter."""
-    global _rides, _mmp_all, _mmh_all, _pdc_params, _data_version
+    """Re-read rides, mmp, mmh, pdc_params and GPS traces from the DB and bump the version."""
+    global _rides, _mmp_all, _mmh_all, _pdc_params, _gps_traces, _data_version
     r = _load_rides()
     m = _load_mmp_all(r)
     h = _load_mmh_all(r)
     p = _load_pdc_params()
+    g = _load_gps_traces()
     with _lock:
         _rides        = r
         _mmp_all      = m
         _mmh_all      = h
         _pdc_params   = p
+        _gps_traces   = g
         _data_version += 1
 
 
 def get_data():
-    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params) snapshot."""
+    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params, gps_traces) snapshot."""
     with _lock:
         return (_data_version, _rides.copy(), _mmp_all.copy(),
-                _mmh_all.copy(), _pdc_params.copy())
+                _mmh_all.copy(), _pdc_params.copy(), _gps_traces)
 
 
 # ── Duration formatting ────────────────────────────────────────────────────────
@@ -95,12 +99,89 @@ def _load_rides() -> pd.DataFrame:
     df = pd.read_sql(
         """SELECT id, name, ride_date,
                   round(duration_s / 60.0, 1) AS duration_min,
-                  avg_power, max_power
+                  avg_power, max_power,
+                  avg_heart_rate, max_heart_rate
            FROM rides ORDER BY ride_date, name""",
         conn,
     )
     conn.close()
     return df
+
+
+def _load_gps_traces() -> dict[int, list[tuple[float, float]]]:
+    """Load downsampled GPS traces for all rides. Returns {ride_id: [(lat, lon), ...]}."""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
+        "SELECT ride_id, latitude, longitude FROM records"
+        " WHERE latitude IS NOT NULL ORDER BY ride_id, elapsed_s",
+        conn,
+    )
+    conn.close()
+    traces: dict[int, list[tuple[float, float]]] = {}
+    for ride_id, group in df.groupby("ride_id"):
+        pts = list(zip(group["latitude"], group["longitude"]))
+        step = max(1, len(pts) // 300)   # at most ~300 points per thumbnail
+        traces[int(ride_id)] = pts[::step]
+    return traces
+
+
+def _make_route_svg(latlons: list[tuple[float, float]]) -> str:
+    """Return a minimal SVG polyline of the GPS route, sized to fit within 80×55 px."""
+    if len(latlons) < 2:
+        return ""
+    lats = [p[0] for p in latlons]
+    lons = [p[1] for p in latlons]
+    lat_min, lat_max = min(lats), max(lats)
+    lon_min, lon_max = min(lons), max(lons)
+    lat_span = lat_max - lat_min or 1e-9
+    lon_span = lon_max - lon_min or 1e-9
+    max_w, max_h, pad = 80, 55, 3
+    scale = min((max_w - 2 * pad) / lon_span, (max_h - 2 * pad) / lat_span)
+    svg_w = lon_span * scale + 2 * pad
+    svg_h = lat_span * scale + 2 * pad
+    pts = " ".join(
+        f"{(lon - lon_min) * scale + pad:.1f},{(lat_max - lat) * scale + pad:.1f}"
+        for lat, lon in latlons
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_w:.0f}" height="{svg_h:.0f}">'
+        f'<polyline points="{pts}" fill="none" stroke="#4a90d9" stroke-width="1.5"'
+        f' stroke-linejoin="round" stroke-linecap="round"/>'
+        f'</svg>'
+    )
+
+
+def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
+                      gps_traces: dict | None = None) -> list[dict]:
+    """Return list-of-dicts (most-recent first) for the activities DataTable."""
+    merged = rides.merge(
+        pdc_params[["ride_id", "normalized_power", "intensity_factor", "tss"]],
+        left_on="id", right_on="ride_id", how="left",
+    )
+    gps_traces = gps_traces or {}
+    rows = []
+    for _, r in merged.iterrows():
+        dur = r["duration_min"]
+        h, m = int(dur) // 60, int(dur) % 60
+        latlons = gps_traces.get(int(r["id"]), [])
+        if latlons:
+            svg = _make_route_svg(latlons)
+            b64 = base64.b64encode(svg.encode()).decode()
+            thumbnail = f'<img src="data:image/svg+xml;base64,{b64}" style="display:block"/>'
+        else:
+            thumbnail = ""
+        rows.append({
+            "id":        int(r["id"]),
+            "Route":     thumbnail,
+            "Date":      r["ride_date"],
+            "Name":      r["name"].replace("_", " "),
+            "Duration":  f"{h}h {m:02d}m",
+            "Avg Power": f"{r['avg_power']:.0f}" if pd.notna(r["avg_power"]) else "\u2014",
+            "NP":        f"{r['normalized_power']:.0f}" if pd.notna(r.get("normalized_power")) else "\u2014",
+            "TSS":       f"{r['tss']:.0f}" if pd.notna(r.get("tss")) else "\u2014",
+            "IF":        f"{r['intensity_factor']:.2f}" if pd.notna(r.get("intensity_factor")) else "\u2014",
+        })
+    return rows[::-1]   # most-recent first
 
 
 def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
@@ -141,7 +222,8 @@ def _load_pdc_params() -> pd.DataFrame:
 def load_records(ride_id: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        "SELECT elapsed_s, power, heart_rate, latitude, longitude, altitude_m"
+        " FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn,
         params=(ride_id,),
     )
@@ -268,48 +350,71 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
     }
 
 
+# ── Graph-level stat rows ─────────────────────────────────────────────────────
+
+def _graph_stat_row(items: list[tuple]) -> html.Div:
+    """Left-aligned row of compact stat cards to sit above a graph.
+
+    items: list of (label, value, unit) tuples.
+    """
+    card_style = {
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "6px", "padding": "8px 16px", "minWidth": "80px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
+    }
+    label_style = {"fontSize": "10px", "color": "#888", "marginBottom": "2px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "18px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "11px", "color": "#666", "marginLeft": "2px"}
+
+    return html.Div(
+        style={"display": "flex", "gap": "10px", "marginBottom": "8px", "flexWrap": "wrap"},
+        children=[
+            _make_card(lbl, val, unit, card_style, label_style, value_style, unit_style)
+            for lbl, val, unit in items
+        ],
+    )
+
+
 # ── Figure builders ───────────────────────────────────────────────────────────
 
-def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
+def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
+    """Power and heart rate on a shared time axis with dual y-axes."""
+    has_power = records["power"].notna().any()
+    has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
+
     fig = go.Figure()
-    if records["power"].notna().any():
+
+    if has_power:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["power"],
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
+            yaxis="y1",
         ))
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
-    fig.update_layout(
-        title=dict(text="Power", font=dict(size=15)),
-        height=260, margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False, template="plotly_white",
-    )
-    return fig
-
-
-def fig_hr(records: pd.DataFrame) -> go.Figure:
-    """Heart rate versus elapsed time for a single ride."""
-    fig = go.Figure()
-    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     if has_hr:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["heart_rate"],
             mode="lines", name="Heart Rate",
             line=dict(color="crimson", width=1),
+            yaxis="y2",
         ))
-    else:
-        fig.add_annotation(
-            text="No heart rate data for this ride",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13, color="grey"),
-        )
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
+
     fig.update_layout(
-        title=dict(text="Heart Rate", font=dict(size=15)),
-        height=220, margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False, template="plotly_white",
+        title=dict(text="Power & Heart Rate", font=dict(size=15)),
+        height=300, margin=dict(t=55, b=40, l=60, r=60),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+        xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
+        yaxis=dict(title=dict(text="Power (W)", font=dict(color="darkorange")),
+                   showgrid=True, gridcolor="lightgrey",
+                   tickfont=dict(color="darkorange"),
+                   fixedrange=True),
+        yaxis2=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
+                    overlaying="y", side="right", showgrid=False,
+                    tickfont=dict(color="crimson"),
+                    fixedrange=True),
     )
     return fig
 
@@ -359,10 +464,82 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(text="Mean Maximal Heart Rate", font=dict(size=14)),
-        height=380, margin=dict(t=70, b=50, l=60, r=20),
+        height=440, margin=dict(t=70, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
+    return fig
+
+
+def fig_route_map(records: pd.DataFrame) -> go.Figure:
+    """Scattermap route map using OpenStreetMap tiles (no token required)."""
+    gps = records.dropna(subset=["latitude", "longitude"]) if "latitude" in records.columns else pd.DataFrame()
+    if gps.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            height=350, margin=dict(t=55, b=5, l=5, r=5),
+            title=dict(text="Route Map", font=dict(size=14)),
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            annotations=[dict(text="No GPS data", showarrow=False,
+                              font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    fig = go.Figure(go.Scattermap(
+        lat=gps["latitude"], lon=gps["longitude"],
+        mode="lines",
+        line=dict(width=3, color="#4a90d9"),
+        hoverinfo="skip",
+    ))
+    fig.update_layout(
+        title=dict(text="Route Map", font=dict(size=14)),
+        height=350,
+        margin=dict(t=55, b=5, l=5, r=5),
+        map=dict(
+            style="open-street-map",
+            center=dict(lat=float(gps["latitude"].mean()),
+                        lon=float(gps["longitude"].mean())),
+            zoom=11,
+        ),
+    )
+    return fig
+
+
+def fig_elevation(records: pd.DataFrame) -> go.Figure:
+    """Elevation profile plotted against elapsed time."""
+    alt = records.dropna(subset=["altitude_m"]) if "altitude_m" in records.columns else pd.DataFrame()
+    if alt.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            height=350, template="plotly_white",
+            margin=dict(t=55, b=40, l=60, r=20),
+            title=dict(text="Elevation", font=dict(size=14)),
+            annotations=[dict(text="No elevation data", showarrow=False,
+                              font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    fig = go.Figure(go.Scatter(
+        x=alt["elapsed_min"], y=alt["altitude_m"],
+        mode="lines", name="Elevation",
+        fill="tozeroy",
+        line=dict(color="#6aaa64", width=2),
+        fillcolor="rgba(106,170,100,0.25)",
+    ))
+    fig.update_layout(
+        title=dict(text="Elevation", font=dict(size=14)),
+        height=350,
+        margin=dict(t=55, b=40, l=60, r=20),
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Elevation (m)", showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True)
     return fig
 
 
@@ -469,7 +646,8 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -536,17 +714,6 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             window.groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
         )
-        raw = (
-            window.groupby("duration_s")["power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-
-        # Raw hard-max as a faint reference
-        fig.add_trace(go.Scatter(
-            x=raw["duration_s"], y=raw["power"],
-            mode="lines", name="raw max",
-            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
-        ))
         # Sigmoid-aged curve
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_power"],
@@ -587,7 +754,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "90-Day Mean Maximal Power — S-curve aged<br>"
+                "Power Duration Model<br>"
                 f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
                 f"reference date {today_str}</sup>"
             ),
@@ -595,7 +762,55 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
+
+
+def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
+    today     = datetime.date.today()
+    cutoff    = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+    today_str = today.isoformat()
+
+    window = mmh_all[mmh_all["ride_date"].between(cutoff, today_str)].copy()
+
+    fig = go.Figure()
+
+    if not window.empty:
+        window["age_days"]  = window["ride_date"].apply(
+            lambda d: (today - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]    = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+        window["aged_hr"]   = window["heart_rate"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_hr"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        fig.add_trace(go.Scatter(
+            x=aged["duration_s"], y=aged["aged_hr"],
+            mode="lines+markers", name="aged MMH",
+            marker=dict(size=4),
+            line=dict(color="crimson", width=2.5),
+        ))
+
+    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Mean Max Heartrate<br>"
+                f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
+                f"reference date {today_str}</sup>"
+            ),
+            font=dict(size=14),
+        ),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -656,7 +871,8 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         height=380,
         margin=dict(t=60, b=50, l=60, r=60),
         template="plotly_white",
-        legend=dict(x=0.02, y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -749,12 +965,14 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
                      showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
-                     range=[-awc_kj * 0.05, awc_kj * 1.12])
+                     range=[-awc_kj * 0.05, awc_kj * 1.12],
+                     fixedrange=True)
     fig.update_layout(
         title=dict(text="W' Balance", font=dict(size=14)),
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
+        hovermode="x unified",
         template="plotly_white",
     )
     return fig
@@ -769,8 +987,9 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     Uses a 30-second rolling average (same-length via 'same' convolution),
     splits at CP proportionally, and integrates second-by-second.
 
-    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph)
-    where rate_*_ph are the instantaneous TSS rates in TSS/hour.
+    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg)
+    where rate_*_ph are the instantaneous TSS rates in TSS/hour and
+    rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     kernel = np.ones(30) / 30.0
@@ -800,7 +1019,24 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_map_ph  = tss_rate_ph * f_map
     rate_awc_ph  = tss_rate_ph * f_awc
     t_min        = elapsed_s / 60.0
-    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph
+
+    # 1-hour time-weighted rolling average of total TSS rate.
+    # Uses prefix sums for O(n log n) efficiency; dt-weighted so that
+    # pauses and irregular sampling are handled correctly.
+    cum_dt_ext      = np.empty(len(dt) + 1)
+    cum_dt_ext[0]   = 0.0
+    cum_dt_ext[1:]  = np.cumsum(dt)
+    cum_rdt_ext     = np.empty(len(dt) + 1)
+    cum_rdt_ext[0]  = 0.0
+    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt)
+    left            = np.searchsorted(elapsed_s, elapsed_s - 3600.0, side="left")
+    idx             = np.arange(len(dt))
+    window_dt       = cum_dt_ext[idx + 1] - cum_dt_ext[left]
+    window_rdt      = cum_rdt_ext[idx + 1] - cum_rdt_ext[left]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate_1h_avg = np.where(window_dt > 0, window_rdt / window_dt, 0.0)
+
+    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
@@ -824,7 +1060,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
-    t_min, cum_map, cum_awc, rate_map, rate_awc = _tss_rate_series(elapsed, power, ftp, CP)
+    t_min, cum_map, cum_awc, rate_map, rate_awc, rate_1h_avg = _tss_rate_series(elapsed, power, ftp, CP)
 
     final_map = cum_map[-1]
     final_awc = cum_awc[-1]
@@ -846,17 +1082,25 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
     ))
+    # 1-hour time-weighted rolling average of total TSS rate
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_1h_avg,
+        mode="lines", name="Difficulty",
+        line=dict(color="midnightblue", width=1.5),
+    ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True)
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.02, y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -914,6 +1158,8 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         height=320,
         margin=dict(t=55, b=50, l=60, r=20),
         template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -1073,7 +1319,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)"),
+        showlegend=False,
     )
     return fig
 
@@ -1355,7 +1601,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         freshness_card = html.Div(style={
             **card_style,
             "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
-            "minWidth": "130px",
+            "minWidth": "130px", "marginLeft": "auto",
         }, children=card_children)
     else:
         freshness_card = None
@@ -1380,10 +1626,6 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         card("LTP",  ltp_v,  "W"),
         card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
-        html.Div(
-            f"as of {as_of}",
-            style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
-        ),
     ]
     if freshness_card is not None:
         children.append(freshness_card)
@@ -1403,12 +1645,13 @@ init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
 backfill_mmh(_boot_conn)
+backfill_gps_elevation(_boot_conn)
 _boot_conn.close()
 
 _reload()          # initial load (picks up freshly computed pdc_params)
 _start_watcher()   # background thread
 
-app = dash.Dash(__name__, title="Cycling Power Analysis")
+app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None)
 
 _NAV_BASE = {
     "display": "block", "width": "100%", "padding": "12px 20px",
@@ -1457,7 +1700,14 @@ app.layout = html.Div(
                 # Current fitness metric boxes (moved here from global header)
                 html.Div(id="metric-boxes", style={"marginBottom": "16px"}),
 
-                dcc.Graph(id="graph-90day-mmp"),
+                html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-90day-mmp"),
+                    ]),
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-90day-mmh"),
+                    ]),
+                ]),
 
                 html.Hr(),
 
@@ -1470,38 +1720,128 @@ app.layout = html.Div(
                 html.Div(style={"height": "40px"}),
             ]),
 
+            # ── Activities list page ────────────────────────────────────────
+            html.Div(id="page-activities-list", style={"display": "none"}, children=[
+                html.H2("Activities", style={"color": "#e8edf5", "marginBottom": "20px",
+                                             "fontWeight": "600", "fontSize": "22px"}),
+                dash_table.DataTable(
+                    id="activities-table",
+                    columns=[
+                        {"name": "",           "id": "Route",     "presentation": "markdown"},
+                        {"name": "Date",       "id": "Date"},
+                        {"name": "Name",       "id": "Name"},
+                        {"name": "Duration",   "id": "Duration"},
+                        {"name": "Avg Power",  "id": "Avg Power"},
+                        {"name": "NP",         "id": "NP"},
+                        {"name": "TSS",        "id": "TSS"},
+                        {"name": "IF",         "id": "IF"},
+                    ],
+                    markdown_options={"html": True},
+                    sort_action="native",
+                    style_table={"overflowX": "auto", "borderRadius": "8px", "overflow": "hidden"},
+                    style_header={
+                        "backgroundColor": "#ffffff",
+                        "color": "#6b7280",
+                        "fontWeight": "600",
+                        "fontSize": "11px",
+                        "letterSpacing": "0.06em",
+                        "textTransform": "uppercase",
+                        "borderTop": "none",
+                        "borderLeft": "none",
+                        "borderRight": "none",
+                        "borderBottom": "2px solid #e5e7eb",
+                    },
+                    style_data={
+                        "backgroundColor": "#ffffff",
+                        "color": "#111827",
+                        "borderTop": "none",
+                        "borderLeft": "none",
+                        "borderRight": "none",
+                        "borderBottom": "1px solid #f3f4f6",
+                        "cursor": "pointer",
+                    },
+                    style_data_conditional=[
+                        {
+                            "if": {"state": "active"},
+                            "backgroundColor": "#f0f7ff",
+                            "borderBottom": "1px solid #bfdbfe",
+                            "color": "#111827",
+                        },
+                        {
+                            "if": {"row_index": "odd"},
+                            "backgroundColor": "#fafafa",
+                        },
+                    ],
+                    style_cell={
+                        "padding": "12px 16px",
+                        "textAlign": "left",
+                        "fontSize": "14px",
+                        "fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                        "border": "none",
+                    },
+                    style_cell_conditional=[{
+                        "if": {"column_id": "Route"},
+                        "width": "90px", "minWidth": "90px", "maxWidth": "90px",
+                        "padding": "6px 10px", "textAlign": "center",
+                    }],
+                ),
+            ]),
+
             # ── Activities page ────────────────────────────────────────────
             html.Div(id="page-activities", style={"display": "none"}, children=[
 
-                # Ride selector
-                html.Div([
-                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px",
-                                                        "color": "#e8edf5"}),
-                    dcc.Dropdown(
-                        id="ride-dropdown",
-                        clearable=False,
-                        style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
-                    ),
-                ], style={"marginBottom": "20px"}),
+                # Back navigation + hidden dropdown (dropdown kept in DOM for callback state)
+                html.Button(
+                    "\u2190 Back to Activities",
+                    id="btn-back-to-list",
+                    style={
+                        "background": "transparent", "border": "none",
+                        "color": "#6e9ac7", "cursor": "pointer",
+                        "fontSize": "14px", "padding": "0 0 16px 0",
+                    },
+                ),
+                dcc.Dropdown(id="ride-dropdown", clearable=False, style={"display": "none"}),
 
-                # Per-activity metric boxes
-                html.Div(id="activity-metric-boxes"),
+                # Ride title (left) + PDC fitness metrics (right)
+                html.Div(style={
+                    "display": "flex", "justifyContent": "space-between",
+                    "alignItems": "flex-end", "marginBottom": "20px",
+                }, children=[
+                    html.Div(id="ride-header"),
+                    html.Div(id="pdc-stats",
+                             style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}),
+                ]),
 
                 # Per-ride charts
-                dcc.Graph(id="graph-power"),
-                html.Div(id="hr-section", children=[
-                    html.Hr(),
-                    dcc.Graph(id="graph-hr"),
+                html.Div(style={"display": "flex", "justifyContent": "space-between",
+                                "alignItems": "flex-start"}, children=[
+                    html.Div(id="power-stats"),
+                    html.Div(id="hr-stats"),
                 ]),
+                dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
                 dcc.Graph(id="graph-wbal"),
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
-                dcc.Graph(id="graph-mmp-pdc"),
-                html.Div(id="mmh-section", children=[
+                html.Div(id="graph-map-elevation-section", children=[
+                    html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                        html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                            dcc.Graph(id="graph-route-map"),
+                        ]),
+                        html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                            dcc.Graph(id="graph-elevation"),
+                        ]),
+                    ]),
                     html.Hr(),
-                    dcc.Graph(id="graph-mmh"),
+                ]),
+                html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-mmp-pdc"),
+                    ]),
+                    html.Div(id="mmh-section", style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-mmh"),
+                    ]),
                 ]),
 
                 html.Div(style={"height": "40px"}),
@@ -1514,19 +1854,47 @@ app.layout = html.Div(
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 @app.callback(
-    Output("page-fitness",    "style"),
-    Output("page-activities", "style"),
-    Output("nav-fitness",     "style"),
-    Output("nav-activities",  "style"),
-    Input("nav-fitness",      "n_clicks"),
-    Input("nav-activities",   "n_clicks"),
+    Output("page-fitness",          "style"),
+    Output("page-activities-list",  "style"),
+    Output("page-activities",       "style"),
+    Output("nav-fitness",           "style"),
+    Output("nav-activities",        "style"),
+    Input("nav-fitness",            "n_clicks"),
+    Input("nav-activities",         "n_clicks"),
 )
 def switch_page(_, __):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return hide, show, _NAV_BASE, _NAV_ACTIVE
-    return show, hide, _NAV_ACTIVE, _NAV_BASE
+        return hide, show, hide, _NAV_BASE, _NAV_ACTIVE
+    return show, hide, hide, _NAV_ACTIVE, _NAV_BASE
+
+
+@app.callback(
+    Output("ride-dropdown",          "value", allow_duplicate=True),
+    Output("page-activities-list",   "style", allow_duplicate=True),
+    Output("page-activities",        "style", allow_duplicate=True),
+    Input("activities-table",        "active_cell"),
+    State("activities-table",        "data"),
+    prevent_initial_call=True,
+)
+def open_activity(active_cell, table_data):
+    if not active_cell or not table_data:
+        raise dash.exceptions.PreventUpdate
+    ride_id = table_data[active_cell["row"]]["id"]
+    return ride_id, {"display": "none"}, {"display": "block"}
+
+
+@app.callback(
+    Output("page-activities-list",   "style", allow_duplicate=True),
+    Output("page-activities",        "style", allow_duplicate=True),
+    Input("btn-back-to-list",        "n_clicks"),
+    prevent_initial_call=True,
+)
+def go_back_to_list(n_clicks):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    return {"display": "block"}, {"display": "none"}
 
 
 @app.callback(
@@ -1534,16 +1902,18 @@ def switch_page(_, __):
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
+    Output("graph-90day-mmh",          "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
+    Output("activities-table",         "data"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
 )
 def poll_for_new_data(n_intervals, known_ver, current_ride_id):
-    ver, rides, mmp_all, mmh_all, pdc_params = get_data()
+    ver, rides, mmp_all, mmh_all, pdc_params, gps_traces = get_data()
 
     if ver == known_ver and n_intervals > 0:
         # Nothing changed — return no-update for everything
@@ -1567,51 +1937,205 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         options,
         selected,
         fig_90day_mmp(mmp_all),
+        fig_90day_mmh(mmh_all),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
         _metric_boxes(pdc_params, rides),
+        _build_table_data(rides, pdc_params, gps_traces),
     )
 
 
 @app.callback(
-    Output("graph-power",          "figure"),
-    Output("graph-hr",             "figure"),
-    Output("graph-wbal",           "figure"),
-    Output("graph-tss-components", "figure"),
-    Output("graph-mmp-pdc",        "figure"),
-    Output("graph-mmh",            "figure"),
-    Output("activity-metric-boxes", "children"),
-    Output("hr-section",           "style"),
-    Output("mmh-section",          "style"),
+    Output("graph-power-hr",              "figure"),
+    Output("graph-wbal",                 "figure"),
+    Output("graph-tss-components",       "figure"),
+    Output("graph-mmp-pdc",              "figure"),
+    Output("graph-mmh",                  "figure"),
+    Output("mmh-section",                "style"),
+    Output("graph-route-map",            "figure"),
+    Output("graph-elevation",            "figure"),
+    Output("graph-map-elevation-section","style"),
+    Output("ride-header",                "children"),
+    Output("pdc-stats",                  "children"),
+    Output("power-stats",                "children"),
+    Output("hr-stats",                   "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
 def update_ride_charts(ride_id, _ver):
     if ride_id is None:
         raise dash.exceptions.PreventUpdate
-    _, rides, mmp_all, mmh_all, pdc_params = get_data()
+    _, rides, mmp_all, mmh_all, pdc_params, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
     # Fit on-the-fly once; share params with W'bal and TSS components so all
     # activity charts use the same PDC parameters as the PDC curve chart.
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
-    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
-    hr_style  = {} if has_hr else {"display": "none"}
-    mmh_style = {} if has_hr else {"display": "none"}
+    has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
+    mmh_style = {"flex": "1", "minWidth": "0"} if has_hr else {"flex": "1", "minWidth": "0", "display": "none"}
+
+    has_gps   = "latitude" in records.columns and records["latitude"].notna().any()
+    map_style = {"display": "block"} if has_gps else {"display": "none"}
+
+    def _i(v):
+        return f"{int(round(float(v)))}" if pd.notna(v) else "—"
+
+    def _f2(v):
+        return f"{float(v):.2f}" if pd.notna(v) else "—"
+
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    stored = params_row.iloc[0] if not params_row.empty else None
+
+    # PDC fit params — prefer on-the-fly, fall back to stored
+    if live_pdc is not None:
+        ftp_v  = _i(live_pdc.get("ftp"))
+        map_v  = _i(live_pdc.get("MAP"))
+        awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
+        pmax_v = _i(live_pdc.get("Pmax"))
+        ltp_v  = _i(live_pdc.get("ltp"))
+    elif stored is not None:
+        ftp_v  = _i(stored.get("ftp"))
+        map_v  = _i(stored.get("MAP"))
+        awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
+        pmax_v = _i(stored.get("Pmax"))
+        ltp_v  = _i(stored.get("ltp"))
+    else:
+        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
+
+    # Ride performance metrics from stored pdc_params
+    np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
+    if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
+    tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
+    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
+    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+
+    # Ride header: name + date
+    ride_header = [
+        html.Span(ride["name"].replace("_", " "),
+                  style={"fontSize": "20px", "fontWeight": "bold", "color": "#e8edf5"}),
+        html.Span(ride["ride_date"],
+                  style={"fontSize": "13px", "color": "#7a8fbb", "marginLeft": "10px"}),
+    ]
+
+    # PDC fitness cards (top right, aligned with ride header)
+    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
+           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
+    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+           "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def _card(lbl, val, unit=""):
+        return _make_card(lbl, val, unit, _cs, _ls, _vs, _us)
+
+    pdc_stats = [
+        _card("FTP",  ftp_v,  "W"),
+        _card("MAP",  map_v,  "W"),
+        _card("LTP",  ltp_v,  "W"),
+        _card("AWC",  awc_v,  "kJ"),
+        _card("Pmax", pmax_v, "W"),
+    ]
+
+    # Difficulty: max 1-hour time-weighted rolling TSS rate over the ride
+    difficulty_v = "—"
+    if not records["power"].isna().all():
+        if live_pdc is not None:
+            _cp, _ftp = live_pdc["MAP"], live_pdc["ftp"]
+        elif stored is not None:
+            _cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
+            _ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _cp
+        else:
+            _cp = _ftp = None
+        if _cp is not None and _ftp and _ftp > 0:
+            _el  = records["elapsed_s"].to_numpy(dtype=float)
+            _pw  = records["power"].to_numpy(dtype=float)
+            *_, rate_1h_avg = _tss_rate_series(_el, _pw, float(_ftp), float(_cp))
+            difficulty_v = _i(rate_1h_avg.max())
+
+    # Power stats row (ride metrics + raw power, above the power graph)
+    power_stats = _graph_stat_row([
+        ("NP",         np_v,                         "W"),
+        ("IF",         if_v,                         ""),
+        ("TSS",        tss_v,                        ""),
+        ("TSS MAP",    tss_map_v,                    ""),
+        ("TSS AWC",    tss_awc_v,                    ""),
+        ("Difficulty", difficulty_v,                 "TSS/h"),
+        ("Avg Power",  _i(ride.get("avg_power")),    "W"),
+        ("Max Power",  _i(ride.get("max_power")),    "W"),
+    ])
+
+    # HR stats row (above HR graph, hidden with hr-section when no HR data)
+    hr_stats = _graph_stat_row([
+        ("Avg HR", _i(ride.get("avg_heart_rate")), "bpm"),
+        ("Max HR", _i(ride.get("max_heart_rate")), "bpm"),
+    ])
 
     return (
-        fig_power(records, ride["name"]),
-        fig_hr(records),
+        fig_power_hr(records, ride["name"]),
         fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
-        _activity_metric_boxes(ride, pdc_params, live_pdc),
-        hr_style,
         mmh_style,
+        fig_route_map(records),
+        fig_elevation(records),
+        map_style,
+        ride_header,
+        pdc_stats,
+        power_stats,
+        hr_stats,
     )
+
+
+# ── Synced x-axis zoom/pan for the three ride-time charts ─────────────────────
+
+@app.callback(
+    Output("graph-power-hr",       "figure", allow_duplicate=True),
+    Output("graph-wbal",           "figure", allow_duplicate=True),
+    Output("graph-tss-components", "figure", allow_duplicate=True),
+    Output("graph-elevation",      "figure", allow_duplicate=True),
+    Input("graph-power-hr",        "relayoutData"),
+    Input("graph-wbal",            "relayoutData"),
+    Input("graph-tss-components",  "relayoutData"),
+    Input("graph-elevation",       "relayoutData"),
+    prevent_initial_call=True,
+)
+def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
+    if not ctx.triggered_id:
+        raise dash.exceptions.PreventUpdate
+
+    rld = {
+        "graph-power-hr":       rld_phr,
+        "graph-wbal":           rld_wb,
+        "graph-tss-components": rld_tss,
+        "graph-elevation":      rld_elev,
+    }[ctx.triggered_id]
+
+    if not rld:
+        raise dash.exceptions.PreventUpdate
+
+    if "xaxis.range[0]" in rld and "xaxis.range[1]" in rld:
+        new_range = [rld["xaxis.range[0]"], rld["xaxis.range[1]"]]
+        autorange = False
+    elif rld.get("xaxis.autorange") is True:
+        autorange = True
+        new_range = None
+    else:
+        raise dash.exceptions.PreventUpdate
+
+    def make_patch():
+        p = Patch()
+        if autorange:
+            p["layout"]["xaxis"]["autorange"] = True
+        else:
+            p["layout"]["xaxis"]["range"] = new_range
+            p["layout"]["xaxis"]["autorange"] = False
+        return p
+
+    return make_patch(), make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
