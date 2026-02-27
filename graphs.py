@@ -651,7 +651,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
-    """Instantaneous TSS rate (TSS/h) split into MAP and AWC components."""
+    """TSS Rate (TSS/h) and cumulative TSS split into MAP and AWC components."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -671,41 +671,65 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     power   = records["power"].to_numpy(dtype=float)
     t_min, cum_map, cum_awc, rate_map, rate_awc, rate_1h_avg = _tss_rate_series(elapsed, power, ftp, CP)
 
-    final_map = cum_map[-1]
-    final_awc = cum_awc[-1]
+    final_map  = cum_map[-1]
+    final_awc  = cum_awc[-1]
     rate_total = rate_map + rate_awc
+    cum_total  = cum_map + cum_awc
 
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        row_heights=[0.5, 0.5],
+    )
 
-    # Aerobic layer (fills from zero)
+    # ── Row 1: instantaneous TSS rate ────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_map,
         mode="lines", name=f"TSS_MAP (total {final_map:.0f})",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
-    ))
-    # Anaerobic layer (fills from aerobic to total)
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
         mode="lines", name=f"TSS_AWC (total {final_awc:.0f})",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
-    ))
-    # 1-hour time-weighted rolling average of total TSS rate
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
         mode="lines", name="Difficulty",
         line=dict(color="midnightblue", width=1.5),
-    ))
+    ), row=1, col=1)
+
+    # ── Row 2: cumulative TSS ────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_map,
+        mode="lines", name="Cumulative TSS_MAP",
+        fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
+        line=dict(color="seagreen", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_total,
+        mode="lines", name="Cumulative TSS_AWC",
+        fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
+        line=dict(color="darkorange", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="lightgrey", row=2, col=1)
+    fig.update_xaxes(showgrid=True, gridcolor="lightgrey", row=1, col=1)
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True)
+                     fixedrange=True, row=1, col=1)
+    fig.update_yaxes(title_text="Cumulative TSS",
+                     showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True, row=2, col=1)
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
-        height=260,
+        height=420,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
         showlegend=False,
