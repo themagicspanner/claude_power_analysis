@@ -1536,11 +1536,14 @@ app.layout = html.Div(
                 # Current fitness metric boxes (moved here from global header)
                 html.Div(id="metric-boxes", style={"marginBottom": "16px"}),
 
-                dcc.Graph(id="graph-90day-mmp"),
-
-                html.Hr(),
-
-                dcc.Graph(id="graph-90day-mmh"),
+                html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-90day-mmp"),
+                    ]),
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-90day-mmh"),
+                    ]),
+                ]),
 
                 html.Hr(),
 
