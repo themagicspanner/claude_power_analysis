@@ -560,17 +560,6 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             window.groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
         )
-        raw = (
-            window.groupby("duration_s")["power"]
-            .max().reset_index().sort_values("duration_s")
-        )
-
-        # Raw hard-max as a faint reference
-        fig.add_trace(go.Scatter(
-            x=raw["duration_s"], y=raw["power"],
-            mode="lines", name="raw max",
-            line=dict(color="lightsteelblue", width=1.5, dash="dot"),
-        ))
         # Sigmoid-aged curve
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_power"],
@@ -611,7 +600,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "90-Day Mean Maximal Power — S-curve aged<br>"
+                "Power Duration Model<br>"
                 f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
                 f"reference date {today_str}</sup>"
             ),
@@ -645,16 +634,6 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
             window.groupby("duration_s")["aged_hr"]
             .max().reset_index().sort_values("duration_s")
         )
-        raw = (
-            window.groupby("duration_s")["heart_rate"]
-            .max().reset_index().sort_values("duration_s")
-        )
-
-        fig.add_trace(go.Scatter(
-            x=raw["duration_s"], y=raw["heart_rate"],
-            mode="lines", name="raw max",
-            line=dict(color="lightsalmon", width=1.5, dash="dot"),
-        ))
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_hr"],
             mode="lines+markers", name="aged MMH",
@@ -668,7 +647,7 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "90-Day Mean Maximal Heart Rate — S-curve aged<br>"
+                "Mean Max Heartrate<br>"
                 f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
                 f"reference date {today_str}</sup>"
             ),
