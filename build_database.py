@@ -483,9 +483,9 @@ def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
     """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
     rows = conn.execute(
         """SELECT r.id, r.name FROM rides r
-           WHERE EXISTS (
+           WHERE NOT EXISTS (
                SELECT 1 FROM records rec
-               WHERE rec.ride_id = r.id AND rec.latitude IS NULL
+               WHERE rec.ride_id = r.id AND rec.latitude IS NOT NULL
            )
            ORDER BY r.ride_date, r.id"""
     ).fetchall()
