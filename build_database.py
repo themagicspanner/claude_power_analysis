@@ -414,15 +414,15 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             ride_id,
             round(float(AWC),  1),
             round(float(Pmax), 1),
-            round(float(MAP),  1),
+            float(MAP),               # full precision — re-used in split computation
             round(float(tau2), 1),
             datetime.date.today().isoformat(),
-            round(ftp,     1),
+            float(ftp),               # full precision — re-used in TSS computation
             round(np_val,  1),
             round(if_val,  3),
-            round(tss,     1),
-            round(tss_map, 1),
-            round(tss_awc, 1),
+            tss,                      # full precision — tss_map + tss_awc == tss exactly
+            tss_map,
+            tss_awc,
             round(ltp,     1),
         ),
     )
