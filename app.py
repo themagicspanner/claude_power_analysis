@@ -1593,10 +1593,13 @@ app.layout = html.Div(
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
-                dcc.Graph(id="graph-mmp-pdc"),
-                html.Div(id="mmh-section", children=[
-                    html.Hr(),
-                    dcc.Graph(id="graph-mmh"),
+                html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-mmp-pdc"),
+                    ]),
+                    html.Div(id="mmh-section", style={"flex": "1", "minWidth": "0"}, children=[
+                        dcc.Graph(id="graph-mmh"),
+                    ]),
                 ]),
 
                 html.Div(style={"height": "40px"}),
@@ -1699,7 +1702,7 @@ def update_ride_charts(ride_id, _ver):
 
     has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     hr_style  = {} if has_hr else {"display": "none"}
-    mmh_style = {} if has_hr else {"display": "none"}
+    mmh_style = {"flex": "1", "minWidth": "0"} if has_hr else {"flex": "1", "minWidth": "0", "display": "none"}
 
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
