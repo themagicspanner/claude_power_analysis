@@ -1604,9 +1604,7 @@ app.layout = html.Div(
                         {"name": "NP",         "id": "NP"},
                         {"name": "TSS",        "id": "TSS"},
                         {"name": "IF",         "id": "IF"},
-                        {"name": "id",         "id": "id"},
                     ],
-                    hidden_columns=["id"],
                     sort_action="native",
                     style_table={"overflowX": "auto"},
                     style_header={
