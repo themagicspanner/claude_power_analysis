@@ -438,6 +438,8 @@ def backfill_mmh(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """SELECT r.id, r.name FROM rides r
            WHERE NOT EXISTS (SELECT 1 FROM mmh m WHERE m.ride_id = r.id)
+             AND EXISTS (SELECT 1 FROM records rec
+                         WHERE rec.ride_id = r.id AND rec.heart_rate IS NOT NULL)
            ORDER BY r.ride_date, r.id"""
     ).fetchall()
     if not rows:
