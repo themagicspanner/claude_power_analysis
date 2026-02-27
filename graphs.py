@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from build_database import (
-    _power_model, _fit_power_curve,
+    _power_model, _fit_power_curve, _normalized_power,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 
@@ -589,13 +589,18 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
-    kernel = np.ones(30) / 30.0
-    p_30s  = np.convolve(p, kernel, mode="same")
 
     dt = np.empty_like(elapsed_s)
     dt[0]  = 0.0
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
+
+    # Detect sample rate from the data so the 30-second window is correct for
+    # any recording frequency (1 Hz, 2 Hz, …).
+    hz     = 1.0 / float(np.median(dt[dt > 0])) if (dt > 0).any() else 1.0
+    window = max(1, int(30 * hz))
+    kernel = np.ones(window) / window
+    p_30s  = np.convolve(p, kernel, mode="same")
 
     # Split fractions from instantaneous power so that brief above-CP efforts register
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -610,10 +615,11 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         tss_rate    = np.zeros_like(p_30s)
 
     # Scale so cumulative values match the NP-based TSS (same basis as stat cards).
-    # NP = (mean(p_30s^4))^0.25; tss_np uses 4th-power mean, tss_rate uses 2nd-power.
+    # Uses _normalized_power — the exact same function that produced the stored TSS —
+    # so tss_np == stored TSS and the chart endpoints match the stat cards precisely.
     dur_s   = float(elapsed_s[-1] - elapsed_s[0]) if len(elapsed_s) > 1 else 0.0
-    np_pwr  = float(np.mean(p_30s ** 4) ** 0.25) if ftp > 0 else 0.0
-    tss_np  = (dur_s / 3600.0) * (np_pwr / ftp) ** 2 * 100.0 if ftp > 0 else 0.0
+    np_val  = _normalized_power(power, hz) if ftp > 0 else 0.0
+    tss_np  = (dur_s / 3600.0) * (np_val / ftp) ** 2 * 100.0 if ftp > 0 else 0.0
     tss_p30 = float(np.sum(tss_rate))
     scale   = (tss_np / tss_p30) if tss_p30 > 0 else 1.0
 
