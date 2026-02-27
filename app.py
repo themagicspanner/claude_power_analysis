@@ -323,7 +323,8 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
         title=dict(text="Power & Heart Rate", font=dict(size=15)),
         height=300, margin=dict(t=55, b=40, l=60, r=60),
         template="plotly_white",
-        legend=dict(x=0.01, xanchor="left", y=0.99),
+        showlegend=False,
+        hovermode="x unified",
         xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
         yaxis=dict(title=dict(text="Power (W)", font=dict(color="darkorange")),
                    showgrid=True, gridcolor="lightgrey",
@@ -382,7 +383,8 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
         title=dict(text="Mean Maximal Heart Rate", font=dict(size=14)),
         height=440, margin=dict(t=70, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -490,7 +492,8 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -616,7 +619,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -672,7 +676,8 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
         template="plotly_white",
-        legend=dict(x=0.98, xanchor="right", y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -733,7 +738,8 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         height=380,
         margin=dict(t=60, b=50, l=60, r=60),
         template="plotly_white",
-        legend=dict(x=0.02, y=0.98),
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -832,6 +838,7 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
         height=280,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
+        hovermode="x unified",
         template="plotly_white",
     )
     return fig
@@ -945,7 +952,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
         mode="lines", name="Difficulty",
-        line=dict(color="midnightblue", width=3),
+        line=dict(color="midnightblue", width=1.5),
     ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
@@ -957,8 +964,8 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
+        showlegend=False,
         hovermode="x unified",
-        legend=dict(x=0.02, y=0.98),
     )
     return fig
 
@@ -1016,6 +1023,8 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         height=320,
         margin=dict(t=55, b=50, l=60, r=20),
         template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
     )
     return fig
 
@@ -1175,7 +1184,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(255,255,255,0.85)"),
+        showlegend=False,
     )
     return fig
 
