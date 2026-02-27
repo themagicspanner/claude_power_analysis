@@ -28,7 +28,8 @@ import pandas as pd
 from scipy.optimize import curve_fit
 
 BASE_DIR = os.path.dirname(__file__)
-FIT_DIR  = os.path.join(BASE_DIR, "raw_data")
+FIT_DIR      = os.path.join(BASE_DIR, "raw_data")
+_SEMI_TO_DEG = 180.0 / 2**31   # FIT semicircle → decimal degree
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
 
 # Sigmoid aging constants for decayed MMP / PDC fitting
@@ -220,7 +221,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # column already present
 
-    for col_def in ["heart_rate INTEGER"]:
+    for col_def in ["heart_rate INTEGER", "latitude REAL", "longitude REAL", "altitude_m REAL"]:
         try:
             conn.execute(f"ALTER TABLE records ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
@@ -240,16 +241,22 @@ def init_db(conn: sqlite3.Connection) -> None:
 # ── FIT parsing ───────────────────────────────────────────────────────────────
 
 def read_fit(path: str) -> pd.DataFrame:
-    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate."""
+    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate,
+    latitude, longitude, altitude_m."""
     rows = []
     with fitdecode.FitReader(path) as fit:
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
                 continue
+            raw_lat = frame.get_value("position_lat",  fallback=None)
+            raw_lon = frame.get_value("position_long", fallback=None)
             rows.append({
-                "timestamp":  frame.get_value("timestamp",  fallback=None),
-                "power":      frame.get_value("power",      fallback=None),
-                "heart_rate": frame.get_value("heart_rate", fallback=None),
+                "timestamp":  frame.get_value("timestamp",        fallback=None),
+                "power":      frame.get_value("power",            fallback=None),
+                "heart_rate": frame.get_value("heart_rate",       fallback=None),
+                "latitude":   round(raw_lat * _SEMI_TO_DEG, 7) if raw_lat is not None else None,
+                "longitude":  round(raw_lon * _SEMI_TO_DEG, 7) if raw_lon is not None else None,
+                "altitude_m": frame.get_value("enhanced_altitude", fallback=None),
             })
 
     if not rows:
@@ -472,6 +479,46 @@ def backfill_mmh(conn: sqlite3.Connection) -> None:
     print("[mmh] Backfill complete.")
 
 
+def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
+    """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
+    rows = conn.execute(
+        """SELECT r.id, r.name FROM rides r
+           WHERE EXISTS (
+               SELECT 1 FROM records rec
+               WHERE rec.ride_id = r.id AND rec.latitude IS NULL
+           )
+           ORDER BY r.ride_date, r.id"""
+    ).fetchall()
+    if not rows:
+        return
+
+    print(f"[gps] Backfilling GPS/elevation for {len(rows)} ride(s) …")
+    for ride_id, name in rows:
+        fit_path = os.path.join(FIT_DIR, name + ".fit")
+        if not os.path.exists(fit_path):
+            continue
+        df = read_fit(fit_path)
+        if df.empty or "latitude" not in df.columns or df["latitude"].isna().all():
+            continue
+        conn.executemany(
+            """UPDATE records
+               SET latitude = ?, longitude = ?, altitude_m = ?
+               WHERE ride_id = ? AND elapsed_s = ?""",
+            (
+                (
+                    row.latitude  if pd.notna(row.latitude)  else None,
+                    row.longitude if pd.notna(row.longitude) else None,
+                    round(float(row.altitude_m), 1) if pd.notna(row.altitude_m) else None,
+                    ride_id,
+                    row.elapsed_s,
+                )
+                for row in df.itertuples()
+            ),
+        )
+        conn.commit()
+    print("[gps] Backfill complete.")
+
+
 def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
     """Delete and recompute PDC params for all rides in chronological order.
 
@@ -529,7 +576,8 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
 
     # Raw records
     conn.executemany(
-        "INSERT INTO records (ride_id, timestamp, elapsed_s, power, heart_rate) VALUES (?,?,?,?,?)",
+        "INSERT INTO records (ride_id, timestamp, elapsed_s, power, heart_rate,"
+        " latitude, longitude, altitude_m) VALUES (?,?,?,?,?,?,?,?)",
         (
             (
                 ride_id,
@@ -537,6 +585,9 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
                 row.elapsed_s,
                 int(row.power)      if pd.notna(row.power)      else None,
                 int(row.heart_rate) if pd.notna(row.heart_rate) else None,
+                row.latitude   if pd.notna(row.latitude)   else None,
+                row.longitude  if pd.notna(row.longitude)  else None,
+                round(float(row.altitude_m), 1) if pd.notna(row.altitude_m) else None,
             )
             for row in df.itertuples()
         ),

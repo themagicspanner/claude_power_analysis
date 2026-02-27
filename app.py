@@ -37,7 +37,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from build_database import (
-    init_db, process_ride, backfill_pdc_params, backfill_mmh,
+    init_db, process_ride, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
@@ -165,7 +165,8 @@ def _load_pdc_params() -> pd.DataFrame:
 def load_records(ride_id: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        "SELECT elapsed_s, power, heart_rate, latitude, longitude, altitude_m"
+        " FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn,
         params=(ride_id,),
     )
@@ -411,6 +412,77 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
         showlegend=False,
         hovermode="x unified",
     )
+    return fig
+
+
+def fig_route_map(records: pd.DataFrame) -> go.Figure:
+    """Scattermapbox route map using OpenStreetMap tiles (no token required)."""
+    gps = records.dropna(subset=["latitude", "longitude"]) if "latitude" in records.columns else pd.DataFrame()
+    if gps.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            height=350, margin=dict(t=55, b=5, l=5, r=5),
+            title=dict(text="Route Map", font=dict(size=14)),
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            annotations=[dict(text="No GPS data", showarrow=False,
+                              font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    fig = go.Figure(go.Scattermapbox(
+        lat=gps["latitude"], lon=gps["longitude"],
+        mode="lines",
+        line=dict(width=3, color="#4a90d9"),
+        hoverinfo="skip",
+    ))
+    fig.update_layout(
+        title=dict(text="Route Map", font=dict(size=14)),
+        height=350,
+        margin=dict(t=55, b=5, l=5, r=5),
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=float(gps["latitude"].mean()),
+                        lon=float(gps["longitude"].mean())),
+            zoom=11,
+        ),
+    )
+    return fig
+
+
+def fig_elevation(records: pd.DataFrame) -> go.Figure:
+    """Elevation profile plotted against elapsed time."""
+    alt = records.dropna(subset=["altitude_m"]) if "altitude_m" in records.columns else pd.DataFrame()
+    if alt.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            height=350, template="plotly_white",
+            margin=dict(t=55, b=40, l=60, r=20),
+            title=dict(text="Elevation", font=dict(size=14)),
+            annotations=[dict(text="No elevation data", showarrow=False,
+                              font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    fig = go.Figure(go.Scatter(
+        x=alt["elapsed_min"], y=alt["altitude_m"],
+        mode="lines", name="Elevation",
+        fill="tozeroy",
+        line=dict(color="#6aaa64", width=2),
+        fillcolor="rgba(106,170,100,0.25)",
+    ))
+    fig.update_layout(
+        title=dict(text="Elevation", font=dict(size=14)),
+        height=350,
+        margin=dict(t=55, b=40, l=60, r=20),
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=False,
+    )
+    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Elevation (m)", showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True)
     return fig
 
 
@@ -1516,6 +1588,7 @@ init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
 backfill_mmh(_boot_conn)
+backfill_gps_elevation(_boot_conn)
 _boot_conn.close()
 
 _reload()          # initial load (picks up freshly computed pdc_params)
@@ -1662,6 +1735,17 @@ app.layout = html.Div(
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
+                html.Div(id="graph-map-elevation-section", children=[
+                    html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                        html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                            dcc.Graph(id="graph-route-map"),
+                        ]),
+                        html.Div(style={"flex": "1", "minWidth": "0"}, children=[
+                            dcc.Graph(id="graph-elevation"),
+                        ]),
+                    ]),
+                    html.Hr(),
+                ]),
                 html.Div(style={"display": "flex", "gap": "16px"}, children=[
                     html.Div(style={"flex": "1", "minWidth": "0"}, children=[
                         dcc.Graph(id="graph-mmp-pdc"),
@@ -1774,16 +1858,19 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 
 @app.callback(
-    Output("graph-power-hr",        "figure"),
-    Output("graph-wbal",           "figure"),
-    Output("graph-tss-components", "figure"),
-    Output("graph-mmp-pdc",        "figure"),
-    Output("graph-mmh",            "figure"),
-    Output("mmh-section",          "style"),
-    Output("ride-header",          "children"),
-    Output("pdc-stats",            "children"),
-    Output("power-stats",          "children"),
-    Output("hr-stats",             "children"),
+    Output("graph-power-hr",              "figure"),
+    Output("graph-wbal",                 "figure"),
+    Output("graph-tss-components",       "figure"),
+    Output("graph-mmp-pdc",              "figure"),
+    Output("graph-mmh",                  "figure"),
+    Output("mmh-section",                "style"),
+    Output("graph-route-map",            "figure"),
+    Output("graph-elevation",            "figure"),
+    Output("graph-map-elevation-section","style"),
+    Output("ride-header",                "children"),
+    Output("pdc-stats",                  "children"),
+    Output("power-stats",                "children"),
+    Output("hr-stats",                   "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1799,6 +1886,9 @@ def update_ride_charts(ride_id, _ver):
 
     has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     mmh_style = {"flex": "1", "minWidth": "0"} if has_hr else {"flex": "1", "minWidth": "0", "display": "none"}
+
+    has_gps   = "latitude" in records.columns and records["latitude"].notna().any()
+    map_style = {"display": "block"} if has_gps else {"display": "none"}
 
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
@@ -1901,6 +1991,9 @@ def update_ride_charts(ride_id, _ver):
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
         mmh_style,
+        fig_route_map(records),
+        fig_elevation(records),
+        map_style,
         ride_header,
         pdc_stats,
         power_stats,
@@ -1914,12 +2007,14 @@ def update_ride_charts(ride_id, _ver):
     Output("graph-power-hr",       "figure", allow_duplicate=True),
     Output("graph-wbal",           "figure", allow_duplicate=True),
     Output("graph-tss-components", "figure", allow_duplicate=True),
+    Output("graph-elevation",      "figure", allow_duplicate=True),
     Input("graph-power-hr",        "relayoutData"),
     Input("graph-wbal",            "relayoutData"),
     Input("graph-tss-components",  "relayoutData"),
+    Input("graph-elevation",       "relayoutData"),
     prevent_initial_call=True,
 )
-def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss):
+def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
     if not ctx.triggered_id:
         raise dash.exceptions.PreventUpdate
 
@@ -1927,6 +2022,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss):
         "graph-power-hr":       rld_phr,
         "graph-wbal":           rld_wb,
         "graph-tss-components": rld_tss,
+        "graph-elevation":      rld_elev,
     }[ctx.triggered_id]
 
     if not rld:
@@ -1950,7 +2046,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss):
             p["layout"]["xaxis"]["autorange"] = False
         return p
 
-    return make_patch(), make_patch(), make_patch()
+    return make_patch(), make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
