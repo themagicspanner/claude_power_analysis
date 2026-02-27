@@ -1941,7 +1941,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 def update_ride_charts(ride_id, _ver):
     if ride_id is None:
         raise dash.exceptions.PreventUpdate
-    _, rides, mmp_all, mmh_all, pdc_params = get_data()
+    _, rides, mmp_all, mmh_all, pdc_params, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
     # Fit on-the-fly once; share params with W'bal and TSS components so all
