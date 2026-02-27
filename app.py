@@ -297,46 +297,39 @@ def _graph_stat_row(items: list[tuple]) -> html.Div:
 
 # ── Figure builders ───────────────────────────────────────────────────────────
 
-def fig_power(records: pd.DataFrame, ride_name: str) -> go.Figure:
+def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
+    """Power and heart rate on a shared time axis with dual y-axes."""
+    has_power = records["power"].notna().any()
+    has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
+
     fig = go.Figure()
-    if records["power"].notna().any():
+
+    if has_power:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["power"],
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
+            yaxis="y1",
         ))
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey")
-    fig.update_layout(
-        title=dict(text="Power", font=dict(size=15)),
-        height=260, margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False, template="plotly_white",
-    )
-    return fig
-
-
-def fig_hr(records: pd.DataFrame) -> go.Figure:
-    """Heart rate versus elapsed time for a single ride."""
-    fig = go.Figure()
-    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     if has_hr:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["heart_rate"],
             mode="lines", name="Heart Rate",
             line=dict(color="crimson", width=1),
+            yaxis="y2",
         ))
-    else:
-        fig.add_annotation(
-            text="No heart rate data for this ride",
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=13, color="grey"),
-        )
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
+
     fig.update_layout(
-        title=dict(text="Heart Rate", font=dict(size=15)),
-        height=220, margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False, template="plotly_white",
+        title=dict(text="Power & Heart Rate", font=dict(size=15)),
+        height=300, margin=dict(t=55, b=40, l=60, r=60),
+        template="plotly_white",
+        legend=dict(x=0.01, xanchor="left", y=0.99),
+        xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
+        yaxis=dict(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
+                   titlefont=dict(color="darkorange"), tickfont=dict(color="darkorange")),
+        yaxis2=dict(title_text="Heart Rate (bpm)", overlaying="y", side="right",
+                    showgrid=False,
+                    titlefont=dict(color="crimson"), tickfont=dict(color="crimson")),
     )
     return fig
 
@@ -1582,12 +1575,8 @@ app.layout = html.Div(
 
                 # Per-ride charts
                 html.Div(id="power-stats"),
-                dcc.Graph(id="graph-power"),
-                html.Div(id="hr-section", children=[
-                    html.Hr(),
-                    html.Div(id="hr-stats"),
-                    dcc.Graph(id="graph-hr"),
-                ]),
+                html.Div(id="hr-stats"),
+                dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
                 dcc.Graph(id="graph-wbal"),
                 html.Hr(),
@@ -1675,13 +1664,11 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 
 @app.callback(
-    Output("graph-power",          "figure"),
-    Output("graph-hr",             "figure"),
+    Output("graph-power-hr",        "figure"),
     Output("graph-wbal",           "figure"),
     Output("graph-tss-components", "figure"),
     Output("graph-mmp-pdc",        "figure"),
     Output("graph-mmh",            "figure"),
-    Output("hr-section",           "style"),
     Output("mmh-section",          "style"),
     Output("ride-header",          "children"),
     Output("pdc-stats",            "children"),
@@ -1700,8 +1687,7 @@ def update_ride_charts(ride_id, _ver):
     # activity charts use the same PDC parameters as the PDC curve chart.
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
-    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
-    hr_style  = {} if has_hr else {"display": "none"}
+    has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     mmh_style = {"flex": "1", "minWidth": "0"} if has_hr else {"flex": "1", "minWidth": "0", "display": "none"}
 
     def _i(v):
@@ -1782,13 +1768,11 @@ def update_ride_charts(ride_id, _ver):
     ])
 
     return (
-        fig_power(records, ride["name"]),
-        fig_hr(records),
+        fig_power_hr(records, ride["name"]),
         fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
-        hr_style,
         mmh_style,
         ride_header,
         pdc_stats,
