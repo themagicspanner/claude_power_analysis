@@ -95,7 +95,8 @@ def _load_rides() -> pd.DataFrame:
     df = pd.read_sql(
         """SELECT id, name, ride_date,
                   round(duration_s / 60.0, 1) AS duration_min,
-                  avg_power, max_power
+                  avg_power, max_power,
+                  avg_heart_rate, max_heart_rate
            FROM rides ORDER BY ride_date, name""",
         conn,
     )
@@ -266,6 +267,32 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
         "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
+
+
+# ── Graph-level stat rows ─────────────────────────────────────────────────────
+
+def _graph_stat_row(items: list[tuple]) -> html.Div:
+    """Left-aligned row of compact stat cards to sit above a graph.
+
+    items: list of (label, value, unit) tuples.
+    """
+    card_style = {
+        "background": "#f8f9fa", "border": "1px solid #dee2e6",
+        "borderRadius": "6px", "padding": "8px 16px", "minWidth": "80px",
+        "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
+    }
+    label_style = {"fontSize": "10px", "color": "#888", "marginBottom": "2px",
+                   "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    value_style = {"fontSize": "18px", "fontWeight": "bold", "color": "#222"}
+    unit_style  = {"fontSize": "11px", "color": "#666", "marginLeft": "2px"}
+
+    return html.Div(
+        style={"display": "flex", "gap": "10px", "marginBottom": "8px", "flexWrap": "wrap"},
+        children=[
+            _make_card(lbl, val, unit, card_style, label_style, value_style, unit_style)
+            for lbl, val, unit in items
+        ],
+    )
 
 
 # ── Figure builders ───────────────────────────────────────────────────────────
@@ -1488,9 +1515,11 @@ app.layout = html.Div(
                 html.Div(id="activity-metric-boxes"),
 
                 # Per-ride charts
+                html.Div(id="power-stats"),
                 dcc.Graph(id="graph-power"),
                 html.Div(id="hr-section", children=[
                     html.Hr(),
+                    html.Div(id="hr-stats"),
                     dcc.Graph(id="graph-hr"),
                 ]),
                 html.Hr(),
@@ -1584,6 +1613,8 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("activity-metric-boxes", "children"),
     Output("hr-section",           "style"),
     Output("mmh-section",          "style"),
+    Output("power-stats",          "children"),
+    Output("hr-stats",             "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1601,6 +1632,18 @@ def update_ride_charts(ride_id, _ver):
     hr_style  = {} if has_hr else {"display": "none"}
     mmh_style = {} if has_hr else {"display": "none"}
 
+    def _i(v):
+        return f"{int(round(float(v)))}" if pd.notna(v) else "—"
+
+    power_stats = _graph_stat_row([
+        ("Avg Power", _i(ride.get("avg_power")),  "W"),
+        ("Max Power", _i(ride.get("max_power")),  "W"),
+    ])
+    hr_stats = _graph_stat_row([
+        ("Avg HR", _i(ride.get("avg_heart_rate")), "bpm"),
+        ("Max HR", _i(ride.get("max_heart_rate")), "bpm"),
+    ])
+
     return (
         fig_power(records, ride["name"]),
         fig_hr(records),
@@ -1611,6 +1654,8 @@ def update_ride_charts(ride_id, _ver):
         _activity_metric_boxes(ride, pdc_params, live_pdc),
         hr_style,
         mmh_style,
+        power_stats,
+        hr_stats,
     )
 
 
