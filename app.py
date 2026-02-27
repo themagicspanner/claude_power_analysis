@@ -325,11 +325,12 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
         template="plotly_white",
         legend=dict(x=0.01, xanchor="left", y=0.99),
         xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
-        yaxis=dict(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
-                   titlefont=dict(color="darkorange"), tickfont=dict(color="darkorange")),
-        yaxis2=dict(title_text="Heart Rate (bpm)", overlaying="y", side="right",
-                    showgrid=False,
-                    titlefont=dict(color="crimson"), tickfont=dict(color="crimson")),
+        yaxis=dict(title=dict(text="Power (W)", font=dict(color="darkorange")),
+                   showgrid=True, gridcolor="lightgrey",
+                   tickfont=dict(color="darkorange")),
+        yaxis2=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
+                    overlaying="y", side="right", showgrid=False,
+                    tickfont=dict(color="crimson")),
     )
     return fig
 
