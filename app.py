@@ -1736,7 +1736,7 @@ app.layout = html.Div(
                         {"name": "TSS",        "id": "TSS"},
                         {"name": "IF",         "id": "IF"},
                     ],
-                    dangerously_allow_html=True,
+                    markdown_options={"html": True},
                     sort_action="native",
                     style_table={"overflowX": "auto"},
                     style_header={
