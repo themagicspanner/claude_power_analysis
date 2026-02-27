@@ -60,19 +60,20 @@ def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
 
 
 def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
-                    ftp: float, CP: float,
+                    ftp: float, CP: float, tss_total: float,
                     sample_hz: float = 1.0) -> tuple[float, float]:
-    """Split TSS into aerobic (MAP) and anaerobic (AWC) components.
+    """Split the NP-based TSS into aerobic (MAP) and anaerobic (AWC) parts.
 
-    The TSS rate at each sample uses the 30-second rolling average of power
-    (consistent with NP methodology).  The aerobic/anaerobic split is decided
-    by instantaneous power so that any sample where the rider is producing
-    power above CP contributes to TSS_AWC, regardless of how brief the effort:
+    Uses p_30s² as a time-weighting kernel (same as NP methodology) to decide
+    how much of each second's training stress should be credited to MAP vs AWC.
+    The per-sample AWC fraction comes from instantaneous power so that even
+    brief above-CP efforts register:
 
         f_AWC(t) = max(0, P(t) − CP) / P(t)   [instantaneous]
         f_MAP(t) = 1 − f_AWC(t)
 
-    TSS_MAP + TSS_AWC = TSS_total (self-consistent).
+    The final values are scaled so that TSS_MAP + TSS_AWC = tss_total exactly
+    (the NP-based TSS).
 
     Returns (tss_map, tss_awc).
     """
@@ -91,9 +92,16 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
         f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
     f_map = 1.0 - f_awc
 
-    tss_rate  = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
-    tss_map   = float(np.sum(tss_rate * f_map))
-    tss_awc   = float(np.sum(tss_rate * f_awc))
+    # p_30s² weights — same basis as NP; used as split ratio only
+    weights = (p_30s ** 2) * dt if ftp > 0 else np.zeros_like(p_30s)
+    w_total = float(np.sum(weights))
+    if w_total > 0 and tss_total > 0:
+        awc_frac = float(np.sum(weights * f_awc)) / w_total
+        tss_awc  = tss_total * awc_frac
+        tss_map  = tss_total - tss_awc
+    else:
+        tss_awc = 0.0
+        tss_map = float(tss_total)
     return tss_map, tss_awc
 
 
@@ -394,7 +402,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         if_val  = np_val / ftp if ftp > 0 else 0.0
         dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
         tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
-        tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), hz)
+        tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), tss, hz)
 
     conn.execute(
         """INSERT OR REPLACE INTO pdc_params

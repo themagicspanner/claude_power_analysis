@@ -609,10 +609,18 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         tss_rate_ph = np.zeros_like(p_30s)
         tss_rate    = np.zeros_like(p_30s)
 
-    cum_tss_map  = np.cumsum(tss_rate * f_map)
-    cum_tss_awc  = np.cumsum(tss_rate * f_awc)
-    rate_map_ph  = tss_rate_ph * f_map
-    rate_awc_ph  = tss_rate_ph * f_awc
+    # Scale so cumulative values match the NP-based TSS (same basis as stat cards).
+    # NP = (mean(p_30s^4))^0.25; tss_np uses 4th-power mean, tss_rate uses 2nd-power.
+    dur_s   = float(elapsed_s[-1] - elapsed_s[0]) if len(elapsed_s) > 1 else 0.0
+    np_pwr  = float(np.mean(p_30s ** 4) ** 0.25) if ftp > 0 else 0.0
+    tss_np  = (dur_s / 3600.0) * (np_pwr / ftp) ** 2 * 100.0 if ftp > 0 else 0.0
+    tss_p30 = float(np.sum(tss_rate))
+    scale   = (tss_np / tss_p30) if tss_p30 > 0 else 1.0
+
+    cum_tss_map  = np.cumsum(tss_rate * f_map) * scale
+    cum_tss_awc  = np.cumsum(tss_rate * f_awc) * scale
+    rate_map_ph  = tss_rate_ph * f_map * scale
+    rate_awc_ph  = tss_rate_ph * f_awc * scale
     t_min        = elapsed_s / 60.0
 
     # 1-hour time-weighted rolling average of total TSS rate.
@@ -623,7 +631,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     cum_dt_ext[1:]  = np.cumsum(dt)
     cum_rdt_ext     = np.empty(len(dt) + 1)
     cum_rdt_ext[0]  = 0.0
-    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt)
+    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt * scale)
     left            = np.searchsorted(elapsed_s, elapsed_s - 3600.0, side="left")
     idx             = np.arange(len(dt))
     window_dt       = cum_dt_ext[idx + 1] - cum_dt_ext[left]
