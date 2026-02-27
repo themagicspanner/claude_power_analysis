@@ -346,7 +346,7 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
     fig.update_layout(
         title=dict(text="Power & Heart Rate", font=dict(size=15)),
         height=300, margin=dict(t=55, b=40, l=60, r=60),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
         xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
@@ -408,7 +408,7 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         title=dict(text="Mean Maximal Heart Rate", font=dict(size=14)),
         height=440, margin=dict(t=70, b=50, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -456,7 +456,7 @@ def fig_elevation(records: pd.DataFrame) -> go.Figure:
     if alt.empty:
         fig = go.Figure()
         fig.update_layout(
-            height=350, template="plotly_white",
+            height=350, template="simple_white",
             margin=dict(t=55, b=40, l=60, r=20),
             title=dict(text="Elevation", font=dict(size=14)),
             annotations=[dict(text="No elevation data", showarrow=False,
@@ -476,7 +476,7 @@ def fig_elevation(records: pd.DataFrame) -> go.Figure:
         title=dict(text="Elevation", font=dict(size=14)),
         height=350,
         margin=dict(t=55, b=40, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         hovermode="x unified",
         showlegend=False,
     )
@@ -588,7 +588,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             font=dict(size=14),
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -704,7 +704,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             font=dict(size=14),
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -751,7 +751,7 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
             font=dict(size=14),
         ),
         height=440, margin=dict(t=90, b=50, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -813,7 +813,7 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         title=dict(text="PDC Parameter History", font=dict(size=14)),
         height=380,
         margin=dict(t=60, b=50, l=60, r=60),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -916,7 +916,7 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
         margin=dict(t=55, b=40, l=60, r=20),
         showlegend=False,
         hovermode="x unified",
-        template="plotly_white",
+        template="simple_white",
     )
     return fig
 
@@ -1041,7 +1041,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -1100,7 +1100,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         barmode="stack",
         height=320,
         margin=dict(t=55, b=50, l=60, r=20),
-        template="plotly_white",
+        template="simple_white",
         showlegend=False,
         hovermode="x unified",
     )
@@ -1260,7 +1260,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         barmode="stack",
         height=580,
         margin=dict(t=70, b=50, l=70, r=20),
-        template="plotly_white",
+        template="simple_white",
         hovermode="x unified",
         showlegend=False,
     )
