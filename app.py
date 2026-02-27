@@ -416,7 +416,7 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
 
 
 def fig_route_map(records: pd.DataFrame) -> go.Figure:
-    """Scattermapbox route map using OpenStreetMap tiles (no token required)."""
+    """Scattermap route map using OpenStreetMap tiles (no token required)."""
     gps = records.dropna(subset=["latitude", "longitude"]) if "latitude" in records.columns else pd.DataFrame()
     if gps.empty:
         fig = go.Figure()
@@ -430,7 +430,7 @@ def fig_route_map(records: pd.DataFrame) -> go.Figure:
         )
         return fig
 
-    fig = go.Figure(go.Scattermapbox(
+    fig = go.Figure(go.Scattermap(
         lat=gps["latitude"], lon=gps["longitude"],
         mode="lines",
         line=dict(width=3, color="#4a90d9"),
@@ -440,7 +440,7 @@ def fig_route_map(records: pd.DataFrame) -> go.Figure:
         title=dict(text="Route Map", font=dict(size=14)),
         height=350,
         margin=dict(t=55, b=5, l=5, r=5),
-        mapbox=dict(
+        map=dict(
             style="open-street-map",
             center=dict(lat=float(gps["latitude"].mean()),
                         lon=float(gps["longitude"].mean())),
