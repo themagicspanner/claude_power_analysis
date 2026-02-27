@@ -627,6 +627,62 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
+    today     = datetime.date.today()
+    cutoff    = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+    today_str = today.isoformat()
+
+    window = mmh_all[mmh_all["ride_date"].between(cutoff, today_str)].copy()
+
+    fig = go.Figure()
+
+    if not window.empty:
+        window["age_days"]  = window["ride_date"].apply(
+            lambda d: (today - datetime.date.fromisoformat(d)).days
+        )
+        window["weight"]    = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+        window["aged_hr"]   = window["heart_rate"] * window["weight"]
+
+        aged = (
+            window.groupby("duration_s")["aged_hr"]
+            .max().reset_index().sort_values("duration_s")
+        )
+        raw = (
+            window.groupby("duration_s")["heart_rate"]
+            .max().reset_index().sort_values("duration_s")
+        )
+
+        fig.add_trace(go.Scatter(
+            x=raw["duration_s"], y=raw["heart_rate"],
+            mode="lines", name="raw max",
+            line=dict(color="lightsalmon", width=1.5, dash="dot"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=aged["duration_s"], y=aged["aged_hr"],
+            mode="lines+markers", name="aged MMH",
+            marker=dict(size=4),
+            line=dict(color="crimson", width=2.5),
+        ))
+
+    fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+                     title_text="Duration", showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
+    fig.update_layout(
+        title=dict(
+            text=(
+                "90-Day Mean Maximal Heart Rate — S-curve aged<br>"
+                f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
+                f"reference date {today_str}</sup>"
+            ),
+            font=dict(size=14),
+        ),
+        height=440, margin=dict(t=90, b=50, l=60, r=20),
+        template="plotly_white",
+        legend=dict(x=0.98, xanchor="right", y=0.98),
+    )
+    return fig
+
+
 def fig_pdc_params_history(pdc_params: pd.DataFrame,
                            rides: pd.DataFrame) -> go.Figure:
     """History of the fitted two-component PDC parameters over time.
@@ -1484,6 +1540,10 @@ app.layout = html.Div(
 
                 html.Hr(),
 
+                dcc.Graph(id="graph-90day-mmh"),
+
+                html.Hr(),
+
                 dcc.Graph(id="graph-pmc"),
 
                 html.Hr(),
@@ -1566,6 +1626,7 @@ def switch_page(_, __):
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
+    Output("graph-90day-mmh",          "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
@@ -1599,6 +1660,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         options,
         selected,
         fig_90day_mmp(mmp_all),
+        fig_90day_mmh(mmh_all),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         status,
