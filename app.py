@@ -104,6 +104,29 @@ def _load_rides() -> pd.DataFrame:
     return df
 
 
+def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame) -> list[dict]:
+    """Return list-of-dicts (most-recent first) for the activities DataTable."""
+    merged = rides.merge(
+        pdc_params[["ride_id", "normalized_power", "intensity_factor", "tss"]],
+        left_on="id", right_on="ride_id", how="left",
+    )
+    rows = []
+    for _, r in merged.iterrows():
+        dur = r["duration_min"]
+        h, m = int(dur) // 60, int(dur) % 60
+        rows.append({
+            "id":        int(r["id"]),
+            "Date":      r["ride_date"],
+            "Name":      r["name"].replace("_", " "),
+            "Duration":  f"{h}h {m:02d}m",
+            "Avg Power": f"{r['avg_power']:.0f}" if pd.notna(r["avg_power"]) else "\u2014",
+            "NP":        f"{r['normalized_power']:.0f}" if pd.notna(r.get("normalized_power")) else "\u2014",
+            "TSS":       f"{r['tss']:.0f}" if pd.notna(r.get("tss")) else "\u2014",
+            "IF":        f"{r['intensity_factor']:.2f}" if pd.notna(r.get("intensity_factor")) else "\u2014",
+        })
+    return rows[::-1]   # most-recent first
+
+
 def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     mmp = pd.read_sql("SELECT ride_id, duration_s, power FROM mmp", conn)
@@ -1567,19 +1590,57 @@ app.layout = html.Div(
                 html.Div(style={"height": "40px"}),
             ]),
 
+            # ── Activities list page ────────────────────────────────────────
+            html.Div(id="page-activities-list", style={"display": "none"}, children=[
+                html.H2("Activities", style={"color": "#e8edf5", "marginBottom": "20px",
+                                             "fontWeight": "600", "fontSize": "22px"}),
+                dash_table.DataTable(
+                    id="activities-table",
+                    columns=[
+                        {"name": "Date",       "id": "Date"},
+                        {"name": "Name",       "id": "Name"},
+                        {"name": "Duration",   "id": "Duration"},
+                        {"name": "Avg Power",  "id": "Avg Power"},
+                        {"name": "NP",         "id": "NP"},
+                        {"name": "TSS",        "id": "TSS"},
+                        {"name": "IF",         "id": "IF"},
+                        {"name": "id",         "id": "id"},
+                    ],
+                    hidden_columns=["id"],
+                    sort_action="native",
+                    style_table={"overflowX": "auto"},
+                    style_header={
+                        "backgroundColor": "#1e2433", "color": "#e8edf5",
+                        "fontWeight": "600", "border": "1px solid #2d3748",
+                    },
+                    style_data={
+                        "backgroundColor": "#0d1117", "color": "#e8edf5",
+                        "border": "1px solid #1e2433", "cursor": "pointer",
+                    },
+                    style_data_conditional=[{
+                        "if": {"state": "active"},
+                        "backgroundColor": "#1e2d40",
+                        "border": "1px solid #4a90d9",
+                        "color": "#e8edf5",
+                    }],
+                    style_cell={"padding": "10px 14px", "textAlign": "left", "fontSize": "14px"},
+                ),
+            ]),
+
             # ── Activities page ────────────────────────────────────────────
             html.Div(id="page-activities", style={"display": "none"}, children=[
 
-                # Ride selector
-                html.Div([
-                    html.Label("Select a ride:", style={"fontWeight": "bold", "marginRight": "10px",
-                                                        "color": "#e8edf5"}),
-                    dcc.Dropdown(
-                        id="ride-dropdown",
-                        clearable=False,
-                        style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
-                    ),
-                ], style={"marginBottom": "12px"}),
+                # Back navigation + hidden dropdown (dropdown kept in DOM for callback state)
+                html.Button(
+                    "\u2190 Back to Activities",
+                    id="btn-back-to-list",
+                    style={
+                        "background": "transparent", "border": "none",
+                        "color": "#6e9ac7", "cursor": "pointer",
+                        "fontSize": "14px", "padding": "0 0 16px 0",
+                    },
+                ),
+                dcc.Dropdown(id="ride-dropdown", clearable=False, style={"display": "none"}),
 
                 # Ride title (left) + PDC fitness metrics (right)
                 html.Div(style={
@@ -1622,19 +1683,47 @@ app.layout = html.Div(
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 @app.callback(
-    Output("page-fitness",    "style"),
-    Output("page-activities", "style"),
-    Output("nav-fitness",     "style"),
-    Output("nav-activities",  "style"),
-    Input("nav-fitness",      "n_clicks"),
-    Input("nav-activities",   "n_clicks"),
+    Output("page-fitness",          "style"),
+    Output("page-activities-list",  "style"),
+    Output("page-activities",       "style"),
+    Output("nav-fitness",           "style"),
+    Output("nav-activities",        "style"),
+    Input("nav-fitness",            "n_clicks"),
+    Input("nav-activities",         "n_clicks"),
 )
 def switch_page(_, __):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return hide, show, _NAV_BASE, _NAV_ACTIVE
-    return show, hide, _NAV_ACTIVE, _NAV_BASE
+        return hide, show, hide, _NAV_BASE, _NAV_ACTIVE
+    return show, hide, hide, _NAV_ACTIVE, _NAV_BASE
+
+
+@app.callback(
+    Output("ride-dropdown",          "value"),
+    Output("page-activities-list",   "style", allow_duplicate=True),
+    Output("page-activities",        "style", allow_duplicate=True),
+    Input("activities-table",        "active_cell"),
+    State("activities-table",        "data"),
+    prevent_initial_call=True,
+)
+def open_activity(active_cell, table_data):
+    if not active_cell or not table_data:
+        raise dash.exceptions.PreventUpdate
+    ride_id = table_data[active_cell["row"]]["id"]
+    return ride_id, {"display": "none"}, {"display": "block"}
+
+
+@app.callback(
+    Output("page-activities-list",   "style", allow_duplicate=True),
+    Output("page-activities",        "style", allow_duplicate=True),
+    Input("btn-back-to-list",        "n_clicks"),
+    prevent_initial_call=True,
+)
+def go_back_to_list(n_clicks):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    return {"display": "block"}, {"display": "none"}
 
 
 @app.callback(
@@ -1647,6 +1736,7 @@ def switch_page(_, __):
     Output("graph-pdc-params-history", "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
+    Output("activities-table",         "data"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
@@ -1681,6 +1771,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_pdc_params_history(pdc_params, rides),
         status,
         _metric_boxes(pdc_params, rides),
+        _build_table_data(rides, pdc_params),
     )
 
 
