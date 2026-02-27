@@ -846,8 +846,9 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     Uses a 30-second rolling average (same-length via 'same' convolution),
     splits at CP proportionally, and integrates second-by-second.
 
-    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph)
-    where rate_*_ph are the instantaneous TSS rates in TSS/hour.
+    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg)
+    where rate_*_ph are the instantaneous TSS rates in TSS/hour and
+    rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     kernel = np.ones(30) / 30.0
@@ -877,7 +878,24 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_map_ph  = tss_rate_ph * f_map
     rate_awc_ph  = tss_rate_ph * f_awc
     t_min        = elapsed_s / 60.0
-    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph
+
+    # 1-hour time-weighted rolling average of total TSS rate.
+    # Uses prefix sums for O(n log n) efficiency; dt-weighted so that
+    # pauses and irregular sampling are handled correctly.
+    cum_dt_ext      = np.empty(len(dt) + 1)
+    cum_dt_ext[0]   = 0.0
+    cum_dt_ext[1:]  = np.cumsum(dt)
+    cum_rdt_ext     = np.empty(len(dt) + 1)
+    cum_rdt_ext[0]  = 0.0
+    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt)
+    left            = np.searchsorted(elapsed_s, elapsed_s - 3600.0, side="left")
+    idx             = np.arange(len(dt))
+    window_dt       = cum_dt_ext[idx + 1] - cum_dt_ext[left]
+    window_rdt      = cum_rdt_ext[idx + 1] - cum_rdt_ext[left]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate_1h_avg = np.where(window_dt > 0, window_rdt / window_dt, 0.0)
+
+    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
@@ -901,7 +919,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
-    t_min, cum_map, cum_awc, rate_map, rate_awc = _tss_rate_series(elapsed, power, ftp, CP)
+    t_min, cum_map, cum_awc, rate_map, rate_awc, rate_1h_avg = _tss_rate_series(elapsed, power, ftp, CP)
 
     final_map = cum_map[-1]
     final_awc = cum_awc[-1]
@@ -923,6 +941,12 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
     ))
+    # 1-hour time-weighted rolling average of total TSS rate
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_1h_avg,
+        mode="lines", name="1h avg TSS rate",
+        line=dict(color="midnightblue", width=3),
+    ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
@@ -933,6 +957,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         height=260,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
+        hovermode="x unified",
         legend=dict(x=0.02, y=0.98),
     )
     return fig
