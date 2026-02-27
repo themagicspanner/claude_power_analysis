@@ -38,6 +38,7 @@ from watchdog.events import FileSystemEventHandler
 from build_database import (
     init_db, process_ride, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     recompute_all_pdc_params,
+    _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 
