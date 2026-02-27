@@ -46,7 +46,7 @@ from graphs import (
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_wbal, fig_tss_components,
     fig_tss_history, fig_pmc,
-    _tss_rate_series,
+    _tss_rate_series, _compute_pmc,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
