@@ -944,7 +944,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     # 1-hour time-weighted rolling average of total TSS rate
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
-        mode="lines", name="1h avg TSS rate",
+        mode="lines", name="Difficulty",
         line=dict(color="midnightblue", width=3),
     ))
 
@@ -1779,15 +1779,32 @@ def update_ride_charts(ride_id, _ver):
         _card("Pmax", pmax_v, "W"),
     ]
 
+    # Difficulty: max 1-hour time-weighted rolling TSS rate over the ride
+    difficulty_v = "—"
+    if not records["power"].isna().all():
+        if live_pdc is not None:
+            _cp, _ftp = live_pdc["MAP"], live_pdc["ftp"]
+        elif stored is not None:
+            _cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
+            _ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _cp
+        else:
+            _cp = _ftp = None
+        if _cp is not None and _ftp and _ftp > 0:
+            _el  = records["elapsed_s"].to_numpy(dtype=float)
+            _pw  = records["power"].to_numpy(dtype=float)
+            *_, rate_1h_avg = _tss_rate_series(_el, _pw, float(_ftp), float(_cp))
+            difficulty_v = _i(rate_1h_avg.max())
+
     # Power stats row (ride metrics + raw power, above the power graph)
     power_stats = _graph_stat_row([
-        ("NP",        np_v,                         "W"),
-        ("IF",        if_v,                         ""),
-        ("TSS",       tss_v,                        ""),
-        ("TSS MAP",   tss_map_v,                    ""),
-        ("TSS AWC",   tss_awc_v,                    ""),
-        ("Avg Power", _i(ride.get("avg_power")),    "W"),
-        ("Max Power", _i(ride.get("max_power")),    "W"),
+        ("NP",         np_v,                         "W"),
+        ("IF",         if_v,                         ""),
+        ("TSS",        tss_v,                        ""),
+        ("TSS MAP",    tss_map_v,                    ""),
+        ("TSS AWC",    tss_awc_v,                    ""),
+        ("Difficulty", difficulty_v,                 "TSS/h"),
+        ("Avg Power",  _i(ride.get("avg_power")),    "W"),
+        ("Max Power",  _i(ride.get("max_power")),    "W"),
     ])
 
     # HR stats row (above HR graph, hidden with hr-section when no HR data)
