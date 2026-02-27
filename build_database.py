@@ -64,14 +64,15 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
                     sample_hz: float = 1.0) -> tuple[float, float]:
     """Split TSS into aerobic (MAP) and anaerobic (AWC) components.
 
-    Uses a 30-second rolling average of power (consistent with NP methodology),
-    then at each sample splits the smoothed power at CP:
+    The TSS rate at each sample uses the 30-second rolling average of power
+    (consistent with NP methodology).  The aerobic/anaerobic split is decided
+    by instantaneous power so that any sample where the rider is producing
+    power above CP contributes to TSS_AWC, regardless of how brief the effort:
 
-        P_MAP(t) = min(P_30s(t), CP)        → aerobic contribution
-        P_AWC(t) = max(0, P_30s(t) − CP)    → anaerobic contribution
+        f_AWC(t) = max(0, P(t) − CP) / P(t)   [instantaneous]
+        f_MAP(t) = 1 − f_AWC(t)
 
-    The instantaneous TSS rate is (P_30s / FTP)² × Δt / 3600 × 100, split
-    proportionally so that TSS_MAP + TSS_AWC = TSS_total (self-consistent).
+    TSS_MAP + TSS_AWC = TSS_total (self-consistent).
 
     Returns (tss_map, tss_awc).
     """
@@ -85,12 +86,10 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
 
-    p_map = np.minimum(p_30s, CP)
-    p_awc = np.maximum(p_30s - CP, 0.0)
-
+    # Split fractions from instantaneous power
     with np.errstate(invalid="ignore", divide="ignore"):
-        f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
-        f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
+        f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+    f_map = 1.0 - f_awc
 
     tss_rate  = (p_30s / ftp) ** 2 * dt / 3600.0 * 100.0 if ftp > 0 else np.zeros_like(p_30s)
     tss_map   = float(np.sum(tss_rate * f_map))

@@ -550,6 +550,13 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
 
+    def _tss(v):
+        """Show 1 decimal for values < 10 so e.g. 0.4 isn't displayed as 0."""
+        if not pd.notna(v):
+            return "—"
+        f = float(v)
+        return f"{f:.1f}" if f < 10 else f"{int(round(f))}"
+
     def _f2(v):
         return f"{float(v):.2f}" if pd.notna(v) else "—"
 
@@ -576,8 +583,8 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
     if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
-    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
-    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+    tss_map_v = _tss(stored.get("tss_map"))         if stored is not None else "—"
+    tss_awc_v = _tss(stored.get("tss_awc"))         if stored is not None else "—"
 
     ride_title = ride["name"].replace("_", " ")
     ride_date  = ride["ride_date"]
@@ -1084,6 +1091,13 @@ def update_ride_charts(ride_id, _ver):
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
 
+    def _tss(v):
+        """Show 1 decimal for values < 10 so e.g. 0.4 isn't displayed as 0."""
+        if not pd.notna(v):
+            return "—"
+        f = float(v)
+        return f"{f:.1f}" if f < 10 else f"{int(round(f))}"
+
     def _f2(v):
         return f"{float(v):.2f}" if pd.notna(v) else "—"
 
@@ -1110,8 +1124,8 @@ def update_ride_charts(ride_id, _ver):
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
     if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
-    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
-    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+    tss_map_v = _tss(stored.get("tss_map"))         if stored is not None else "—"
+    tss_awc_v = _tss(stored.get("tss_awc"))         if stored is not None else "—"
 
     # Ride header: name + date
     ride_header = [
