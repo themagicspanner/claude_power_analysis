@@ -1700,7 +1700,7 @@ def switch_page(_, __):
 
 
 @app.callback(
-    Output("ride-dropdown",          "value"),
+    Output("ride-dropdown",          "value", allow_duplicate=True),
     Output("page-activities-list",   "style", allow_duplicate=True),
     Output("page-activities",        "style", allow_duplicate=True),
     Input("activities-table",        "active_cell"),
