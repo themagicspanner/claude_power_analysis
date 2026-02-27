@@ -20,6 +20,7 @@ Pages / sections
   • PDC parameter history (AWC, Pmax, MAP over time)
 """
 
+import base64
 import datetime
 import os
 import sqlite3
@@ -55,28 +56,31 @@ _rides        = None
 _mmp_all      = None
 _mmh_all      = None
 _pdc_params   = None
+_gps_traces   = None  # dict: ride_id → [(lat, lon), ...] (downsampled)
 
 
 def _reload():
-    """Re-read rides, mmp, mmh and pdc_params from the DB and bump the version counter."""
-    global _rides, _mmp_all, _mmh_all, _pdc_params, _data_version
+    """Re-read rides, mmp, mmh, pdc_params and GPS traces from the DB and bump the version."""
+    global _rides, _mmp_all, _mmh_all, _pdc_params, _gps_traces, _data_version
     r = _load_rides()
     m = _load_mmp_all(r)
     h = _load_mmh_all(r)
     p = _load_pdc_params()
+    g = _load_gps_traces()
     with _lock:
         _rides        = r
         _mmp_all      = m
         _mmh_all      = h
         _pdc_params   = p
+        _gps_traces   = g
         _data_version += 1
 
 
 def get_data():
-    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params) snapshot."""
+    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params, gps_traces) snapshot."""
     with _lock:
         return (_data_version, _rides.copy(), _mmp_all.copy(),
-                _mmh_all.copy(), _pdc_params.copy())
+                _mmh_all.copy(), _pdc_params.copy(), _gps_traces)
 
 
 # ── Duration formatting ────────────────────────────────────────────────────────
@@ -104,18 +108,71 @@ def _load_rides() -> pd.DataFrame:
     return df
 
 
-def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame) -> list[dict]:
+def _load_gps_traces() -> dict[int, list[tuple[float, float]]]:
+    """Load downsampled GPS traces for all rides. Returns {ride_id: [(lat, lon), ...]}."""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
+        "SELECT ride_id, latitude, longitude FROM records"
+        " WHERE latitude IS NOT NULL ORDER BY ride_id, elapsed_s",
+        conn,
+    )
+    conn.close()
+    traces: dict[int, list[tuple[float, float]]] = {}
+    for ride_id, group in df.groupby("ride_id"):
+        pts = list(zip(group["latitude"], group["longitude"]))
+        step = max(1, len(pts) // 300)   # at most ~300 points per thumbnail
+        traces[int(ride_id)] = pts[::step]
+    return traces
+
+
+def _make_route_svg(latlons: list[tuple[float, float]]) -> str:
+    """Return a minimal SVG polyline of the GPS route, sized to fit within 80×55 px."""
+    if len(latlons) < 2:
+        return ""
+    lats = [p[0] for p in latlons]
+    lons = [p[1] for p in latlons]
+    lat_min, lat_max = min(lats), max(lats)
+    lon_min, lon_max = min(lons), max(lons)
+    lat_span = lat_max - lat_min or 1e-9
+    lon_span = lon_max - lon_min or 1e-9
+    max_w, max_h, pad = 80, 55, 3
+    scale = min((max_w - 2 * pad) / lon_span, (max_h - 2 * pad) / lat_span)
+    svg_w = lon_span * scale + 2 * pad
+    svg_h = lat_span * scale + 2 * pad
+    pts = " ".join(
+        f"{(lon - lon_min) * scale + pad:.1f},{(lat_max - lat) * scale + pad:.1f}"
+        for lat, lon in latlons
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_w:.0f}" height="{svg_h:.0f}">'
+        f'<polyline points="{pts}" fill="none" stroke="#4a90d9" stroke-width="1.5"'
+        f' stroke-linejoin="round" stroke-linecap="round"/>'
+        f'</svg>'
+    )
+
+
+def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
+                      gps_traces: dict | None = None) -> list[dict]:
     """Return list-of-dicts (most-recent first) for the activities DataTable."""
     merged = rides.merge(
         pdc_params[["ride_id", "normalized_power", "intensity_factor", "tss"]],
         left_on="id", right_on="ride_id", how="left",
     )
+    gps_traces = gps_traces or {}
     rows = []
     for _, r in merged.iterrows():
         dur = r["duration_min"]
         h, m = int(dur) // 60, int(dur) % 60
+        latlons = gps_traces.get(int(r["id"]), [])
+        if latlons:
+            svg = _make_route_svg(latlons)
+            b64 = base64.b64encode(svg.encode()).decode()
+            thumbnail = f'<img src="data:image/svg+xml;base64,{b64}" style="display:block"/>'
+        else:
+            thumbnail = ""
         rows.append({
             "id":        int(r["id"]),
+            "Route":     thumbnail,
             "Date":      r["ride_date"],
             "Name":      r["name"].replace("_", " "),
             "Duration":  f"{h}h {m:02d}m",
@@ -1670,6 +1727,7 @@ app.layout = html.Div(
                 dash_table.DataTable(
                     id="activities-table",
                     columns=[
+                        {"name": "",           "id": "Route",     "presentation": "markdown"},
                         {"name": "Date",       "id": "Date"},
                         {"name": "Name",       "id": "Name"},
                         {"name": "Duration",   "id": "Duration"},
@@ -1678,6 +1736,7 @@ app.layout = html.Div(
                         {"name": "TSS",        "id": "TSS"},
                         {"name": "IF",         "id": "IF"},
                     ],
+                    dangerously_allow_html=True,
                     sort_action="native",
                     style_table={"overflowX": "auto"},
                     style_header={
@@ -1695,6 +1754,11 @@ app.layout = html.Div(
                         "color": "#e8edf5",
                     }],
                     style_cell={"padding": "10px 14px", "textAlign": "left", "fontSize": "14px"},
+                    style_cell_conditional=[{
+                        "if": {"column_id": "Route"},
+                        "width": "90px", "minWidth": "90px", "maxWidth": "90px",
+                        "padding": "6px 10px", "textAlign": "center",
+                    }],
                 ),
             ]),
 
@@ -1824,7 +1888,7 @@ def go_back_to_list(n_clicks):
     State("ride-dropdown",    "value"),
 )
 def poll_for_new_data(n_intervals, known_ver, current_ride_id):
-    ver, rides, mmp_all, mmh_all, pdc_params = get_data()
+    ver, rides, mmp_all, mmh_all, pdc_params, gps_traces = get_data()
 
     if ver == known_ver and n_intervals > 0:
         # Nothing changed — return no-update for everything
@@ -1853,7 +1917,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_pdc_params_history(pdc_params, rides),
         status,
         _metric_boxes(pdc_params, rides),
-        _build_table_data(rides, pdc_params),
+        _build_table_data(rides, pdc_params, gps_traces),
     )
 
 
