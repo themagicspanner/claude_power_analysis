@@ -32,7 +32,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, ctx
+from dash import dcc, html, dash_table, Input, Output, State, ctx, Patch
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -328,10 +328,12 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
         xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
         yaxis=dict(title=dict(text="Power (W)", font=dict(color="darkorange")),
                    showgrid=True, gridcolor="lightgrey",
-                   tickfont=dict(color="darkorange")),
+                   tickfont=dict(color="darkorange"),
+                   fixedrange=True),
         yaxis2=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
                     overlaying="y", side="right", showgrid=False,
-                    tickfont=dict(color="crimson")),
+                    tickfont=dict(color="crimson"),
+                    fixedrange=True),
     )
     return fig
 
@@ -811,7 +813,8 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
                      showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="W'bal (kJ)",
                      showgrid=True, gridcolor="lightgrey",
-                     range=[-awc_kj * 0.05, awc_kj * 1.12])
+                     range=[-awc_kj * 0.05, awc_kj * 1.12],
+                     fixedrange=True)
     fig.update_layout(
         title=dict(text="W' Balance", font=dict(size=14)),
         height=280,
@@ -937,7 +940,8 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True)
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
         height=260,
@@ -1813,6 +1817,51 @@ def update_ride_charts(ride_id, _ver):
         power_stats,
         hr_stats,
     )
+
+
+# ── Synced x-axis zoom/pan for the three ride-time charts ─────────────────────
+
+@app.callback(
+    Output("graph-power-hr",       "figure", allow_duplicate=True),
+    Output("graph-wbal",           "figure", allow_duplicate=True),
+    Output("graph-tss-components", "figure", allow_duplicate=True),
+    Input("graph-power-hr",        "relayoutData"),
+    Input("graph-wbal",            "relayoutData"),
+    Input("graph-tss-components",  "relayoutData"),
+    prevent_initial_call=True,
+)
+def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss):
+    if not ctx.triggered_id:
+        raise dash.exceptions.PreventUpdate
+
+    rld = {
+        "graph-power-hr":       rld_phr,
+        "graph-wbal":           rld_wb,
+        "graph-tss-components": rld_tss,
+    }[ctx.triggered_id]
+
+    if not rld:
+        raise dash.exceptions.PreventUpdate
+
+    if "xaxis.range[0]" in rld and "xaxis.range[1]" in rld:
+        new_range = [rld["xaxis.range[0]"], rld["xaxis.range[1]"]]
+        autorange = False
+    elif rld.get("xaxis.autorange") is True:
+        autorange = True
+        new_range = None
+    else:
+        raise dash.exceptions.PreventUpdate
+
+    def make_patch():
+        p = Patch()
+        if autorange:
+            p["layout"]["xaxis"]["autorange"] = True
+        else:
+            p["layout"]["xaxis"]["range"] = new_range
+            p["layout"]["xaxis"]["autorange"] = False
+        return p
+
+    return make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
