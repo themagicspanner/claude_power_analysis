@@ -1509,10 +1509,17 @@ app.layout = html.Div(
                         clearable=False,
                         style={"width": "600px", "display": "inline-block", "verticalAlign": "middle"},
                     ),
-                ], style={"marginBottom": "20px"}),
+                ], style={"marginBottom": "12px"}),
 
-                # Per-activity metric boxes
-                html.Div(id="activity-metric-boxes"),
+                # Ride title (left) + PDC fitness metrics (right)
+                html.Div(style={
+                    "display": "flex", "justifyContent": "space-between",
+                    "alignItems": "flex-end", "marginBottom": "20px",
+                }, children=[
+                    html.Div(id="ride-header"),
+                    html.Div(id="pdc-stats",
+                             style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}),
+                ]),
 
                 # Per-ride charts
                 html.Div(id="power-stats"),
@@ -1610,9 +1617,10 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("graph-tss-components", "figure"),
     Output("graph-mmp-pdc",        "figure"),
     Output("graph-mmh",            "figure"),
-    Output("activity-metric-boxes", "children"),
     Output("hr-section",           "style"),
     Output("mmh-section",          "style"),
+    Output("ride-header",          "children"),
+    Output("pdc-stats",            "children"),
     Output("power-stats",          "children"),
     Output("hr-stats",             "children"),
     Input("ride-dropdown",    "value"),
@@ -1635,10 +1643,75 @@ def update_ride_charts(ride_id, _ver):
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
 
+    def _f2(v):
+        return f"{float(v):.2f}" if pd.notna(v) else "—"
+
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+    stored = params_row.iloc[0] if not params_row.empty else None
+
+    # PDC fit params — prefer on-the-fly, fall back to stored
+    if live_pdc is not None:
+        ftp_v  = _i(live_pdc.get("ftp"))
+        map_v  = _i(live_pdc.get("MAP"))
+        awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
+        pmax_v = _i(live_pdc.get("Pmax"))
+        ltp_v  = _i(live_pdc.get("ltp"))
+    elif stored is not None:
+        ftp_v  = _i(stored.get("ftp"))
+        map_v  = _i(stored.get("MAP"))
+        awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
+        pmax_v = _i(stored.get("Pmax"))
+        ltp_v  = _i(stored.get("ltp"))
+    else:
+        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
+
+    # Ride performance metrics from stored pdc_params
+    np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
+    if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
+    tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
+    tss_map_v = _i(stored.get("tss_map"))          if stored is not None else "—"
+    tss_awc_v = _i(stored.get("tss_awc"))          if stored is not None else "—"
+
+    # Ride header: name + date
+    ride_header = [
+        html.Span(ride["name"].replace("_", " "),
+                  style={"fontSize": "20px", "fontWeight": "bold", "color": "#e8edf5"}),
+        html.Span(ride["ride_date"],
+                  style={"fontSize": "13px", "color": "#7a8fbb", "marginLeft": "10px"}),
+    ]
+
+    # PDC fitness cards (top right, aligned with ride header)
+    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
+           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
+    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+           "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    def _card(lbl, val, unit=""):
+        return _make_card(lbl, val, unit, _cs, _ls, _vs, _us)
+
+    pdc_stats = [
+        _card("FTP",  ftp_v,  "W"),
+        _card("MAP",  map_v,  "W"),
+        _card("LTP",  ltp_v,  "W"),
+        _card("AWC",  awc_v,  "kJ"),
+        _card("Pmax", pmax_v, "W"),
+    ]
+
+    # Power stats row (ride metrics + raw power, above the power graph)
     power_stats = _graph_stat_row([
-        ("Avg Power", _i(ride.get("avg_power")),  "W"),
-        ("Max Power", _i(ride.get("max_power")),  "W"),
+        ("NP",        np_v,                         "W"),
+        ("IF",        if_v,                         ""),
+        ("TSS",       tss_v,                        ""),
+        ("TSS MAP",   tss_map_v,                    ""),
+        ("TSS AWC",   tss_awc_v,                    ""),
+        ("Avg Power", _i(ride.get("avg_power")),    "W"),
+        ("Max Power", _i(ride.get("max_power")),    "W"),
     ])
+
+    # HR stats row (above HR graph, hidden with hr-section when no HR data)
     hr_stats = _graph_stat_row([
         ("Avg HR", _i(ride.get("avg_heart_rate")), "bpm"),
         ("Max HR", _i(ride.get("max_heart_rate")), "bpm"),
@@ -1651,9 +1724,10 @@ def update_ride_charts(ride_id, _ver):
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
-        _activity_metric_boxes(ride, pdc_params, live_pdc),
         hr_style,
         mmh_style,
+        ride_header,
+        pdc_stats,
         power_stats,
         hr_stats,
     )
