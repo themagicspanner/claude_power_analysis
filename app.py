@@ -1575,8 +1575,11 @@ app.layout = html.Div(
                 ]),
 
                 # Per-ride charts
-                html.Div(id="power-stats"),
-                html.Div(id="hr-stats"),
+                html.Div(style={"display": "flex", "justifyContent": "space-between",
+                                "alignItems": "flex-start"}, children=[
+                    html.Div(id="power-stats"),
+                    html.Div(id="hr-stats"),
+                ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
                 dcc.Graph(id="graph-wbal"),
