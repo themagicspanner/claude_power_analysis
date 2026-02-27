@@ -597,12 +597,10 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
 
-    p_map = np.minimum(p_30s, CP)
-    p_awc = np.maximum(p_30s - CP, 0.0)
-
+    # Split fractions from instantaneous power so that brief above-CP efforts register
     with np.errstate(invalid="ignore", divide="ignore"):
-        f_map = np.where(p_30s > 0, p_map / p_30s, 0.0)
-        f_awc = np.where(p_30s > 0, p_awc / p_30s, 0.0)
+        f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+    f_map = 1.0 - f_awc
 
     if ftp > 0:
         tss_rate_ph = (p_30s / ftp) ** 2 * 100.0        # TSS per hour at each point
