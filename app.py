@@ -1481,7 +1481,7 @@ _boot_conn.close()
 _reload()          # initial load (picks up freshly computed pdc_params)
 _start_watcher()   # background thread
 
-app = dash.Dash(__name__, title="Cycling Power Analysis")
+app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None)
 
 _NAV_BASE = {
     "display": "block", "width": "100%", "padding": "12px 20px",
