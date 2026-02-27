@@ -1382,7 +1382,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         freshness_card = html.Div(style={
             **card_style,
             "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
-            "minWidth": "130px",
+            "minWidth": "130px", "marginLeft": "auto",
         }, children=card_children)
     else:
         freshness_card = None
@@ -1407,10 +1407,6 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         card("LTP",  ltp_v,  "W"),
         card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
-        html.Div(
-            f"as of {as_of}",
-            style={"fontSize": "11px", "color": "#aaa", "alignSelf": "flex-end", "paddingBottom": "6px"},
-        ),
     ]
     if freshness_card is not None:
         children.append(freshness_card)
