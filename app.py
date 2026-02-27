@@ -380,7 +380,7 @@ def fig_mmh(ride: pd.Series, mmh_all: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title_text="Heart Rate (bpm)", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
         title=dict(text="Mean Maximal Heart Rate", font=dict(size=14)),
-        height=380, margin=dict(t=70, b=50, l=60, r=20),
+        height=440, margin=dict(t=70, b=50, l=60, r=20),
         template="plotly_white",
         legend=dict(x=0.98, xanchor="right", y=0.98),
     )
