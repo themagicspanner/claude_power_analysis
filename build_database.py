@@ -240,8 +240,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass
 
-    # Purge any rows that pre-date the ltp column so backfill recomputes them.
-    conn.execute("DELETE FROM pdc_params WHERE ltp IS NULL")
+    # Purge stale rows so backfill recomputes them:
+    #   • ltp IS NULL          — pre-dates the ltp column
+    #   • tss_awc IS NULL      — pre-dates the tss split columns
+    #   • components mismatch  — tss_map+tss_awc were written with a different
+    #                            FTP than tss (old bug where the two calculations
+    #                            used inconsistent FTP values)
+    conn.execute("""
+        DELETE FROM pdc_params
+        WHERE ltp IS NULL
+           OR tss_awc IS NULL
+           OR ABS(tss - (tss_map + tss_awc)) > 0.01
+    """)
     conn.commit()
 
 
