@@ -898,10 +898,10 @@ def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
 
 
 def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
-    """PDC model investigation: MMP decay weights + residuals vs the fitted curve.
+    """PDC model investigation: MMP decay weights + gap to model vs the fitted curve.
 
     Helps the athlete identify which durations need targeted testing efforts by
-    showing how fresh each MMP data point is and how well it supports the model.
+    showing how fresh each MMP data point is and how far below the model it sits.
 
     Panel 1 — Decayed MMP scatter + PDC curve:
         Each (ride, duration) point is coloured by its sigmoid decay weight.
@@ -909,9 +909,10 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         The envelope (best aged power per duration) and the fitted PDC curve are
         overlaid so the athlete can see where the model sits relative to the data.
 
-    Panel 2 — Residuals (decayed envelope − PDC model):
-        Green bar: athlete is above model here (data strongly supports the curve).
-        Red bar:   athlete is below model (testing opportunity / model overestimates).
+    Panel 2 — Gap to model (PDC model − decayed envelope):
+        Red bar:   athlete is below the model (testing opportunity).
+        Green bar: athlete exceeds the model here (rare, as the model skims the top).
+        A skimming fit means nearly all bars should be red or near zero.
     """
     today     = datetime.date.today()
     today_str = today.isoformat()
@@ -960,7 +961,10 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         AWC, Pmax, MAP, tau2 = popt
         model_vals             = _power_model(dur_arr, *popt)
         env_df["model_power"]  = model_vals
-        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        # Gap = model − data: positive means athlete is below the model (test needed).
+        # A skimming fit means the model sits at or above almost all data points,
+        # so nearly all gaps should be ≥ 0.
+        env_df["residual"]     = env_df["model_power"] - env_df["aged_power"]
         env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
         ftp = float(_power_model(3600.0, *popt))
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
@@ -973,7 +977,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         vertical_spacing=0.10,
         subplot_titles=[
             "Decayed MMP vs PDC model  (point colour = decay weight)",
-            "Residual: aged MMP − PDC model  (green = above model; red = below / test needed)",
+            "Gap to model: PDC − aged MMP  (red = below model / test needed; green = exceeds model)",
         ],
     )
 
@@ -1069,12 +1073,14 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
 
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
-        residuals  = env_df["residual"].to_numpy(dtype=float)
-        bar_colors = ["seagreen" if r >= 0 else "crimson" for r in residuals]
+        gaps       = env_df["residual"].to_numpy(dtype=float)
+        # Red = positive gap (athlete below model, testing needed).
+        # Muted green = negative gap (athlete exceeds model, rare with a skimming fit).
+        bar_colors = ["crimson" if g >= 0 else "rgba(46,139,87,0.55)" for g in gaps]
         fig.add_trace(go.Bar(
             x=dur_arr,
-            y=residuals,
-            name="Residual",
+            y=gaps,
+            name="Gap to model",
             marker_color=bar_colors,
             customdata=np.column_stack([
                 env_df["residual_pct"].to_numpy(),
@@ -1084,7 +1090,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             ]),
             hovertemplate=(
                 "<b>%{x:.0f} s</b><br>"
-                "Residual: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Gap to model: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
                 "Envelope: %{customdata[1]:.0f} W  ·  Model: %{customdata[2]:.0f} W<br>"
                 "Weight: %{customdata[3]}<extra></extra>"
             ),
@@ -1101,7 +1107,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Duration", row=2, col=1)
     fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
                      row=1, col=1)
-    fig.update_yaxes(title_text="Residual (W)", showgrid=True, gridcolor="lightgrey",
+    fig.update_yaxes(title_text="Gap to model (W)", showgrid=True, gridcolor="lightgrey",
                      row=2, col=1)
 
     if ok:
@@ -1136,9 +1142,11 @@ def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
 
     Each MMP duration is ranked by testing urgency using a combined score:
 
-        score = max(0, −residual_pct) × 0.7  +  (1 − weight) × 30
+        score = max(0, residual_pct) × 0.7  +  (1 − weight) × 30
 
-    Residual term: being below the model adds up to ~70 pts per 100 % gap.
+    residual_pct = (model − envelope) / model × 100, so positive values mean
+    the athlete is below the model at that duration.
+    Gap term: being below the model adds up to ~70 pts per 100 % gap.
     Staleness term: fully decayed data (weight = 0) adds 30 pts regardless
     of residual, because old efforts need re-confirming even when they beat
     the model.
@@ -1188,7 +1196,8 @@ def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
     if ok:
         AWC, Pmax, MAP, tau2 = popt
         env_df["model_power"]  = _power_model(dur_arr, *popt)
-        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        # Gap = model − data: positive means athlete is below the model (test needed).
+        env_df["residual"]     = env_df["model_power"] - env_df["aged_power"]
         env_df["residual_pct"] = env_df["residual"] / env_df["model_power"] * 100.0
     else:
         env_df["model_power"]  = float("nan")
@@ -1196,7 +1205,8 @@ def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
         env_df["residual_pct"] = float("nan")
 
     def _score(row: pd.Series) -> float:
-        below = max(0.0, -row["residual_pct"]) if pd.notna(row["residual_pct"]) else 0.0
+        # Positive residual_pct now means athlete is below model (testing needed).
+        below = max(0.0, row["residual_pct"]) if pd.notna(row["residual_pct"]) else 0.0
         stale = (1.0 - row["weight"]) * 30.0
         return below * 0.7 + stale
 
