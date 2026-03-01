@@ -476,6 +476,70 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     return fig
 
 
+# ── Zone distribution ─────────────────────────────────────────────────────────
+
+def fig_zone_distribution(zone_data: dict[int, float],
+                          ltp: float, map_: float) -> go.Figure:
+    """Horizontal stacked bar showing time in each of the three physiological zones.
+
+    Zone 1 (≤ LTP)       — base / recovery
+    Zone 2 (LTP – MAP)   — threshold / sweet-spot
+    Zone 3 (> MAP)       — high intensity / VO₂ max+
+    """
+    if not zone_data:
+        fig = go.Figure()
+        fig.update_layout(
+            height=150, template="plotly_white",
+            margin=dict(t=45, b=10, l=10, r=10),
+            title=dict(text="Zone Distribution", font=dict(size=14)),
+            annotations=[dict(text="No zone data available", showarrow=False,
+                              font=dict(color="#888", size=13),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    total = sum(zone_data.values())
+
+    def _fmt(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}:{s:02d}"
+
+    zones = [
+        (1, f"Z1  ≤{ltp:.0f} W",            zone_data.get(1, 0.0), "#4a90d9"),
+        (2, f"Z2  {ltp:.0f}–{map_:.0f} W",  zone_data.get(2, 0.0), "#f5a623"),
+        (3, f"Z3  >{map_:.0f} W",            zone_data.get(3, 0.0), "#e74c3c"),
+    ]
+
+    fig = go.Figure()
+    for _, name, secs, color in zones:
+        pct = secs / total * 100 if total > 0 else 0.0
+        fig.add_trace(go.Bar(
+            y=[""],
+            x=[pct],
+            name=f"{name}  {pct:.0f}%  ({_fmt(secs)})",
+            orientation="h",
+            marker_color=color,
+            hovertemplate=f"{name}<br>{pct:.1f}%  ·  {_fmt(secs)}<extra></extra>",
+        ))
+
+    fig.update_xaxes(range=[0, 100], showgrid=False, showticklabels=False)
+    fig.update_yaxes(showticklabels=False)
+    fig.update_layout(
+        title=dict(text="Zone Distribution  (LTP / MAP 3-zone model)", font=dict(size=14)),
+        barmode="stack",
+        height=150,
+        margin=dict(t=55, b=10, l=10, r=10),
+        template="plotly_white",
+        showlegend=True,
+        legend=dict(
+            orientation="h", x=0, y=-0.05,
+            font=dict(size=11), traceorder="normal",
+        ),
+        hovermode="closest",
+    )
+    return fig
+
+
 # ── W' balance ────────────────────────────────────────────────────────────────
 
 def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,

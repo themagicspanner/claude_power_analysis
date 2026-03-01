@@ -105,6 +105,32 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
     return tss_map, tss_awc
 
 
+def _aerobic_decoupling(df: pd.DataFrame) -> float | None:
+    """Aerobic decoupling: drift in power:HR efficiency ratio between ride halves.
+
+    Splits the ride in two equal halves and computes the standard TrainingPeaks
+    aerobic decoupling metric:
+
+        AeDec% = (PHR_first − PHR_second) / PHR_first × 100
+
+    where PHR = average(power) / average(heart_rate) for each half.
+
+    Positive value = HR drifted up relative to power (cardiac drift / fatigue).
+    Negative value = efficiency improved in second half (rare).
+    < 5 % = well-paced with good aerobic base; > 10 % = notable cardiac drift.
+
+    Returns None when there are fewer than 60 samples with both power and HR data.
+    """
+    valid = df[["power", "heart_rate"]].dropna()
+    if len(valid) < 60:
+        return None
+    n = len(valid) // 2
+    first, second = valid.iloc[:n], valid.iloc[n:]
+    phr1 = first["power"].mean() / first["heart_rate"].mean()
+    phr2 = second["power"].mean() / second["heart_rate"].mean()
+    return round((phr1 - phr2) / phr1 * 100, 2) if phr1 > 0 else None
+
+
 def _power_model(t, AWC, Pmax, MAP, tau2):
     """Two-component power-duration model.
 
@@ -189,19 +215,28 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS pdc_params (
-            ride_id          INTEGER PRIMARY KEY REFERENCES rides(id),
-            AWC              REAL    NOT NULL,
-            Pmax             REAL    NOT NULL,
-            MAP              REAL    NOT NULL,
-            tau2             REAL    NOT NULL,
-            computed_at      TEXT    NOT NULL,
-            ftp              REAL,
-            normalized_power REAL,
-            intensity_factor REAL,
-            tss              REAL,
-            tss_map          REAL,
-            tss_awc          REAL,
-            ltp              REAL
+            ride_id               INTEGER PRIMARY KEY REFERENCES rides(id),
+            AWC                   REAL    NOT NULL,
+            Pmax                  REAL    NOT NULL,
+            MAP                   REAL    NOT NULL,
+            tau2                  REAL    NOT NULL,
+            computed_at           TEXT    NOT NULL,
+            ftp                   REAL,
+            normalized_power      REAL,
+            intensity_factor      REAL,
+            tss                   REAL,
+            tss_map               REAL,
+            tss_awc               REAL,
+            ltp                   REAL,
+            variability_index     REAL,
+            aerobic_decoupling_pct REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS zone_distribution (
+            ride_id  INTEGER NOT NULL REFERENCES rides(id),
+            zone     INTEGER NOT NULL,
+            seconds  REAL    NOT NULL,
+            PRIMARY KEY (ride_id, zone)
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -215,13 +250,15 @@ def init_db(conn: sqlite3.Connection) -> None:
     # version (ALTER TABLE silently fails if the column already exists via the
     # OperationalError catch).
     for col_def in [
-        "ftp              REAL",
-        "normalized_power REAL",
-        "intensity_factor REAL",
-        "tss              REAL",
-        "tss_map          REAL",
-        "tss_awc          REAL",
-        "ltp              REAL",
+        "ftp                    REAL",
+        "normalized_power       REAL",
+        "intensity_factor       REAL",
+        "tss                    REAL",
+        "tss_map                REAL",
+        "tss_awc                REAL",
+        "ltp                    REAL",
+        "variability_index      REAL",
+        "aerobic_decoupling_pct REAL",
     ]:
         try:
             conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
@@ -251,6 +288,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         WHERE ltp IS NULL
            OR tss_awc IS NULL
            OR ABS(tss - (tss_map + tss_awc)) > 0.01
+    """)
+    # Remove zone rows whose PDC params were just purged (zones depend on LTP/MAP)
+    conn.execute("""
+        DELETE FROM zone_distribution
+        WHERE ride_id NOT IN (SELECT ride_id FROM pdc_params)
     """)
     conn.commit()
 
@@ -343,6 +385,22 @@ def calculate_mmh(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
     return result
 
 
+def calculate_zones(df: pd.DataFrame, ltp: float, map_: float) -> dict[int, float]:
+    """Return seconds spent in each of three physiological zones.
+
+    Zone 1 : ≤ LTP          — base / below first lactate threshold
+    Zone 2 : LTP < P ≤ MAP  — threshold / sweet-spot
+    Zone 3 : > MAP           — high intensity / VO₂ max+
+
+    NaN power values are treated as 0 W (Zone 1).
+    """
+    power = df["power"].fillna(0).to_numpy(dtype=float)
+    z1 = float(np.sum(power <= ltp))
+    z3 = float(np.sum(power > map_))
+    z2 = float(len(power) - z1 - z3)
+    return {1: z1, 2: z2, 3: z3}
+
+
 # ── PDC fitting ───────────────────────────────────────────────────────────────
 
 def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
@@ -399,10 +457,11 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
 
     rec = pd.read_sql(
-        "SELECT elapsed_s, power FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn, params=(ride_id,),
     )
-    np_val = if_val = tss = 0.0
+    np_val = if_val = tss = tss_map = tss_awc = 0.0
+    vi = aedec = None
     if not rec.empty and rec["power"].notna().any():
         elapsed = rec["elapsed_s"].to_numpy(dtype=float)
         power   = rec["power"].to_numpy(dtype=float)
@@ -413,13 +472,16 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
         tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
         tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), tss, hz)
+        ap  = float(rec["power"].fillna(0).mean())
+        vi  = round(np_val / ap, 3) if ap > 0 else None
+        aedec = _aerobic_decoupling(rec)
 
     conn.execute(
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc, ltp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, ltp, variability_index, aerobic_decoupling_pct)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -434,6 +496,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             tss_map,
             tss_awc,
             round(ltp,     1),
+            vi,
+            aedec,
         ),
     )
     conn.commit()
@@ -450,6 +514,71 @@ def backfill_pdc_params(conn: sqlite3.Connection) -> None:
         compute_pdc_params(conn, ride_id)
     if rows:
         print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
+
+
+def backfill_vi_aedec(conn: sqlite3.Connection) -> None:
+    """Compute variability_index and aerobic_decoupling_pct for rides missing them.
+
+    Reuses the already-stored normalized_power and rides.avg_power for VI so that
+    only a records read (for AeDec%) is needed — no expensive curve refitting.
+    """
+    rows = conn.execute(
+        """SELECT p.ride_id, p.normalized_power, r.avg_power
+           FROM pdc_params p
+           JOIN rides r ON r.id = p.ride_id
+           WHERE p.variability_index IS NULL
+           ORDER BY p.ride_id"""
+    ).fetchall()
+    if not rows:
+        return
+    print(f"[vi] Backfilling VI/AeDec for {len(rows)} ride(s) …")
+    for ride_id, np_val, avg_pwr in rows:
+        if np_val is not None and avg_pwr is not None and float(avg_pwr) > 0:
+            vi = round(float(np_val) / float(avg_pwr), 3)
+        else:
+            vi = None
+        rec = pd.read_sql(
+            "SELECT power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+            conn, params=(ride_id,),
+        )
+        aedec = _aerobic_decoupling(rec) if not rec.empty else None
+        conn.execute(
+            "UPDATE pdc_params SET variability_index = ?, aerobic_decoupling_pct = ?"
+            " WHERE ride_id = ?",
+            (vi, aedec, ride_id),
+        )
+    conn.commit()
+    print("[vi] Backfill complete.")
+
+
+def backfill_zones(conn: sqlite3.Connection) -> None:
+    """Compute zone_distribution for rides that have PDC params but no zone data."""
+    rows = conn.execute(
+        """SELECT p.ride_id, p.ltp, p.MAP
+           FROM pdc_params p
+           WHERE p.ltp IS NOT NULL AND p.MAP IS NOT NULL
+             AND NOT EXISTS (
+                 SELECT 1 FROM zone_distribution z WHERE z.ride_id = p.ride_id
+             )
+           ORDER BY p.ride_id"""
+    ).fetchall()
+    if not rows:
+        return
+    print(f"[zones] Backfilling zone distribution for {len(rows)} ride(s) …")
+    for ride_id, ltp, map_ in rows:
+        rec = pd.read_sql(
+            "SELECT power FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+            conn, params=(ride_id,),
+        )
+        if rec.empty:
+            continue
+        zones = calculate_zones(rec, float(ltp), float(map_))
+        conn.executemany(
+            "INSERT OR IGNORE INTO zone_distribution (ride_id, zone, seconds) VALUES (?,?,?)",
+            [(ride_id, z, s) for z, s in zones.items()],
+        )
+        conn.commit()
+    print("[zones] Backfill complete.")
 
 
 def backfill_mmh(conn: sqlite3.Connection) -> None:
@@ -636,6 +765,11 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     ride_date_obj = datetime.date.fromisoformat(ride_date)
     end_affected  = (ride_date_obj + datetime.timedelta(days=PDC_WINDOW)).isoformat()
     conn.execute(
+        "DELETE FROM zone_distribution WHERE ride_id IN "
+        "(SELECT id FROM rides WHERE ride_date BETWEEN ? AND ?)",
+        (ride_date, end_affected),
+    )
+    conn.execute(
         "DELETE FROM pdc_params WHERE ride_id IN "
         "(SELECT id FROM rides WHERE ride_date BETWEEN ? AND ?)",
         (ride_date, end_affected),
@@ -729,6 +863,8 @@ def main() -> None:
         process_ride(conn, path)
 
     backfill_pdc_params(conn)
+    backfill_vi_aedec(conn)
+    backfill_zones(conn)
     conn.close()
     print_mmp_table(DB_PATH)
 
