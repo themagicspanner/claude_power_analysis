@@ -918,8 +918,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # Pre-compute human-readable duration labels for hover tooltips
-    window_dur_fmt = np.array([_fmt_dur(d) for d in window["duration_s"]])
-    env_dur_fmt    = np.array([_fmt_dur(d) for d in env_df["duration_s"]])
+    env_dur_fmt = np.array([_fmt_dur(d) for d in env_df["duration_s"]])
 
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = make_subplots(
@@ -939,33 +938,6 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         [0.4, "rgba(100,150,200,0.55)"],
         [1.0, "rgba(41,128,185,0.90)"],
     ]
-
-    fig.add_trace(go.Scatter(
-        x=window["duration_s"],
-        y=window["aged_power"],
-        mode="markers",
-        name="All efforts (weighted)",
-        marker=dict(
-            size=5,
-            color=window["weight"].to_numpy(dtype=float),
-            colorscale=_weight_colorscale,
-            cmin=0, cmax=1,
-            showscale=False,
-        ),
-        customdata=np.column_stack([
-            window["weight"].round(3),
-            window["age_days"].round(0),
-            window["ride_date"].to_numpy(),
-            window["power"].round(0),
-            window_dur_fmt,
-        ]),
-        hovertemplate=(
-            "<b>%{customdata[4]}</b><br>"
-            "Weighted power: %{y:.0f} W  (raw: %{customdata[3]:.0f} W)<br>"
-            "Freshness: %{customdata[0]} · Age: %{customdata[1]:.0f} days<br>"
-            "Ride: %{customdata[2]}<extra></extra>"
-        ),
-    ), row=1, col=1)
 
     # Envelope: best aged power per duration, marker colour = weight
     fig.add_trace(go.Scatter(

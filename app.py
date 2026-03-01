@@ -853,9 +853,8 @@ app.layout = html.Div(
                         style={"color": "#e8edf5", "marginBottom": "8px",
                                "fontWeight": "600", "fontSize": "22px"}),
                 html.P(
-                    "Dots show every power effort in the window, coloured by freshness "
-                    "(bright blue = recent, grey = old). "
-                    "The dotted line connects the best effort at each duration. "
+                    "The dotted line connects the best effort at each duration, "
+                    "coloured by freshness (blue = recent, grey = old). "
                     "Green fill = aerobic (MAP) zone; orange fill = anaerobic contribution. "
                     "Dashed threshold lines mark MAP, FTP, and LTP. "
                     "Red bars below show where the model overestimates your data — "
