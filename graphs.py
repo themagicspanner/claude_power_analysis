@@ -958,20 +958,6 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             line=dict(color="darkorange", width=2.5, dash="dash"),
             hovertemplate="<b>%{x:.0f} s</b><br>Model: %{y:.0f} W<extra></extra>",
         ), row=1, col=1)
-        # Key power thresholds on panel 1
-        for y_val, label, color in [
-            (MAP, f"MAP {MAP:.0f} W", "seagreen"),
-            (ftp, f"FTP {ftp:.0f} W", "darkorange"),
-            (ltp, f"LTP {ltp:.0f} W", "steelblue"),
-        ]:
-            if y_val > 0:
-                fig.add_hline(
-                    y=y_val, row=1, col=1,
-                    line=dict(color=color, width=1, dash="dot"),
-                    annotation_text=label,
-                    annotation_position="right",
-                    annotation_font=dict(size=10, color=color),
-                )
 
     # 2. Raw (unweighted) MMP line — actual power before age decay is applied
     raw_decay = env_df["raw_power"] - env_df["aged_power"]
