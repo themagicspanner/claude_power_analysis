@@ -1031,17 +1031,23 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         ),
     ), row=1, col=1)
 
-    # ── Panel 2: residuals ────────────────────────────────────────────────────
+    # ── Panel 2: residuals as % of model ──────────────────────────────────────
     if ok:
-        residuals  = env_df["residual"].to_numpy(dtype=float)
-        bar_colors = ["seagreen" if r >= 0 else "crimson" for r in residuals]
-        fig.add_trace(go.Bar(
+        residual_pct  = env_df["residual_pct"].to_numpy(dtype=float)
+        marker_colors = ["seagreen" if r >= 0 else "crimson" for r in residual_pct]
+        fig.add_trace(go.Scatter(
             x=dur_arr,
-            y=residuals,
-            name="Gap to model",
-            marker_color=bar_colors,
+            y=residual_pct,
+            name="Gap to model (%)",
+            mode="lines+markers",
+            line=dict(color="rgba(150,150,150,0.4)", width=1),
+            marker=dict(
+                color=marker_colors,
+                size=9,
+                line=dict(color="white", width=1),
+            ),
             customdata=np.column_stack([
-                env_df["residual_pct"].to_numpy(),
+                env_df["residual"].round(0),
                 env_df["aged_power"].round(0),
                 env_df["model_power"].round(0),
                 env_df["weight"].round(3),
@@ -1049,7 +1055,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             ]),
             hovertemplate=(
                 "<b>%{customdata[4]}</b><br>"
-                "Gap: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Gap: %{y:+.1f}%  (%{customdata[0]:+.0f} W)<br>"
                 "Your best: %{customdata[1]:.0f} W · Model: %{customdata[2]:.0f} W<br>"
                 "Freshness: %{customdata[3]}<extra></extra>"
             ),
@@ -1066,7 +1072,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Duration", row=2, col=1)
     fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
                      row=1, col=1)
-    fig.update_yaxes(title_text="Gap (W)", showgrid=True, gridcolor="lightgrey",
+    fig.update_yaxes(title_text="Gap (% of model)", showgrid=True, gridcolor="lightgrey",
                      row=2, col=1)
 
     if ok:
