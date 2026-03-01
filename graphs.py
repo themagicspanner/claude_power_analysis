@@ -476,101 +476,66 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     return fig
 
 
-# ── W' balance ────────────────────────────────────────────────────────────────
+# ── Zone distribution ─────────────────────────────────────────────────────────
 
-def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,
-                 AWC: float, CP: float) -> np.ndarray:
-    """Skiba (2012) differential W' balance model.
+def fig_zone_distribution(zone_data: dict[int, float],
+                          ltp: float, map_: float) -> go.Figure:
+    """Horizontal stacked bar showing time in each of the three physiological zones.
 
-    Parameters
-    ----------
-    elapsed_s : strictly-increasing array of elapsed time in seconds
-    power     : power in watts at each sample (NaN → treated as 0 W)
-    AWC       : W' — anaerobic work capacity in joules
-    CP        : critical power in watts (use MAP from the two-component fit)
-
-    Returns
-    -------
-    wbal : W'bal in joules, same shape as elapsed_s
+    Zone 1 (≤ LTP)       — base / recovery
+    Zone 2 (LTP – MAP)   — threshold / sweet-spot
+    Zone 3 (> MAP)       — high intensity / VO₂ max+
     """
-    p = np.where(np.isnan(power), 0.0, power.astype(float))
-    n = len(elapsed_s)
-    wbal = np.empty(n)
-    wbal[0] = AWC
-    for i in range(1, n):
-        dt = elapsed_s[i] - elapsed_s[i - 1]
-        if dt <= 0:
-            wbal[i] = wbal[i - 1]
-            continue
-        pi = p[i - 1]
-        if pi >= CP:
-            wbal[i] = max(wbal[i - 1] + (CP - pi) * dt, 0.0)
-        else:
-            tau_w = 546.0 * np.exp(-0.01 * (CP - pi)) + 316.0
-            wbal[i] = AWC - (AWC - wbal[i - 1]) * np.exp(-dt / tau_w)
-    return wbal
+    if not zone_data:
+        fig = go.Figure()
+        fig.update_layout(
+            height=150, template="plotly_white",
+            margin=dict(t=45, b=10, l=10, r=10),
+            title=dict(text="Zone Distribution", font=dict(size=14)),
+            annotations=[dict(text="No zone data available", showarrow=False,
+                              font=dict(color="#888", size=13),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
 
+    total = sum(zone_data.values())
 
-def fig_wbal(records: pd.DataFrame, ride: pd.Series,
-             pdc_params: pd.DataFrame,
-             live_pdc: dict | None = None) -> go.Figure:
-    """W' balance versus elapsed time for a single ride.
+    def _fmt(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}:{s:02d}"
 
-    AWC and CP for the W'bal calculation are taken from live_pdc (on-the-fly
-    fit) when available, so the chart is guaranteed to match fig_pdc_at_date.
-    TSS annotation metrics fall back to stored pdc_params.
-    """
-    if records["power"].isna().all():
-        return go.Figure()
-
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-
-    # Use on-the-fly params for the calculation; stored params for annotations.
-    if live_pdc is not None:
-        AWC = live_pdc["AWC"]
-        CP  = live_pdc["MAP"]
-    elif not params_row.empty:
-        r   = params_row.iloc[0]
-        AWC = float(r["AWC"])
-        CP  = float(r["MAP"])
-    else:
-        return go.Figure()
-
-    awc_kj = AWC / 1000.0
-
-    elapsed = records["elapsed_s"].to_numpy(dtype=float)
-    power   = records["power"].to_numpy(dtype=float)
-    wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
-    t_min   = records["elapsed_min"].to_numpy(dtype=float)
+    zones = [
+        (1, f"Z1  ≤{ltp:.0f} W",            zone_data.get(1, 0.0), "#4a90d9"),
+        (2, f"Z2  {ltp:.0f}–{map_:.0f} W",  zone_data.get(2, 0.0), "#f5a623"),
+        (3, f"Z3  >{map_:.0f} W",            zone_data.get(3, 0.0), "#e74c3c"),
+    ]
 
     fig = go.Figure()
+    for _, name, secs, color in zones:
+        pct = secs / total * 100 if total > 0 else 0.0
+        fig.add_trace(go.Bar(
+            y=[""],
+            x=[pct],
+            name=f"{name}  {pct:.0f}%  ({_fmt(secs)})",
+            orientation="h",
+            marker_color=color,
+            hovertemplate=f"{name}<br>{pct:.1f}%  ·  {_fmt(secs)}<extra></extra>",
+        ))
 
-    fig.add_hline(y=awc_kj, line=dict(color="grey", dash="dot", width=1),
-                  annotation_text=f"W' = {awc_kj:.1f} kJ",
-                  annotation_position="top right",
-                  annotation_font=dict(size=10, color="grey"))
-    fig.add_hline(y=0, line=dict(color="crimson", dash="dot", width=1))
-
-    fig.add_trace(go.Scatter(
-        x=t_min, y=wbal_kj,
-        mode="lines", name="W'bal",
-        fill="tozeroy", fillcolor="rgba(70,130,180,0.15)",
-        line=dict(color="steelblue", width=2),
-    ))
-
-    fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="W'bal (kJ)",
-                     showgrid=True, gridcolor="lightgrey",
-                     range=[-awc_kj * 0.05, awc_kj * 1.12],
-                     fixedrange=True)
+    fig.update_xaxes(range=[0, 100], showgrid=False, showticklabels=False)
+    fig.update_yaxes(showticklabels=False)
     fig.update_layout(
-        title=dict(text="W' Balance", font=dict(size=14)),
-        height=280,
-        margin=dict(t=55, b=40, l=60, r=20),
-        showlegend=False,
-        hovermode="x unified",
+        title=dict(text="Zone Distribution  (LTP / MAP 3-zone model)", font=dict(size=14)),
+        barmode="stack",
+        height=150,
+        margin=dict(t=55, b=10, l=10, r=10),
         template="plotly_white",
+        showlegend=True,
+        legend=dict(
+            orientation="h", x=0, y=-0.05,
+            font=dict(size=11), traceorder="normal",
+        ),
+        hovermode="closest",
     )
     return fig
 
@@ -831,6 +796,411 @@ def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
             ctl[i] = ctl[i - 1] + k_ctl * (t - ctl[i - 1])
 
     return pd.DataFrame({"date": dates, "atl": atl, "ctl": ctl, "tsb": tsb})
+
+
+def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
+    """PDC model investigation: MMP decay weights + residuals vs the fitted curve.
+
+    Helps the athlete identify which durations need targeted testing efforts by
+    showing how fresh each MMP data point is and how well it supports the model.
+
+    Panel 1 — Decayed MMP scatter + PDC curve:
+        Each (ride, duration) point is coloured by its sigmoid decay weight.
+        Bright blue = recent (trustworthy data); grey = old (may need retesting).
+        The envelope (best aged power per duration) and the fitted PDC curve are
+        overlaid so the athlete can see where the model sits relative to the data.
+
+    Panel 2 — Residuals (decayed envelope − PDC model):
+        Green bar: athlete is above model here (data strongly supports the curve).
+        Red bar:   athlete is below model (testing opportunity / model overestimates).
+    """
+    today     = datetime.date.today()
+    today_str = today.isoformat()
+    cutoff    = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today_str)].copy()
+
+    if window.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title=dict(text="PDC Investigation — no data in window", font=dict(size=14)),
+            height=500, template="plotly_white",
+            annotations=[dict(text="No MMP data in the current PDC window",
+                              showarrow=False, font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (today - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    # Envelope: best aged power per duration, plus metadata of the contributing ride
+    env_rows = []
+    for dur, grp in window.groupby("duration_s"):
+        best = grp.loc[grp["aged_power"].idxmax()]
+        env_rows.append({
+            "duration_s": dur,
+            "aged_power": best["aged_power"],
+            "raw_power":  best["power"],
+            "weight":     best["weight"],
+            "age_days":   best["age_days"],
+            "ride_date":  best["ride_date"],
+        })
+    env_df = pd.DataFrame(env_rows).sort_values("duration_s")
+
+    dur_arr = env_df["duration_s"].to_numpy(dtype=float)
+    pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
+
+    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
+                else (None, False))
+
+    if ok:
+        AWC, Pmax, MAP, tau2 = popt
+        model_vals             = _power_model(dur_arr, *popt)
+        env_df["model_power"]  = model_vals
+        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
+        ftp = float(_power_model(3600.0, *popt))
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.62, 0.38],
+        vertical_spacing=0.10,
+        subplot_titles=[
+            "Decayed MMP vs PDC model  (point colour = decay weight)",
+            "Residual: aged MMP − PDC model  (green = above model; red = below / test needed)",
+        ],
+    )
+
+    # ── Panel 1: all individual MMP points ────────────────────────────────────
+    _weight_colorscale = [
+        [0.0, "rgba(160,160,160,0.20)"],
+        [0.4, "rgba(100,150,200,0.55)"],
+        [1.0, "rgba(41,128,185,0.90)"],
+    ]
+
+    fig.add_trace(go.Scatter(
+        x=window["duration_s"],
+        y=window["aged_power"],
+        mode="markers",
+        name="All MMP points (aged)",
+        marker=dict(
+            size=5,
+            color=window["weight"].to_numpy(dtype=float),
+            colorscale=_weight_colorscale,
+            cmin=0, cmax=1,
+            showscale=False,
+        ),
+        customdata=np.column_stack([
+            window["weight"].round(3),
+            window["age_days"].round(0),
+            window["ride_date"].to_numpy(),
+            window["power"].round(0),
+        ]),
+        hovertemplate=(
+            "<b>%{x:.0f} s</b><br>"
+            "Aged power: %{y:.0f} W<br>"
+            "Raw power:  %{customdata[3]:.0f} W<br>"
+            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "Ride: %{customdata[2]}<extra></extra>"
+        ),
+    ), row=1, col=1)
+
+    # Envelope: best aged power per duration, marker colour = weight
+    fig.add_trace(go.Scatter(
+        x=env_df["duration_s"],
+        y=env_df["aged_power"],
+        mode="lines+markers",
+        name="Decayed MMP envelope",
+        line=dict(color="steelblue", width=1.5, dash="dot"),
+        marker=dict(
+            size=10,
+            color=env_df["weight"].to_numpy(dtype=float),
+            colorscale=_weight_colorscale,
+            cmin=0, cmax=1,
+            line=dict(color="white", width=1.2),
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Decay weight", side="right"),
+                thickness=13, len=0.52, y=0.78,
+                tickvals=[0, 0.5, 1],
+                ticktext=["0 (old)", "0.5", "1 (fresh)"],
+            ),
+        ),
+        customdata=np.column_stack([
+            env_df["weight"].round(3),
+            env_df["age_days"].round(0),
+            env_df["ride_date"].to_numpy(),
+            env_df["raw_power"].round(0),
+        ]),
+        hovertemplate=(
+            "<b>%{x:.0f} s  (envelope best)</b><br>"
+            "Aged power: %{y:.0f} W<br>"
+            "Raw power:  %{customdata[3]:.0f} W<br>"
+            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "Ride: %{customdata[2]}<extra></extra>"
+        ),
+    ), row=1, col=1)
+
+    # PDC model curve
+    if ok:
+        t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
+        p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
+        p_tot = _power_model(t_sm, *popt)
+        fig.add_trace(go.Scatter(
+            x=t_sm, y=p_aer,
+            mode="lines", name="aerobic (MAP)",
+            fill="tozeroy", fillcolor="rgba(46,139,87,0.15)",
+            line=dict(color="rgba(46,139,87,0.6)", width=1),
+            hoverinfo="skip",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=t_sm, y=p_tot,
+            mode="lines", name="PDC model",
+            fill="tonexty", fillcolor="rgba(220,80,30,0.10)",
+            line=dict(color="darkorange", width=2.5, dash="dash"),
+            hovertemplate="Model: %{y:.0f} W<extra></extra>",
+        ), row=1, col=1)
+
+    # ── Panel 2: residuals ────────────────────────────────────────────────────
+    if ok:
+        residuals  = env_df["residual"].to_numpy(dtype=float)
+        bar_colors = ["seagreen" if r >= 0 else "crimson" for r in residuals]
+        fig.add_trace(go.Bar(
+            x=dur_arr,
+            y=residuals,
+            name="Residual",
+            marker_color=bar_colors,
+            customdata=np.column_stack([
+                env_df["residual_pct"].to_numpy(),
+                env_df["aged_power"].round(0),
+                env_df["model_power"].round(0),
+                env_df["weight"].round(3),
+            ]),
+            hovertemplate=(
+                "<b>%{x:.0f} s</b><br>"
+                "Residual: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Envelope: %{customdata[1]:.0f} W  ·  Model: %{customdata[2]:.0f} W<br>"
+                "Weight: %{customdata[3]}<extra></extra>"
+            ),
+        ), row=2, col=1)
+        fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=2, col=1)
+
+    # ── Axes ──────────────────────────────────────────────────────────────────
+    for row in [1, 2]:
+        fig.update_xaxes(
+            type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+            showgrid=True, gridcolor="lightgrey",
+            row=row, col=1,
+        )
+    fig.update_xaxes(title_text="Duration", row=2, col=1)
+    fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
+                     row=1, col=1)
+    fig.update_yaxes(title_text="Residual (W)", showgrid=True, gridcolor="lightgrey",
+                     row=2, col=1)
+
+    if ok:
+        title_sub = (
+            f"MAP {MAP:.0f} W  ·  FTP {ftp:.0f} W  ·  LTP {ltp:.0f} W  ·  "
+            f"AWC {AWC / 1000:.1f} kJ  ·  Pmax {Pmax:.0f} W  ·  "
+            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
+            f"K={PDC_K}  ·  ref {today_str}"
+        )
+    else:
+        title_sub = (
+            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
+            f"K={PDC_K}  ·  ref {today_str}"
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"PDC Model Investigation<br><sup>{title_sub}</sup>",
+            font=dict(size=14),
+        ),
+        height=640,
+        margin=dict(t=110, b=50, l=70, r=90),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
+
+
+def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
+    """Priority testing table for the PDC investigation page.
+
+    Each MMP duration is ranked by testing urgency using a combined score:
+
+        score = max(0, −residual_pct) × 0.7  +  (1 − weight) × 30
+
+    Residual term: being below the model adds up to ~70 pts per 100 % gap.
+    Staleness term: fully decayed data (weight = 0) adds 30 pts regardless
+    of residual, because old efforts need re-confirming even when they beat
+    the model.
+
+    Action labels
+    ─────────────
+    Test now  (score > 20) — stale data AND/OR well below the model
+    Monitor   (score >  8) — one factor mildly out of range
+    On track  (score ≤  8) — fresh, recent data supporting the model
+    """
+    today  = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today.isoformat())].copy()
+
+    if window.empty:
+        fig = go.Figure()
+        fig.update_layout(height=80, template="plotly_white",
+                          margin=dict(t=10, b=10, l=10, r=10))
+        return fig
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (today - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    env_rows = []
+    for dur, grp in window.groupby("duration_s"):
+        best = grp.loc[grp["aged_power"].idxmax()]
+        env_rows.append({
+            "duration_s": dur,
+            "aged_power": best["aged_power"],
+            "raw_power":  best["power"],
+            "weight":     best["weight"],
+            "age_days":   int(best["age_days"]),
+            "ride_date":  best["ride_date"],
+        })
+    env_df = pd.DataFrame(env_rows).sort_values("duration_s")
+
+    dur_arr = env_df["duration_s"].to_numpy(dtype=float)
+    pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
+
+    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
+                else (None, False))
+
+    if ok:
+        AWC, Pmax, MAP, tau2 = popt
+        env_df["model_power"]  = _power_model(dur_arr, *popt)
+        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        env_df["residual_pct"] = env_df["residual"] / env_df["model_power"] * 100.0
+    else:
+        env_df["model_power"]  = float("nan")
+        env_df["residual"]     = float("nan")
+        env_df["residual_pct"] = float("nan")
+
+    def _score(row: pd.Series) -> float:
+        below = max(0.0, -row["residual_pct"]) if pd.notna(row["residual_pct"]) else 0.0
+        stale = (1.0 - row["weight"]) * 30.0
+        return below * 0.7 + stale
+
+    env_df["score"] = env_df.apply(_score, axis=1)
+    env_df = env_df.sort_values("score", ascending=False)
+
+    def _action(score: float) -> str:
+        if score > 20: return "Test now"
+        if score > 8:  return "Monitor"
+        return "On track"
+
+    env_df["action"] = env_df["score"].apply(_action)
+
+    def _dur_label(s: float) -> str:
+        s = int(s)
+        if s < 60:   return f"{s}s"
+        if s < 3600:
+            m, sec = divmod(s, 60)
+            return f"{m}:{sec:02d}" if sec else f"{m} min"
+        return f"{s // 3600}h"
+
+    dur_labels     = [_dur_label(d) for d in env_df["duration_s"]]
+    raw_power_vals = [f"{int(r)} W" for r in env_df["raw_power"]]
+    weight_vals    = [f"{w:.2f}" for w in env_df["weight"]]
+    age_vals       = [f"{a}d  ({rd})" for a, rd in
+                      zip(env_df["age_days"], env_df["ride_date"])]
+    residual_vals  = [
+        f"{r:+.0f} W  ({p:+.1f}%)" if pd.notna(r) else "—"
+        for r, p in zip(env_df["residual"], env_df["residual_pct"])
+    ]
+    actions = env_df["action"].tolist()
+    n       = len(env_df)
+
+    # Row colours for the Action column
+    action_fill  = {"Test now": "rgba(220,53,69,0.12)",
+                    "Monitor":  "rgba(255,193,7,0.15)",
+                    "On track": "rgba(40,167,69,0.10)"}
+    action_font  = {"Test now": "#dc3545",
+                    "Monitor":  "#856404",
+                    "On track": "#155724"}
+
+    row_action_fill = [action_fill[a] for a in actions]
+    row_action_font = [action_font[a] for a in actions]
+
+    # Weight column: grey (low) → blue (high)
+    def _weight_color(w: float) -> str:
+        r = int(160 - (160 - 41)  * w)
+        g = int(160 - (160 - 128) * w)
+        b = int(160 + (185 - 160) * w)
+        return f"rgba({r},{g},{b},0.25)"
+
+    weight_fill = [_weight_color(w) for w in env_df["weight"]]
+
+    fig = go.Figure(go.Table(
+        columnwidth=[60, 80, 60, 160, 130, 80],
+        header=dict(
+            values=["Duration", "Best effort", "Weight", "Age of best effort",
+                    "vs Model", "Action"],
+            fill_color="#eef2f7",
+            align=["left", "right", "center", "left", "right", "center"],
+            font=dict(size=12, color="#374151"),
+            height=30,
+        ),
+        cells=dict(
+            values=[dur_labels, raw_power_vals, weight_vals,
+                    age_vals, residual_vals, actions],
+            fill_color=[
+                ["white"] * n,
+                ["white"] * n,
+                weight_fill,
+                ["white"] * n,
+                ["white"] * n,
+                row_action_fill,
+            ],
+            font=dict(
+                size=12,
+                color=[
+                    ["#111827"] * n,
+                    ["#111827"] * n,
+                    ["#374151"] * n,
+                    ["#6b7280"] * n,
+                    ["#374151"] * n,
+                    row_action_font,
+                ],
+            ),
+            align=["left", "right", "center", "left", "right", "center"],
+            height=26,
+        ),
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Testing Priority  "
+                "<sup>(ranked by urgency — highest first)</sup>"
+            ),
+            font=dict(size=14),
+        ),
+        height=max(180, 75 + 26 * n),
+        margin=dict(t=55, b=10, l=10, r=10),
+        template="plotly_white",
+    )
+    return fig
 
 
 def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:

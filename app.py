@@ -37,6 +37,7 @@ from watchdog.events import FileSystemEventHandler
 
 from build_database import (
     init_db, process_ride, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
+    backfill_vi_aedec, backfill_zones,
     recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
@@ -45,8 +46,9 @@ from build_database import (
 from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
-    fig_pdc_params_history, fig_wbal, fig_tss_components,
-    fig_tss_history, fig_pmc,
+    fig_pdc_params_history, fig_tss_components,
+    fig_tss_history, fig_pmc, fig_zone_distribution,
+    fig_pdc_investigation, fig_pdc_testing_summary,
     _tss_rate_series, _compute_pmc,
 )
 
@@ -157,7 +159,8 @@ def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
                       gps_traces: dict | None = None) -> list[dict]:
     """Return list-of-dicts (most-recent first) for the activities DataTable."""
     merged = rides.merge(
-        pdc_params[["ride_id", "normalized_power", "intensity_factor", "tss"]],
+        pdc_params[["ride_id", "normalized_power", "intensity_factor", "tss",
+                    "variability_index", "aerobic_decoupling_pct"]],
         left_on="id", right_on="ride_id", how="left",
     )
     gps_traces = gps_traces or {}
@@ -182,6 +185,8 @@ def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
             "NP":        f"{r['normalized_power']:.0f}" if pd.notna(r.get("normalized_power")) else "\u2014",
             "TSS":       f"{r['tss']:.0f}" if pd.notna(r.get("tss")) else "\u2014",
             "IF":        f"{r['intensity_factor']:.2f}" if pd.notna(r.get("intensity_factor")) else "\u2014",
+            "VI":        f"{r['variability_index']:.2f}" if pd.notna(r.get("variability_index")) else "\u2014",
+            "AeDec%":    f"{r['aerobic_decoupling_pct']:.1f}" if pd.notna(r.get("aerobic_decoupling_pct")) else "\u2014",
         })
     return rows[::-1]   # most-recent first
 
@@ -212,13 +217,20 @@ def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
-        "SELECT ride_id, AWC, Pmax, MAP, tau2, ftp, normalized_power, intensity_factor,"
-        " tss, tss_map, tss_awc, ltp FROM pdc_params",
-        conn,
-    )
+    df = pd.read_sql("SELECT * FROM pdc_params", conn)
     conn.close()
     return df
+
+
+def _load_zones_for_ride(ride_id: int) -> dict[int, float]:
+    """Return {zone: seconds} for the given ride from zone_distribution."""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
+        "SELECT zone, seconds FROM zone_distribution WHERE ride_id = ?",
+        conn, params=(ride_id,),
+    )
+    conn.close()
+    return {int(r["zone"]): float(r["seconds"]) for _, r in df.iterrows()}
 
 
 def load_records(ride_id: int) -> pd.DataFrame:
@@ -278,6 +290,8 @@ class _FitHandler(FileSystemEventHandler):
             conn = sqlite3.connect(DB_PATH)
             init_db(conn)
             process_ride(conn, path)
+            backfill_vi_aedec(conn)
+            backfill_zones(conn)
             _reload()
             print(f"[watcher] Processed and reloaded data.")
         except Exception as exc:
@@ -753,6 +767,8 @@ _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
+backfill_vi_aedec(_boot_conn)
+backfill_zones(_boot_conn)
 backfill_mmh(_boot_conn)
 backfill_gps_elevation(_boot_conn)
 _boot_conn.close()
@@ -760,7 +776,8 @@ _boot_conn.close()
 _reload()          # initial load (picks up freshly computed pdc_params)
 _start_watcher()   # background thread
 
-app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None)
+app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None,
+                suppress_callback_exceptions=True)
 
 _NAV_BASE = {
     "display": "block", "width": "100%", "padding": "12px 20px",
@@ -792,6 +809,7 @@ app.layout = html.Div(
             }),
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+            html.Button("PDC Model",  id="nav-pdc-model",   n_clicks=0, style=_NAV_BASE),
             html.Div(id="status-bar", style={
                 "marginTop": "auto", "padding": "12px 20px",
                 "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
@@ -829,6 +847,26 @@ app.layout = html.Div(
                 html.Div(style={"height": "40px"}),
             ]),
 
+            # ── PDC Model investigation page ────────────────────────────────
+            html.Div(id="page-pdc-model", style={"display": "none"}, children=[
+                html.H2("PDC Model Investigation",
+                        style={"color": "#e8edf5", "marginBottom": "8px",
+                               "fontWeight": "600", "fontSize": "22px"}),
+                html.P(
+                    "Each MMP data point is coloured by its sigmoid decay weight "
+                    "(bright blue = recent / trustworthy, grey = old / may need retesting). "
+                    "The dashed orange line is the fitted two-component PDC model. "
+                    "Red residual bars show durations where the model overestimates "
+                    "your data — focus testing efforts here first.",
+                    style={"color": "#7a8fbb", "fontSize": "13px",
+                           "marginBottom": "20px", "maxWidth": "860px"},
+                ),
+                dcc.Graph(id="graph-pdc-investigation"),
+                html.Hr(),
+                dcc.Graph(id="graph-pdc-summary"),
+                html.Div(style={"height": "40px"}),
+            ]),
+
             # ── Activities list page ────────────────────────────────────────
             html.Div(id="page-activities-list", style={"display": "none"}, children=[
                 html.H2("Activities", style={"color": "#e8edf5", "marginBottom": "20px",
@@ -844,6 +882,8 @@ app.layout = html.Div(
                         {"name": "NP",         "id": "NP"},
                         {"name": "TSS",        "id": "TSS"},
                         {"name": "IF",         "id": "IF"},
+                        {"name": "VI",         "id": "VI"},
+                        {"name": "AeDec%",     "id": "AeDec%"},
                     ],
                     markdown_options={"html": True},
                     sort_action="native",
@@ -929,9 +969,9 @@ app.layout = html.Div(
                 ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
-                dcc.Graph(id="graph-wbal"),
-                html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
+                html.Hr(),
+                dcc.Graph(id="graph-zone-distribution"),
                 html.Hr(),
                 html.Div(id="graph-map-elevation-section", children=[
                     html.Div(style={"display": "flex", "gap": "16px"}, children=[
@@ -964,19 +1004,24 @@ app.layout = html.Div(
 
 @app.callback(
     Output("page-fitness",          "style"),
+    Output("page-pdc-model",        "style"),
     Output("page-activities-list",  "style"),
     Output("page-activities",       "style"),
     Output("nav-fitness",           "style"),
+    Output("nav-pdc-model",         "style"),
     Output("nav-activities",        "style"),
     Input("nav-fitness",            "n_clicks"),
+    Input("nav-pdc-model",          "n_clicks"),
     Input("nav-activities",         "n_clicks"),
 )
-def switch_page(_, __):
+def switch_page(_, __, ___):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return hide, show, hide, _NAV_BASE, _NAV_ACTIVE
-    return show, hide, hide, _NAV_ACTIVE, _NAV_BASE
+        return hide, hide, show, hide, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE
+    if ctx.triggered_id == "nav-pdc-model":
+        return hide, show, hide, hide, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE
+    return show, hide, hide, hide, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE
 
 
 @app.callback(
@@ -1014,6 +1059,8 @@ def go_back_to_list(n_clicks):
     Output("graph-90day-mmh",          "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
+    Output("graph-pdc-investigation",  "figure"),
+    Output("graph-pdc-summary",        "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
     Output("activities-table",         "data"),
@@ -1049,6 +1096,8 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_90day_mmh(mmh_all),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
+        fig_pdc_investigation(mmp_all),
+        fig_pdc_testing_summary(mmp_all),
         status,
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
@@ -1057,8 +1106,8 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 @app.callback(
     Output("graph-power-hr",              "figure"),
-    Output("graph-wbal",                 "figure"),
     Output("graph-tss-components",       "figure"),
+    Output("graph-zone-distribution",    "figure"),
     Output("graph-mmp-pdc",              "figure"),
     Output("graph-mmh",                  "figure"),
     Output("mmh-section",                "style"),
@@ -1078,7 +1127,7 @@ def update_ride_charts(ride_id, _ver):
     _, rides, mmp_all, mmh_all, pdc_params, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
-    # Fit on-the-fly once; share params with W'bal and TSS components so all
+    # Fit on-the-fly once; share params with TSS components so all
     # activity charts use the same PDC parameters as the PDC curve chart.
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
@@ -1121,11 +1170,15 @@ def update_ride_charts(ride_id, _ver):
         ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
 
     # Ride performance metrics from stored pdc_params
-    np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
-    if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
-    tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
-    tss_map_v = _tss(stored.get("tss_map"))         if stored is not None else "—"
-    tss_awc_v = _tss(stored.get("tss_awc"))         if stored is not None else "—"
+    np_v      = _i(stored.get("normalized_power"))    if stored is not None else "—"
+    if_v      = _f2(stored.get("intensity_factor"))   if stored is not None else "—"
+    tss_v     = _i(stored.get("tss"))                 if stored is not None else "—"
+    tss_map_v = _tss(stored.get("tss_map"))            if stored is not None else "—"
+    tss_awc_v = _tss(stored.get("tss_awc"))            if stored is not None else "—"
+    vi_v      = (f"{float(stored['variability_index']):.2f}"
+                 if stored is not None and pd.notna(stored.get("variability_index")) else "—")
+    aedec_v   = (f"{float(stored['aerobic_decoupling_pct']):.1f}"
+                 if stored is not None and pd.notna(stored.get("aerobic_decoupling_pct")) else "—")
 
     # Ride header: name + date
     ride_header = [
@@ -1179,6 +1232,8 @@ def update_ride_charts(ride_id, _ver):
         ("TSS MAP",    tss_map_v,                    ""),
         ("TSS AWC",    tss_awc_v,                    ""),
         ("Difficulty", difficulty_v,                 "TSS/h"),
+        ("VI",         vi_v,                         ""),
+        ("AeDec",      aedec_v,                      "%"),
         ("Avg Power",  _i(ride.get("avg_power")),    "W"),
         ("Max Power",  _i(ride.get("max_power")),    "W"),
     ])
@@ -1189,10 +1244,17 @@ def update_ride_charts(ride_id, _ver):
         ("Max HR", _i(ride.get("max_heart_rate")), "bpm"),
     ])
 
+    # Zone distribution chart
+    zone_data = _load_zones_for_ride(int(ride_id))
+    ltp_for_zones = (float(live_pdc["ltp"]) if live_pdc and live_pdc.get("ltp")
+                     else (float(stored["ltp"]) if stored is not None and pd.notna(stored.get("ltp")) else 0.0))
+    map_for_zones = (float(live_pdc["MAP"]) if live_pdc and live_pdc.get("MAP")
+                     else (float(stored["MAP"]) if stored is not None and pd.notna(stored.get("MAP")) else 0.0))
+
     return (
         fig_power_hr(records, ride["name"]),
-        fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
+        fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
         mmh_style,
@@ -1210,22 +1272,19 @@ def update_ride_charts(ride_id, _ver):
 
 @app.callback(
     Output("graph-power-hr",       "figure", allow_duplicate=True),
-    Output("graph-wbal",           "figure", allow_duplicate=True),
     Output("graph-tss-components", "figure", allow_duplicate=True),
     Output("graph-elevation",      "figure", allow_duplicate=True),
     Input("graph-power-hr",        "relayoutData"),
-    Input("graph-wbal",            "relayoutData"),
     Input("graph-tss-components",  "relayoutData"),
     Input("graph-elevation",       "relayoutData"),
     prevent_initial_call=True,
 )
-def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
+def _sync_ride_chart_xaxes(rld_phr, rld_tss, rld_elev):
     if not ctx.triggered_id:
         raise dash.exceptions.PreventUpdate
 
     rld = {
         "graph-power-hr":       rld_phr,
-        "graph-wbal":           rld_wb,
         "graph-tss-components": rld_tss,
         "graph-elevation":      rld_elev,
     }[ctx.triggered_id]
@@ -1251,7 +1310,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
             p["layout"]["xaxis"]["autorange"] = False
         return p
 
-    return make_patch(), make_patch(), make_patch(), make_patch()
+    return make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
