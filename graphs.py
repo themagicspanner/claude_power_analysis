@@ -897,6 +897,240 @@ def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
     return pd.DataFrame({"date": dates, "atl": atl, "ctl": ctl, "tsb": tsb})
 
 
+def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
+    """PDC model investigation: MMP decay weights + residuals vs the fitted curve.
+
+    Helps the athlete identify which durations need targeted testing efforts by
+    showing how fresh each MMP data point is and how well it supports the model.
+
+    Panel 1 — Decayed MMP scatter + PDC curve:
+        Each (ride, duration) point is coloured by its sigmoid decay weight.
+        Bright blue = recent (trustworthy data); grey = old (may need retesting).
+        The envelope (best aged power per duration) and the fitted PDC curve are
+        overlaid so the athlete can see where the model sits relative to the data.
+
+    Panel 2 — Residuals (decayed envelope − PDC model):
+        Green bar: athlete is above model here (data strongly supports the curve).
+        Red bar:   athlete is below model (testing opportunity / model overestimates).
+    """
+    today     = datetime.date.today()
+    today_str = today.isoformat()
+    cutoff    = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today_str)].copy()
+
+    if window.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title=dict(text="PDC Investigation — no data in window", font=dict(size=14)),
+            height=500, template="plotly_white",
+            annotations=[dict(text="No MMP data in the current PDC window",
+                              showarrow=False, font=dict(color="#888", size=14),
+                              xref="paper", yref="paper", x=0.5, y=0.5)],
+        )
+        return fig
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (today - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    # Envelope: best aged power per duration, plus metadata of the contributing ride
+    env_rows = []
+    for dur, grp in window.groupby("duration_s"):
+        best = grp.loc[grp["aged_power"].idxmax()]
+        env_rows.append({
+            "duration_s": dur,
+            "aged_power": best["aged_power"],
+            "raw_power":  best["power"],
+            "weight":     best["weight"],
+            "age_days":   best["age_days"],
+            "ride_date":  best["ride_date"],
+        })
+    env_df = pd.DataFrame(env_rows).sort_values("duration_s")
+
+    dur_arr = env_df["duration_s"].to_numpy(dtype=float)
+    pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
+
+    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
+                else (None, False))
+
+    if ok:
+        AWC, Pmax, MAP, tau2 = popt
+        model_vals             = _power_model(dur_arr, *popt)
+        env_df["model_power"]  = model_vals
+        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
+        ftp = float(_power_model(3600.0, *popt))
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.62, 0.38],
+        vertical_spacing=0.10,
+        subplot_titles=[
+            "Decayed MMP vs PDC model  (point colour = decay weight)",
+            "Residual: aged MMP − PDC model  (green = above model; red = below / test needed)",
+        ],
+    )
+
+    # ── Panel 1: all individual MMP points ────────────────────────────────────
+    _weight_colorscale = [
+        [0.0, "rgba(160,160,160,0.20)"],
+        [0.4, "rgba(100,150,200,0.55)"],
+        [1.0, "rgba(41,128,185,0.90)"],
+    ]
+
+    fig.add_trace(go.Scatter(
+        x=window["duration_s"],
+        y=window["aged_power"],
+        mode="markers",
+        name="All MMP points (aged)",
+        marker=dict(
+            size=5,
+            color=window["weight"].to_numpy(dtype=float),
+            colorscale=_weight_colorscale,
+            cmin=0, cmax=1,
+            showscale=False,
+        ),
+        customdata=np.column_stack([
+            window["weight"].round(3),
+            window["age_days"].round(0),
+            window["ride_date"].to_numpy(),
+            window["power"].round(0),
+        ]),
+        hovertemplate=(
+            "<b>%{x:.0f} s</b><br>"
+            "Aged power: %{y:.0f} W<br>"
+            "Raw power:  %{customdata[3]:.0f} W<br>"
+            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "Ride: %{customdata[2]}<extra></extra>"
+        ),
+    ), row=1, col=1)
+
+    # Envelope: best aged power per duration, marker colour = weight
+    fig.add_trace(go.Scatter(
+        x=env_df["duration_s"],
+        y=env_df["aged_power"],
+        mode="lines+markers",
+        name="Decayed MMP envelope",
+        line=dict(color="steelblue", width=1.5, dash="dot"),
+        marker=dict(
+            size=10,
+            color=env_df["weight"].to_numpy(dtype=float),
+            colorscale=_weight_colorscale,
+            cmin=0, cmax=1,
+            line=dict(color="white", width=1.2),
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Decay weight", side="right"),
+                thickness=13, len=0.52, y=0.78,
+                tickvals=[0, 0.5, 1],
+                ticktext=["0 (old)", "0.5", "1 (fresh)"],
+            ),
+        ),
+        customdata=np.column_stack([
+            env_df["weight"].round(3),
+            env_df["age_days"].round(0),
+            env_df["ride_date"].to_numpy(),
+            env_df["raw_power"].round(0),
+        ]),
+        hovertemplate=(
+            "<b>%{x:.0f} s  (envelope best)</b><br>"
+            "Aged power: %{y:.0f} W<br>"
+            "Raw power:  %{customdata[3]:.0f} W<br>"
+            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "Ride: %{customdata[2]}<extra></extra>"
+        ),
+    ), row=1, col=1)
+
+    # PDC model curve
+    if ok:
+        t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
+        p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
+        p_tot = _power_model(t_sm, *popt)
+        fig.add_trace(go.Scatter(
+            x=t_sm, y=p_aer,
+            mode="lines", name="aerobic (MAP)",
+            fill="tozeroy", fillcolor="rgba(46,139,87,0.15)",
+            line=dict(color="rgba(46,139,87,0.6)", width=1),
+            hoverinfo="skip",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=t_sm, y=p_tot,
+            mode="lines", name="PDC model",
+            fill="tonexty", fillcolor="rgba(220,80,30,0.10)",
+            line=dict(color="darkorange", width=2.5, dash="dash"),
+            hovertemplate="Model: %{y:.0f} W<extra></extra>",
+        ), row=1, col=1)
+
+    # ── Panel 2: residuals ────────────────────────────────────────────────────
+    if ok:
+        residuals  = env_df["residual"].to_numpy(dtype=float)
+        bar_colors = ["seagreen" if r >= 0 else "crimson" for r in residuals]
+        fig.add_trace(go.Bar(
+            x=dur_arr,
+            y=residuals,
+            name="Residual",
+            marker_color=bar_colors,
+            customdata=np.column_stack([
+                env_df["residual_pct"].to_numpy(),
+                env_df["aged_power"].round(0),
+                env_df["model_power"].round(0),
+                env_df["weight"].round(3),
+            ]),
+            hovertemplate=(
+                "<b>%{x:.0f} s</b><br>"
+                "Residual: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Envelope: %{customdata[1]:.0f} W  ·  Model: %{customdata[2]:.0f} W<br>"
+                "Weight: %{customdata[3]}<extra></extra>"
+            ),
+        ), row=2, col=1)
+        fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=2, col=1)
+
+    # ── Axes ──────────────────────────────────────────────────────────────────
+    for row in [1, 2]:
+        fig.update_xaxes(
+            type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
+            showgrid=True, gridcolor="lightgrey",
+            row=row, col=1,
+        )
+    fig.update_xaxes(title_text="Duration", row=2, col=1)
+    fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
+                     row=1, col=1)
+    fig.update_yaxes(title_text="Residual (W)", showgrid=True, gridcolor="lightgrey",
+                     row=2, col=1)
+
+    if ok:
+        title_sub = (
+            f"MAP {MAP:.0f} W  ·  FTP {ftp:.0f} W  ·  LTP {ltp:.0f} W  ·  "
+            f"AWC {AWC / 1000:.1f} kJ  ·  Pmax {Pmax:.0f} W  ·  "
+            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
+            f"K={PDC_K}  ·  ref {today_str}"
+        )
+    else:
+        title_sub = (
+            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
+            f"K={PDC_K}  ·  ref {today_str}"
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=f"PDC Model Investigation<br><sup>{title_sub}</sup>",
+            font=dict(size=14),
+        ),
+        height=640,
+        margin=dict(t=110, b=50, l=70, r=90),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
+
+
 def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     """Three-panel Performance Management Chart.
 

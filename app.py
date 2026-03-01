@@ -48,6 +48,7 @@ from graphs import (
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_wbal, fig_tss_components,
     fig_tss_history, fig_pmc, fig_zone_distribution,
+    fig_pdc_investigation,
     _tss_rate_series, _compute_pmc,
 )
 
@@ -812,6 +813,7 @@ app.layout = html.Div(
             }),
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+            html.Button("PDC Model",  id="nav-pdc-model",   n_clicks=0, style=_NAV_BASE),
             html.Div(id="status-bar", style={
                 "marginTop": "auto", "padding": "12px 20px",
                 "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
@@ -846,6 +848,24 @@ app.layout = html.Div(
 
                 dcc.Graph(id="graph-pdc-params-history"),
 
+                html.Div(style={"height": "40px"}),
+            ]),
+
+            # ── PDC Model investigation page ────────────────────────────────
+            html.Div(id="page-pdc-model", style={"display": "none"}, children=[
+                html.H2("PDC Model Investigation",
+                        style={"color": "#e8edf5", "marginBottom": "8px",
+                               "fontWeight": "600", "fontSize": "22px"}),
+                html.P(
+                    "Each MMP data point is coloured by its sigmoid decay weight "
+                    "(bright blue = recent / trustworthy, grey = old / may need retesting). "
+                    "The dashed orange line is the fitted two-component PDC model. "
+                    "Red residual bars show durations where the model overestimates "
+                    "your data — focus testing efforts here first.",
+                    style={"color": "#7a8fbb", "fontSize": "13px",
+                           "marginBottom": "20px", "maxWidth": "860px"},
+                ),
+                dcc.Graph(id="graph-pdc-investigation"),
                 html.Div(style={"height": "40px"}),
             ]),
 
@@ -988,19 +1008,24 @@ app.layout = html.Div(
 
 @app.callback(
     Output("page-fitness",          "style"),
+    Output("page-pdc-model",        "style"),
     Output("page-activities-list",  "style"),
     Output("page-activities",       "style"),
     Output("nav-fitness",           "style"),
+    Output("nav-pdc-model",         "style"),
     Output("nav-activities",        "style"),
     Input("nav-fitness",            "n_clicks"),
+    Input("nav-pdc-model",          "n_clicks"),
     Input("nav-activities",         "n_clicks"),
 )
-def switch_page(_, __):
+def switch_page(_, __, ___):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return hide, show, hide, _NAV_BASE, _NAV_ACTIVE
-    return show, hide, hide, _NAV_ACTIVE, _NAV_BASE
+        return hide, hide, show, hide, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE
+    if ctx.triggered_id == "nav-pdc-model":
+        return hide, show, hide, hide, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE
+    return show, hide, hide, hide, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE
 
 
 @app.callback(
@@ -1038,6 +1063,7 @@ def go_back_to_list(n_clicks):
     Output("graph-90day-mmh",          "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
+    Output("graph-pdc-investigation",  "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
     Output("activities-table",         "data"),
@@ -1073,6 +1099,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         fig_90day_mmh(mmh_all),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
+        fig_pdc_investigation(mmp_all),
         status,
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
