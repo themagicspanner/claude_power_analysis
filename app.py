@@ -46,10 +46,10 @@ from build_database import (
 from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
-    fig_pdc_params_history, fig_wbal, fig_tss_components,
+    fig_pdc_params_history, fig_tss_components,
     fig_tss_history, fig_pmc, fig_zone_distribution,
     fig_pdc_investigation, fig_pdc_testing_summary,
-    _tss_rate_series, _compute_pmc, _wbal_clamp_analysis,
+    _tss_rate_series, _compute_pmc,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -216,38 +216,8 @@ def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_pdc_params() -> pd.DataFrame:
-    """Load pdc_params merged with any user-applied pdc_overrides.
-
-    When an override exists for a ride the effective AWC, MAP, ftp, ltp, and
-    TSS values replace the fitted ones; the raw fitted values stay untouched in
-    pdc_params so a rebuild never loses them.
-    """
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
-        """
-        SELECT
-            p.ride_id,
-            COALESCE(o.eff_AWC, p.AWC)              AS AWC,
-            p.Pmax,
-            COALESCE(o.eff_MAP, p.MAP)              AS MAP,
-            p.tau2,
-            COALESCE(o.eff_ftp, p.ftp)              AS ftp,
-            COALESCE(o.eff_ltp, p.ltp)              AS ltp,
-            p.normalized_power,
-            p.intensity_factor,
-            COALESCE(o.eff_tss,     p.tss)          AS tss,
-            COALESCE(o.eff_tss_map, p.tss_map)      AS tss_map,
-            COALESCE(o.eff_tss_awc, p.tss_awc)      AS tss_awc,
-            p.variability_index,
-            p.aerobic_decoupling_pct,
-            CASE WHEN o.ride_id IS NOT NULL THEN 1 ELSE 0 END AS has_override,
-            COALESCE(o.delta_map_W, 0.0)            AS delta_map_W,
-            COALESCE(o.delta_awc_J, 0.0)            AS delta_awc_J
-        FROM pdc_params p
-        LEFT JOIN pdc_overrides o ON o.ride_id = p.ride_id
-        """,
-        conn,
-    )
+    df = pd.read_sql("SELECT * FROM pdc_params", conn)
     conn.close()
     return df
 
@@ -394,122 +364,6 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
         "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
-
-
-def _build_correction_panel(
-    ride_id: int,
-    diagnosis: dict | None,
-    pdc_params: pd.DataFrame,
-) -> list:
-    """Return Dash children for the W'bal correction panel below the W'bal chart.
-
-    When no clamping is detected: returns [] (panel is empty / invisible).
-    When clamping is detected: returns an amber info box with:
-      - the recommendation text (same as the chart annotation)
-      - an "Apply to PMC" button (disabled when an override is already active)
-      - a "Clear override" button (visible only when an override is active)
-    """
-    row = pdc_params[pdc_params["ride_id"] == ride_id]
-    has_override = (not row.empty) and bool(row.iloc[0].get("has_override", 0))
-    delta_map = float(row.iloc[0]["delta_map_W"]) if has_override else 0.0
-    delta_awc = float(row.iloc[0]["delta_awc_J"]) / 1000.0 if has_override else 0.0
-
-    children = []
-
-    if diagnosis is not None:
-        primary = diagnosis["primary"]
-        dm      = diagnosis["delta_map_W"]
-        da      = diagnosis["delta_awc_kJ"]
-        if primary == "MAP":
-            rec = f"Sustained efforts ~{dm:.0f} W above CP  →  raise MAP by ~{dm:.0f} W"
-        elif primary == "AWC":
-            rec = f"High-intensity bursts exceed anaerobic budget  →  raise AWC by ~{da:.1f} kJ"
-        else:
-            rec = f"Mixed signal  →  MAP +{dm:.0f} W  and/or  AWC +{da:.1f} kJ"
-
-        btn_style_base = {
-            "border": "none", "borderRadius": "5px",
-            "padding": "5px 14px", "fontSize": "12px",
-            "cursor": "pointer", "marginLeft": "10px",
-        }
-        apply_btn = html.Button(
-            "Apply to PMC",
-            id="btn-apply-override",
-            n_clicks=0,
-            disabled=has_override,
-            style={**btn_style_base,
-                   "background": "#856404" if not has_override else "#ccc",
-                   "color": "white" if not has_override else "#888"},
-        )
-        children.append(html.Div(
-            style={
-                "background": "rgba(255,243,205,0.95)",
-                "border": "1px solid #f5a623",
-                "borderRadius": "6px",
-                "padding": "8px 14px",
-                "fontSize": "12px",
-                "color": "#5a3e00",
-                "display": "flex",
-                "alignItems": "center",
-                "flexWrap": "wrap",
-                "gap": "6px",
-            },
-            children=[
-                html.Span(f"⚠ W'bal depleted — {rec}"),
-                apply_btn,
-            ],
-        ))
-
-    if has_override:
-        parts = []
-        if delta_map:
-            parts.append(f"MAP +{delta_map:.0f} W")
-        if delta_awc:
-            parts.append(f"AWC +{delta_awc:.1f} kJ")
-        label = "  ·  ".join(parts) if parts else "override"
-        children.append(html.Div(
-            style={
-                "background": "rgba(209,236,241,0.80)",
-                "border": "1px solid #0c5460",
-                "borderRadius": "6px",
-                "padding": "6px 14px",
-                "fontSize": "12px",
-                "color": "#0c5460",
-                "display": "flex",
-                "alignItems": "center",
-                "gap": "10px",
-                "marginTop": "4px" if diagnosis else "0",
-            },
-            children=[
-                html.Span(f"✓ Override active ({label}) — PMC reflects adjusted TSS"),
-                html.Button(
-                    "Clear override",
-                    id="btn-clear-override",
-                    n_clicks=0,
-                    style={
-                        "border": "1px solid #0c5460",
-                        "borderRadius": "5px",
-                        "padding": "3px 12px",
-                        "fontSize": "12px",
-                        "background": "white",
-                        "color": "#0c5460",
-                        "cursor": "pointer",
-                    },
-                ),
-            ],
-        ))
-
-    # When no diagnosis and no override: still render placeholder buttons so
-    # Dash can always find the component IDs in the layout.
-    if not children:
-        children = [
-            html.Button(id="btn-apply-override", n_clicks=0,
-                        style={"display": "none"}),
-            html.Button(id="btn-clear-override", n_clicks=0,
-                        style={"display": "none"}),
-        ]
-
-    return children
 
 
 # ── Graph-level stat rows ─────────────────────────────────────────────────────
@@ -942,7 +796,6 @@ app.layout = html.Div(
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
-        dcc.Store(id="wbal-diagnosis"),          # carries _wbal_clamp_analysis() result
         dcc.Interval(id="poll-interval", interval=3000, n_intervals=0),  # check every 3 s
 
         # ── Sidebar ────────────────────────────────────────────────────────
@@ -1116,10 +969,6 @@ app.layout = html.Div(
                 ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
-                dcc.Graph(id="graph-wbal"),
-                html.Div(id="wbal-correction-panel",
-                         style={"margin": "-4px 12px 8px"}),
-                html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-zone-distribution"),
@@ -1257,7 +1106,6 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
 @app.callback(
     Output("graph-power-hr",              "figure"),
-    Output("graph-wbal",                 "figure"),
     Output("graph-tss-components",       "figure"),
     Output("graph-zone-distribution",    "figure"),
     Output("graph-mmp-pdc",              "figure"),
@@ -1270,8 +1118,6 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
     Output("pdc-stats",                  "children"),
     Output("power-stats",                "children"),
     Output("hr-stats",                   "children"),
-    Output("wbal-diagnosis",             "data"),
-    Output("wbal-correction-panel",      "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1281,7 +1127,7 @@ def update_ride_charts(ride_id, _ver):
     _, rides, mmp_all, mmh_all, pdc_params, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
-    # Fit on-the-fly once; share params with W'bal and TSS components so all
+    # Fit on-the-fly once; share params with TSS components so all
     # activity charts use the same PDC parameters as the PDC curve chart.
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
@@ -1405,18 +1251,8 @@ def update_ride_charts(ride_id, _ver):
     map_for_zones = (float(live_pdc["MAP"]) if live_pdc and live_pdc.get("MAP")
                      else (float(stored["MAP"]) if stored is not None and pd.notna(stored.get("MAP")) else 0.0))
 
-    # W'bal clamping diagnosis — used for correction panel and stored in wbal-diagnosis Store
-    diagnosis = None
-    if live_pdc is not None and not records["power"].isna().all():
-        _el = records["elapsed_s"].to_numpy(dtype=float)
-        _pw = records["power"].to_numpy(dtype=float)
-        diagnosis = _wbal_clamp_analysis(_el, _pw, live_pdc["AWC"], live_pdc["MAP"])
-
-    correction_panel = _build_correction_panel(int(ride_id), diagnosis, pdc_params)
-
     return (
         fig_power_hr(records, ride["name"]),
-        fig_wbal(records, ride, pdc_params, live_pdc),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
@@ -1429,120 +1265,26 @@ def update_ride_charts(ride_id, _ver):
         pdc_stats,
         power_stats,
         hr_stats,
-        diagnosis,
-        correction_panel,
     )
-
-
-# ── W'bal parameter override callbacks ────────────────────────────────────────
-
-@app.callback(
-    Output("graph-pmc", "figure", allow_duplicate=True),
-    Input("btn-apply-override", "n_clicks"),
-    State("ride-dropdown",      "value"),
-    State("wbal-diagnosis",     "data"),
-    prevent_initial_call=True,
-)
-def apply_pdc_override(n_clicks, ride_id, diagnosis):
-    """Write a W'bal-diagnosis-derived override to pdc_overrides and refresh PMC."""
-    if not n_clicks or ride_id is None or diagnosis is None:
-        raise dash.exceptions.PreventUpdate
-
-    conn = sqlite3.connect(DB_PATH)
-    # Read raw fitted values from pdc_params (not the override-joined view) so
-    # deltas always stack on top of the original fit, not a previous override.
-    row  = pd.read_sql(
-        "SELECT p.AWC, p.Pmax, p.MAP, p.tau2, p.normalized_power,"
-        "       p.tss, p.tss_awc, r.duration_s"
-        " FROM pdc_params p JOIN rides r ON r.id = p.ride_id"
-        f" WHERE p.ride_id = {int(ride_id)}",
-        conn,
-    )
-    if row.empty:
-        conn.close()
-        raise dash.exceptions.PreventUpdate
-    row = row.iloc[0]
-
-    AWC_new = float(row["AWC"])  + diagnosis["delta_awc_kJ"] * 1000.0
-    MAP_new = float(row["MAP"])  + diagnosis["delta_map_W"]
-    Pmax    = float(row["Pmax"])
-    tau2    = float(row["tau2"])
-    NP      = float(row["normalized_power"]) if pd.notna(row.get("normalized_power")) else 0.0
-    dur_s   = float(row["duration_s"]) if pd.notna(row.get("duration_s")) else 0.0
-
-    ftp_new = float(_power_model(3600.0, AWC_new, Pmax, MAP_new, tau2))
-    ltp_new = float(MAP_new * (1.0 - 2.5 * (AWC_new / 1000.0) / MAP_new))
-    tss_new = (dur_s / 3600.0) * (NP / ftp_new) ** 2 * 100.0 if ftp_new > 0 else 0.0
-
-    # Preserve existing aerobic/anaerobic split fraction — exact recompute would
-    # need raw power records; approximation is acceptable for the PMC use-case.
-    old_tss = float(row["tss"]) if pd.notna(row.get("tss")) and float(row["tss"]) > 0 else 1.0
-    awc_frac    = float(row["tss_awc"]) / old_tss if pd.notna(row.get("tss_awc")) else 0.0
-    tss_awc_new = tss_new * awc_frac
-    tss_map_new = tss_new - tss_awc_new
-
-    conn.execute(
-        """INSERT OR REPLACE INTO pdc_overrides
-               (ride_id, delta_map_W, delta_awc_J,
-                eff_AWC, eff_MAP, eff_ftp, eff_ltp,
-                eff_tss, eff_tss_map, eff_tss_awc, applied_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            int(ride_id),
-            diagnosis["delta_map_W"],
-            diagnosis["delta_awc_kJ"] * 1000.0,
-            AWC_new, MAP_new, ftp_new, ltp_new,
-            tss_new, tss_map_new, tss_awc_new,
-            datetime.date.today().isoformat(),
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-    _, rides, *_ = get_data()
-    pdc_params = _load_pdc_params()
-    return fig_pmc(pdc_params, rides)
-
-
-@app.callback(
-    Output("graph-pmc", "figure", allow_duplicate=True),
-    Input("btn-clear-override", "n_clicks"),
-    State("ride-dropdown",      "value"),
-    prevent_initial_call=True,
-)
-def clear_pdc_override(n_clicks, ride_id):
-    """Remove a W'bal override for the selected ride and revert the PMC."""
-    if not n_clicks or ride_id is None:
-        raise dash.exceptions.PreventUpdate
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM pdc_overrides WHERE ride_id = ?", (int(ride_id),))
-    conn.commit()
-    conn.close()
-    _, rides, *_ = get_data()
-    pdc_params = _load_pdc_params()
-    return fig_pmc(pdc_params, rides)
 
 
 # ── Synced x-axis zoom/pan for the three ride-time charts ─────────────────────
 
 @app.callback(
     Output("graph-power-hr",       "figure", allow_duplicate=True),
-    Output("graph-wbal",           "figure", allow_duplicate=True),
     Output("graph-tss-components", "figure", allow_duplicate=True),
     Output("graph-elevation",      "figure", allow_duplicate=True),
     Input("graph-power-hr",        "relayoutData"),
-    Input("graph-wbal",            "relayoutData"),
     Input("graph-tss-components",  "relayoutData"),
     Input("graph-elevation",       "relayoutData"),
     prevent_initial_call=True,
 )
-def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
+def _sync_ride_chart_xaxes(rld_phr, rld_tss, rld_elev):
     if not ctx.triggered_id:
         raise dash.exceptions.PreventUpdate
 
     rld = {
         "graph-power-hr":       rld_phr,
-        "graph-wbal":           rld_wb,
         "graph-tss-components": rld_tss,
         "graph-elevation":      rld_elev,
     }[ctx.triggered_id]
@@ -1568,7 +1310,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_wb, rld_tss, rld_elev):
             p["layout"]["xaxis"]["autorange"] = False
         return p
 
-    return make_patch(), make_patch(), make_patch(), make_patch()
+    return make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
