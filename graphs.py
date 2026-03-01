@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from build_database import (
-    _power_model, _fit_power_curve,
+    _power_model, _fit_power_curve, _normalized_power,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 
@@ -589,13 +589,18 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
-    kernel = np.ones(30) / 30.0
-    p_30s  = np.convolve(p, kernel, mode="same")
 
     dt = np.empty_like(elapsed_s)
     dt[0]  = 0.0
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
+
+    # Detect sample rate from the data so the 30-second window is correct for
+    # any recording frequency (1 Hz, 2 Hz, …).
+    hz     = 1.0 / float(np.median(dt[dt > 0])) if (dt > 0).any() else 1.0
+    window = max(1, int(30 * hz))
+    kernel = np.ones(window) / window
+    p_30s  = np.convolve(p, kernel, mode="same")
 
     # Split fractions from instantaneous power so that brief above-CP efforts register
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -609,10 +614,19 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         tss_rate_ph = np.zeros_like(p_30s)
         tss_rate    = np.zeros_like(p_30s)
 
-    cum_tss_map  = np.cumsum(tss_rate * f_map)
-    cum_tss_awc  = np.cumsum(tss_rate * f_awc)
-    rate_map_ph  = tss_rate_ph * f_map
-    rate_awc_ph  = tss_rate_ph * f_awc
+    # Scale so cumulative values match the NP-based TSS (same basis as stat cards).
+    # Uses _normalized_power — the exact same function that produced the stored TSS —
+    # so tss_np == stored TSS and the chart endpoints match the stat cards precisely.
+    dur_s   = float(elapsed_s[-1] - elapsed_s[0]) if len(elapsed_s) > 1 else 0.0
+    np_val  = _normalized_power(power, hz) if ftp > 0 else 0.0
+    tss_np  = (dur_s / 3600.0) * (np_val / ftp) ** 2 * 100.0 if ftp > 0 else 0.0
+    tss_p30 = float(np.sum(tss_rate))
+    scale   = (tss_np / tss_p30) if tss_p30 > 0 else 1.0
+
+    cum_tss_map  = np.cumsum(tss_rate * f_map) * scale
+    cum_tss_awc  = np.cumsum(tss_rate * f_awc) * scale
+    rate_map_ph  = tss_rate_ph * f_map * scale
+    rate_awc_ph  = tss_rate_ph * f_awc * scale
     t_min        = elapsed_s / 60.0
 
     # 1-hour time-weighted rolling average of total TSS rate.
@@ -623,7 +637,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     cum_dt_ext[1:]  = np.cumsum(dt)
     cum_rdt_ext     = np.empty(len(dt) + 1)
     cum_rdt_ext[0]  = 0.0
-    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt)
+    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt * scale)
     left            = np.searchsorted(elapsed_s, elapsed_s - 3600.0, side="left")
     idx             = np.arange(len(dt))
     window_dt       = cum_dt_ext[idx + 1] - cum_dt_ext[left]
@@ -637,7 +651,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
-    """Instantaneous TSS rate (TSS/h) split into MAP and AWC components."""
+    """TSS Rate (TSS/h) and cumulative TSS split into MAP and AWC components."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -657,41 +671,65 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     power   = records["power"].to_numpy(dtype=float)
     t_min, cum_map, cum_awc, rate_map, rate_awc, rate_1h_avg = _tss_rate_series(elapsed, power, ftp, CP)
 
-    final_map = cum_map[-1]
-    final_awc = cum_awc[-1]
+    final_map  = cum_map[-1]
+    final_awc  = cum_awc[-1]
     rate_total = rate_map + rate_awc
+    cum_total  = cum_map + cum_awc
 
-    fig = go.Figure()
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        row_heights=[0.5, 0.5],
+    )
 
-    # Aerobic layer (fills from zero)
+    # ── Row 1: instantaneous TSS rate ────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_map,
         mode="lines", name=f"TSS_MAP (total {final_map:.0f})",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
-    ))
-    # Anaerobic layer (fills from aerobic to total)
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
         mode="lines", name=f"TSS_AWC (total {final_awc:.0f})",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
-    ))
-    # 1-hour time-weighted rolling average of total TSS rate
+    ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
         mode="lines", name="Difficulty",
         line=dict(color="midnightblue", width=1.5),
-    ))
+    ), row=1, col=1)
+
+    # ── Row 2: cumulative TSS ────────────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_map,
+        mode="lines", name="Cumulative TSS_MAP",
+        fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
+        line=dict(color="seagreen", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=t_min, y=cum_total,
+        mode="lines", name="Cumulative TSS_AWC",
+        fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
+        line=dict(color="darkorange", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+                     showgrid=True, gridcolor="lightgrey", row=2, col=1)
+    fig.update_xaxes(showgrid=True, gridcolor="lightgrey", row=1, col=1)
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True)
+                     fixedrange=True, row=1, col=1)
+    fig.update_yaxes(title_text="Cumulative TSS",
+                     showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True, row=2, col=1)
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
-        height=260,
+        height=420,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
         showlegend=False,
