@@ -853,8 +853,9 @@ app.layout = html.Div(
                         style={"color": "#e8edf5", "marginBottom": "8px",
                                "fontWeight": "600", "fontSize": "22px"}),
                 html.P(
-                    "The dotted line connects the best effort at each duration, "
-                    "coloured by freshness (blue = recent, grey = old). "
+                    "Two lines per duration: the solid light-blue line shows your raw best power; "
+                    "the dotted line shows that same effort weighted by age (blue = recent, grey = old). "
+                    "The gap between them reveals how much older efforts are being discounted. "
                     "Green fill = aerobic (MAP) zone; orange fill = anaerobic contribution. "
                     "Dashed threshold lines mark MAP, FTP, and LTP. "
                     "Red bars below show where the model overestimates your data — "

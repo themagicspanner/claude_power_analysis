@@ -932,50 +932,14 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         ],
     )
 
-    # ── Panel 1: all individual MMP points ────────────────────────────────────
+    # ── Panel 1: power vs duration ────────────────────────────────────────────
     _weight_colorscale = [
         [0.0, "rgba(160,160,160,0.20)"],
         [0.4, "rgba(100,150,200,0.55)"],
         [1.0, "rgba(41,128,185,0.90)"],
     ]
 
-    # Envelope: best aged power per duration, marker colour = weight
-    fig.add_trace(go.Scatter(
-        x=env_df["duration_s"],
-        y=env_df["aged_power"],
-        mode="lines+markers",
-        name="Best effort per duration",
-        line=dict(color="steelblue", width=1.5, dash="dot"),
-        marker=dict(
-            size=10,
-            color=env_df["weight"].to_numpy(dtype=float),
-            colorscale=_weight_colorscale,
-            cmin=0, cmax=1,
-            line=dict(color="white", width=1.2),
-            showscale=True,
-            colorbar=dict(
-                title=dict(text="Freshness", side="right"),
-                thickness=13, len=0.52, y=0.78,
-                tickvals=[0, 0.5, 1],
-                ticktext=["0 (old)", "0.5", "1 (fresh)"],
-            ),
-        ),
-        customdata=np.column_stack([
-            env_df["weight"].round(3),
-            env_df["age_days"].round(0),
-            env_df["ride_date"].to_numpy(),
-            env_df["raw_power"].round(0),
-            env_dur_fmt,
-        ]),
-        hovertemplate=(
-            "<b>%{customdata[4]}  (best in window)</b><br>"
-            "Weighted power: %{y:.0f} W  (raw: %{customdata[3]:.0f} W)<br>"
-            "Freshness: %{customdata[0]} · Age: %{customdata[1]:.0f} days<br>"
-            "Ride: %{customdata[2]}<extra></extra>"
-        ),
-    ), row=1, col=1)
-
-    # PDC model curve
+    # 1. PDC model curve drawn first so fills appear behind data lines
     if ok:
         t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
         p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
@@ -1008,6 +972,64 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
                     annotation_position="right",
                     annotation_font=dict(size=10, color=color),
                 )
+
+    # 2. Raw (unweighted) MMP line — actual power before age decay is applied
+    raw_decay = env_df["raw_power"] - env_df["aged_power"]
+    fig.add_trace(go.Scatter(
+        x=env_df["duration_s"],
+        y=env_df["raw_power"],
+        mode="lines+markers",
+        name="Raw MMP (unweighted)",
+        line=dict(color="rgba(100,149,237,0.6)", width=1.5),
+        marker=dict(size=6, color="rgba(100,149,237,0.6)", symbol="circle-open"),
+        customdata=np.column_stack([
+            env_df["raw_power"].round(0),
+            env_df["aged_power"].round(0),
+            raw_decay.round(0),
+            env_dur_fmt,
+        ]),
+        hovertemplate=(
+            "<b>%{customdata[3]}  (raw power)</b><br>"
+            "Raw: %{customdata[0]:.0f} W · Weighted: %{customdata[1]:.0f} W<br>"
+            "Decay: −%{customdata[2]:.0f} W<extra></extra>"
+        ),
+    ), row=1, col=1)
+
+    # 3. Weighted envelope — best aged power per duration, marker colour = freshness
+    fig.add_trace(go.Scatter(
+        x=env_df["duration_s"],
+        y=env_df["aged_power"],
+        mode="lines+markers",
+        name="Best effort per duration (weighted)",
+        line=dict(color="steelblue", width=1.5, dash="dot"),
+        marker=dict(
+            size=10,
+            color=env_df["weight"].to_numpy(dtype=float),
+            colorscale=_weight_colorscale,
+            cmin=0, cmax=1,
+            line=dict(color="white", width=1.2),
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Freshness", side="right"),
+                thickness=13, len=0.52, y=0.78,
+                tickvals=[0, 0.5, 1],
+                ticktext=["0 (old)", "0.5", "1 (fresh)"],
+            ),
+        ),
+        customdata=np.column_stack([
+            env_df["weight"].round(3),
+            env_df["age_days"].round(0),
+            env_df["ride_date"].to_numpy(),
+            env_df["raw_power"].round(0),
+            env_dur_fmt,
+        ]),
+        hovertemplate=(
+            "<b>%{customdata[4]}  (best in window)</b><br>"
+            "Weighted power: %{y:.0f} W  (raw: %{customdata[3]:.0f} W)<br>"
+            "Freshness: %{customdata[0]} · Age: %{customdata[1]:.0f} days<br>"
+            "Ride: %{customdata[2]}<extra></extra>"
+        ),
+    ), row=1, col=1)
 
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
