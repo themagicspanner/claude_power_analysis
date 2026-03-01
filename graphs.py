@@ -575,6 +575,116 @@ def _wbal_series(elapsed_s: np.ndarray, power: np.ndarray,
     return wbal
 
 
+def _wbal_clamp_analysis(
+    elapsed_s: np.ndarray,
+    power: np.ndarray,
+    AWC: float,
+    CP: float,
+) -> dict | None:
+    """Detect W'bal clamping episodes and recommend MAP / AWC adjustments.
+
+    When W'bal is clamped at 0 while power > CP the model produces "phantom
+    work" — energy above CP that the current parameters cannot account for.
+    Two parameters can explain this:
+
+    MAP-type episode  — power barely above CP, sustained duration
+        → CP (MAP) is too low; the athlete can actually hold that power aerobically.
+        Recommended fix: Δ_MAP = max excess above CP across all MAP-type episodes.
+
+    AWC-type episode  — power well above CP, short duration
+        → AWC is too small; the athlete used more anaerobic energy than budgeted.
+        Recommended fix: Δ_AWC = total phantom energy across all AWC-type episodes.
+
+    Classification thresholds (r = excess / CP):
+        r < 0.15  AND  T > 90 s  →  MAP-type
+        r > 0.25  AND  T < 120 s →  AWC-type
+        otherwise                →  ambiguous (contributes proportionally to both)
+
+    Returns None when there are no clamped samples, otherwise a dict with keys:
+        episodes     : list of per-episode dicts
+        total_clamp_s: float
+        delta_map_W  : float  (recommended MAP increase, watts)
+        delta_awc_kJ : float  (recommended AWC increase, kJ)
+        primary      : "MAP" | "AWC" | "both"
+    """
+    wbal = _wbal_series(elapsed_s, power, AWC, CP)
+    p    = np.where(np.isnan(power), 0.0, power.astype(float))
+
+    # Samples where the model is clamped and the athlete is above CP
+    clamped = (wbal == 0) & (p > CP)
+    if not clamped.any():
+        return None
+
+    # Find contiguous clamped episode boundaries via transitions
+    padded = np.concatenate([[False], clamped, [False]])
+    starts = np.where(~padded[:-1] &  padded[1:])[0]  # index into original array
+    ends   = np.where( padded[:-1] & ~padded[1:])[0]  # exclusive end
+
+    episodes     = []
+    delta_map_W  = 0.0
+    delta_awc_J  = 0.0
+
+    # Ambiguous band: r in [0.15, 0.25]; blend weight 0→1 towards AWC as r increases
+    MAP_THRESH  = 0.15
+    AWC_THRESH  = 0.25
+    MIN_MAP_DUR = 90.0
+    MAX_AWC_DUR = 120.0
+
+    for s, e in zip(starts, ends):
+        seg_elapsed = elapsed_s[s:e]
+        seg_power   = p[s:e]
+        T_k = float(elapsed_s[e - 1] - elapsed_s[s]) if e > s + 1 else 1.0
+        P_k = float(seg_power.mean())
+        dP_k = P_k - CP                          # always > 0
+        r_k  = dP_k / CP
+        E_k  = dP_k * T_k                        # phantom energy (J)
+
+        # Classify and attribute energy
+        if r_k < MAP_THRESH and T_k > MIN_MAP_DUR:
+            category = "MAP"
+            delta_map_W = max(delta_map_W, dP_k)
+        elif r_k > AWC_THRESH and T_k < MAX_AWC_DUR:
+            category = "AWC"
+            delta_awc_J += E_k
+        else:
+            category = "ambiguous"
+            # Blend weight: how far into the ambiguous zone towards AWC
+            awc_blend = np.clip((r_k - MAP_THRESH) / (AWC_THRESH - MAP_THRESH), 0.0, 1.0)
+            delta_awc_J  += E_k  *      awc_blend
+            delta_map_W   = max(delta_map_W, dP_k * (1.0 - awc_blend))
+
+        t_start_min = float(elapsed_s[s]) / 60.0
+        t_end_min   = float(elapsed_s[e - 1]) / 60.0
+        episodes.append({
+            "t_start_min": t_start_min,
+            "t_end_min":   t_end_min,
+            "avg_power_W": round(P_k, 1),
+            "excess_W":    round(dP_k, 1),
+            "energy_J":    round(E_k, 0),
+            "category":    category,
+        })
+
+    delta_awc_kJ = delta_awc_J / 1000.0
+    if delta_map_W > 0 and delta_awc_kJ < 0.1:
+        primary = "MAP"
+    elif delta_awc_kJ >= 0.1 and delta_map_W < 1.0:
+        primary = "AWC"
+    else:
+        primary = "both"
+
+    total_clamp_s = sum(
+        ep["t_end_min"] * 60 - ep["t_start_min"] * 60 for ep in episodes
+    )
+
+    return {
+        "episodes":      episodes,
+        "total_clamp_s": total_clamp_s,
+        "delta_map_W":   round(delta_map_W, 0),
+        "delta_awc_kJ":  round(delta_awc_kJ, 1),
+        "primary":       primary,
+    }
+
+
 def fig_wbal(records: pd.DataFrame, ride: pd.Series,
              pdc_params: pd.DataFrame,
              live_pdc: dict | None = None) -> go.Figure:
@@ -607,7 +717,19 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
     wbal_kj = _wbal_series(elapsed, power, AWC, CP) / 1000.0
     t_min   = records["elapsed_min"].to_numpy(dtype=float)
 
+    diagnosis = _wbal_clamp_analysis(elapsed, power, AWC, CP)
+
     fig = go.Figure()
+
+    # Highlight clamped periods before drawing the W'bal trace
+    if diagnosis is not None:
+        for ep in diagnosis["episodes"]:
+            fig.add_vrect(
+                x0=ep["t_start_min"], x1=ep["t_end_min"],
+                fillcolor="rgba(255,140,0,0.20)",
+                line_width=0,
+                layer="below",
+            )
 
     fig.add_hline(y=awc_kj, line=dict(color="grey", dash="dot", width=1),
                   annotation_text=f"W' = {awc_kj:.1f} kJ",
@@ -621,6 +743,50 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
         fill="tozeroy", fillcolor="rgba(70,130,180,0.15)",
         line=dict(color="steelblue", width=2),
     ))
+
+    # Diagnostic annotation when clamping is detected
+    if diagnosis is not None:
+        n_ep   = len(diagnosis["episodes"])
+        tc_s   = diagnosis["total_clamp_s"]
+        tc_min = int(tc_s // 60)
+        tc_sec = int(tc_s % 60)
+        dur_str = f"{tc_min}m {tc_sec:02d}s" if tc_min else f"{tc_sec}s"
+
+        primary = diagnosis["primary"]
+        if primary == "MAP":
+            detail = (
+                f"Sustained efforts ~{diagnosis['delta_map_W']:.0f} W above CP<br>"
+                f"<b>→ Consider raising MAP by ~{diagnosis['delta_map_W']:.0f} W</b>"
+            )
+        elif primary == "AWC":
+            detail = (
+                f"High-intensity bursts exceeded anaerobic budget<br>"
+                f"<b>→ Consider raising AWC by ~{diagnosis['delta_awc_kJ']:.1f} kJ</b>"
+            )
+        else:
+            detail = (
+                f"<b>→ MAP +{diagnosis['delta_map_W']:.0f} W  "
+                f"and/or  AWC +{diagnosis['delta_awc_kJ']:.1f} kJ</b>"
+            )
+
+        ann_text = (
+            f"W'bal depleted: {n_ep}× episode{'s' if n_ep > 1 else ''}, "
+            f"{dur_str} total<br>{detail}"
+        )
+
+        fig.add_annotation(
+            xref="paper", yref="paper",
+            x=0.01, y=0.97,
+            xanchor="left", yanchor="top",
+            text=ann_text,
+            showarrow=False,
+            font=dict(size=10, color="#5a3e00"),
+            bgcolor="rgba(255,243,205,0.90)",
+            bordercolor="#f5a623",
+            borderwidth=1,
+            borderpad=5,
+            align="left",
+        )
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
