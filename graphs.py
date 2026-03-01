@@ -1131,6 +1131,177 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
+    """Priority testing table for the PDC investigation page.
+
+    Each MMP duration is ranked by testing urgency using a combined score:
+
+        score = max(0, −residual_pct) × 0.7  +  (1 − weight) × 30
+
+    Residual term: being below the model adds up to ~70 pts per 100 % gap.
+    Staleness term: fully decayed data (weight = 0) adds 30 pts regardless
+    of residual, because old efforts need re-confirming even when they beat
+    the model.
+
+    Action labels
+    ─────────────
+    Test now  (score > 20) — stale data AND/OR well below the model
+    Monitor   (score >  8) — one factor mildly out of range
+    On track  (score ≤  8) — fresh, recent data supporting the model
+    """
+    today  = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+
+    window = mmp_all[mmp_all["ride_date"].between(cutoff, today.isoformat())].copy()
+
+    if window.empty:
+        fig = go.Figure()
+        fig.update_layout(height=80, template="plotly_white",
+                          margin=dict(t=10, b=10, l=10, r=10))
+        return fig
+
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (today - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    env_rows = []
+    for dur, grp in window.groupby("duration_s"):
+        best = grp.loc[grp["aged_power"].idxmax()]
+        env_rows.append({
+            "duration_s": dur,
+            "aged_power": best["aged_power"],
+            "raw_power":  best["power"],
+            "weight":     best["weight"],
+            "age_days":   int(best["age_days"]),
+            "ride_date":  best["ride_date"],
+        })
+    env_df = pd.DataFrame(env_rows).sort_values("duration_s")
+
+    dur_arr = env_df["duration_s"].to_numpy(dtype=float)
+    pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
+
+    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
+                else (None, False))
+
+    if ok:
+        AWC, Pmax, MAP, tau2 = popt
+        env_df["model_power"]  = _power_model(dur_arr, *popt)
+        env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
+        env_df["residual_pct"] = env_df["residual"] / env_df["model_power"] * 100.0
+    else:
+        env_df["model_power"]  = float("nan")
+        env_df["residual"]     = float("nan")
+        env_df["residual_pct"] = float("nan")
+
+    def _score(row: pd.Series) -> float:
+        below = max(0.0, -row["residual_pct"]) if pd.notna(row["residual_pct"]) else 0.0
+        stale = (1.0 - row["weight"]) * 30.0
+        return below * 0.7 + stale
+
+    env_df["score"] = env_df.apply(_score, axis=1)
+    env_df = env_df.sort_values("score", ascending=False)
+
+    def _action(score: float) -> str:
+        if score > 20: return "Test now"
+        if score > 8:  return "Monitor"
+        return "On track"
+
+    env_df["action"] = env_df["score"].apply(_action)
+
+    def _dur_label(s: float) -> str:
+        s = int(s)
+        if s < 60:   return f"{s}s"
+        if s < 3600:
+            m, sec = divmod(s, 60)
+            return f"{m}:{sec:02d}" if sec else f"{m} min"
+        return f"{s // 3600}h"
+
+    dur_labels     = [_dur_label(d) for d in env_df["duration_s"]]
+    raw_power_vals = [f"{int(r)} W" for r in env_df["raw_power"]]
+    weight_vals    = [f"{w:.2f}" for w in env_df["weight"]]
+    age_vals       = [f"{a}d  ({rd})" for a, rd in
+                      zip(env_df["age_days"], env_df["ride_date"])]
+    residual_vals  = [
+        f"{r:+.0f} W  ({p:+.1f}%)" if pd.notna(r) else "—"
+        for r, p in zip(env_df["residual"], env_df["residual_pct"])
+    ]
+    actions = env_df["action"].tolist()
+    n       = len(env_df)
+
+    # Row colours for the Action column
+    action_fill  = {"Test now": "rgba(220,53,69,0.12)",
+                    "Monitor":  "rgba(255,193,7,0.15)",
+                    "On track": "rgba(40,167,69,0.10)"}
+    action_font  = {"Test now": "#dc3545",
+                    "Monitor":  "#856404",
+                    "On track": "#155724"}
+
+    row_action_fill = [action_fill[a] for a in actions]
+    row_action_font = [action_font[a] for a in actions]
+
+    # Weight column: grey (low) → blue (high)
+    def _weight_color(w: float) -> str:
+        r = int(160 - (160 - 41)  * w)
+        g = int(160 - (160 - 128) * w)
+        b = int(160 + (185 - 160) * w)
+        return f"rgba({r},{g},{b},0.25)"
+
+    weight_fill = [_weight_color(w) for w in env_df["weight"]]
+
+    fig = go.Figure(go.Table(
+        columnwidth=[60, 80, 60, 160, 130, 80],
+        header=dict(
+            values=["Duration", "Best effort", "Weight", "Age of best effort",
+                    "vs Model", "Action"],
+            fill_color="#eef2f7",
+            align=["left", "right", "center", "left", "right", "center"],
+            font=dict(size=12, color="#374151"),
+            height=30,
+        ),
+        cells=dict(
+            values=[dur_labels, raw_power_vals, weight_vals,
+                    age_vals, residual_vals, actions],
+            fill_color=[
+                ["white"] * n,
+                ["white"] * n,
+                weight_fill,
+                ["white"] * n,
+                ["white"] * n,
+                row_action_fill,
+            ],
+            font=dict(
+                size=12,
+                color=[
+                    ["#111827"] * n,
+                    ["#111827"] * n,
+                    ["#374151"] * n,
+                    ["#6b7280"] * n,
+                    ["#374151"] * n,
+                    row_action_font,
+                ],
+            ),
+            align=["left", "right", "center", "left", "right", "center"],
+            height=26,
+        ),
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Testing Priority  "
+                "<sup>(ranked by urgency — highest first)</sup>"
+            ),
+            font=dict(size=14),
+        ),
+        height=max(180, 75 + 26 * n),
+        margin=dict(t=55, b=10, l=10, r=10),
+        template="plotly_white",
+    )
+    return fig
+
+
 def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     """Three-panel Performance Management Chart.
 
