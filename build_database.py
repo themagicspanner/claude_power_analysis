@@ -243,6 +243,20 @@ def init_db(conn: sqlite3.Connection) -> None:
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS pdc_overrides (
+            ride_id      INTEGER PRIMARY KEY REFERENCES rides(id),
+            delta_map_W  REAL    NOT NULL,
+            delta_awc_J  REAL    NOT NULL,
+            eff_AWC      REAL    NOT NULL,
+            eff_MAP      REAL    NOT NULL,
+            eff_ftp      REAL    NOT NULL,
+            eff_ltp      REAL    NOT NULL,
+            eff_tss      REAL    NOT NULL,
+            eff_tss_map  REAL    NOT NULL,
+            eff_tss_awc  REAL    NOT NULL,
+            applied_at   TEXT    NOT NULL
+        );
     """)
     conn.commit()
 
