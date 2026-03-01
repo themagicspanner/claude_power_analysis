@@ -853,11 +853,13 @@ app.layout = html.Div(
                         style={"color": "#e8edf5", "marginBottom": "8px",
                                "fontWeight": "600", "fontSize": "22px"}),
                 html.P(
-                    "Each MMP data point is coloured by its sigmoid decay weight "
-                    "(bright blue = recent / trustworthy, grey = old / may need retesting). "
-                    "The dashed orange line is the fitted two-component PDC model. "
-                    "Red residual bars show durations where the model overestimates "
-                    "your data — focus testing efforts here first.",
+                    "Dots show every power effort in the window, coloured by freshness "
+                    "(bright blue = recent, grey = old). "
+                    "The dotted line connects the best effort at each duration. "
+                    "Green fill = aerobic (MAP) zone; orange fill = anaerobic contribution. "
+                    "Dashed threshold lines mark MAP, FTP, and LTP. "
+                    "Red bars below show where the model overestimates your data — "
+                    "target those durations in training first.",
                     style={"color": "#7a8fbb", "fontSize": "13px",
                            "marginBottom": "20px", "maxWidth": "860px"},
                 ),

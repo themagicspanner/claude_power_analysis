@@ -16,6 +16,24 @@ LOG_TICK_S   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
 LOG_TICK_LBL = ["1s", "5s", "10s", "30s", "1min", "2min",
                  "5min", "10min", "20min", "30min", "1h"]
 
+_LEGEND_STYLE = dict(
+    bgcolor="rgba(255,255,255,0.85)",
+    bordercolor="lightgrey",
+    borderwidth=1,
+    font=dict(size=11),
+)
+
+
+def _fmt_dur(s: float) -> str:
+    """Format seconds as a human-readable duration label (e.g. '5 min', '1h')."""
+    s = int(s)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        m, sec = divmod(s, 60)
+        return f"{m}:{sec:02d}" if sec else f"{m} min"
+    return f"{s // 3600}h"
+
 
 # ── Figure builders ───────────────────────────────────────────────────────────
 
@@ -242,25 +260,41 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
             p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            ftp   = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
+            ltp   = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_aer,
-                mode="lines", name="aerobic (MAP)",
+                mode="lines", name="Aerobic zone (MAP)",
                 fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
                 line=dict(color="rgba(46,139,87,0.7)", width=1.2),
             ))
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_tot,
                 mode="lines",
-                name="model",
+                name="PDC model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
+            # Key power thresholds
+            for y_val, label, color in [
+                (MAP, f"MAP {MAP:.0f} W", "seagreen"),
+                (ftp, f"FTP {ftp:.0f} W", "darkorange"),
+                (ltp, f"LTP {ltp:.0f} W", "steelblue"),
+            ]:
+                if y_val > 0:
+                    fig.add_hline(
+                        y=y_val,
+                        line=dict(color=color, width=1, dash="dot"),
+                        annotation_text=label,
+                        annotation_position="right",
+                        annotation_font=dict(size=10, color=color),
+                    )
 
         # Best aged MMP from other rides in the PDC window
         if not other.empty:
             fig.add_trace(go.Scatter(
                 x=other["duration_s"], y=other["aged_power"],
-                mode="lines", name="other rides (best)",
+                mode="lines", name="Other rides (best)",
                 line=dict(color="steelblue", width=1.5, dash="dot"),
             ))
 
@@ -268,7 +302,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
     if not this_ride.empty:
         fig.add_trace(go.Scatter(
             x=this_ride["duration_s"], y=this_ride["power"],
-            mode="lines+markers", name=f"this ride ({ride_date})",
+            mode="lines+markers", name=f"This ride ({ride_date})",
             marker=dict(size=5),
             line=dict(color="tomato", width=2.2),
         ))
@@ -280,14 +314,14 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         title=dict(
             text=(
                 f"MMP & Power Duration Curve — {ride['name'].replace('_', ' ')}<br>"
-                f"<sup>Decayed MMP at {ride_date} "
-                f"(inflection {PDC_INFLECTION} days · K={PDC_K})</sup>"
+                f"<sup>Decayed MMP at {ride_date} · {PDC_WINDOW}-day window</sup>"
             ),
             font=dict(size=14),
         ),
-        height=440, margin=dict(t=90, b=50, l=60, r=20),
+        height=440, margin=dict(t=90, b=50, l=60, r=80),
         template="plotly_white",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(**_LEGEND_STYLE, x=0.01, y=0.01, xanchor="left", yanchor="bottom"),
         hovermode="x unified",
     )
     return fig
@@ -331,10 +365,12 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
             p_total   = _power_model(t_smooth, *popt)
+            ftp = float(_power_model(3600.0, *popt))
+            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             # Aerobic component — fills from zero
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_aerobic,
-                mode="lines", name="aerobic (MAP)",
+                mode="lines", name="Aerobic zone (MAP)",
                 fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
                 line=dict(color="rgba(46,139,87,0.7)", width=1.2),
             ))
@@ -342,10 +378,24 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_total,
                 mode="lines",
-                name="model",
+                name="PDC model",
                 fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
                 line=dict(color="darkorange", width=2, dash="dash"),
             ))
+            # Key power thresholds
+            for y_val, label, color in [
+                (MAP, f"MAP {MAP:.0f} W", "seagreen"),
+                (ftp, f"FTP {ftp:.0f} W", "darkorange"),
+                (ltp, f"LTP {ltp:.0f} W", "steelblue"),
+            ]:
+                if y_val > 0:
+                    fig.add_hline(
+                        y=y_val,
+                        line=dict(color=color, width=1, dash="dot"),
+                        annotation_text=label,
+                        annotation_position="right",
+                        annotation_font=dict(size=10, color=color),
+                    )
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
@@ -354,14 +404,14 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
         title=dict(
             text=(
                 "Power Duration Model<br>"
-                f"<sup>Inflection {PDC_INFLECTION} days · K={PDC_K} · "
-                f"reference date {today_str}</sup>"
+                f"<sup>{PDC_WINDOW}-day window · reference date {today_str}</sup>"
             ),
             font=dict(size=14),
         ),
-        height=440, margin=dict(t=90, b=50, l=60, r=20),
+        height=440, margin=dict(t=90, b=50, l=60, r=80),
         template="plotly_white",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(**_LEGEND_STYLE, x=0.01, y=0.01, xanchor="left", yanchor="bottom"),
         hovermode="x unified",
     )
     return fig
@@ -470,7 +520,8 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
         height=380,
         margin=dict(t=60, b=50, l=60, r=60),
         template="plotly_white",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(**_LEGEND_STYLE, x=0.01, y=0.99, xanchor="left", yanchor="top"),
         hovermode="x unified",
     )
     return fig
@@ -866,6 +917,10 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         ftp = float(_power_model(3600.0, *popt))
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
+    # Pre-compute human-readable duration labels for hover tooltips
+    window_dur_fmt = np.array([_fmt_dur(d) for d in window["duration_s"]])
+    env_dur_fmt    = np.array([_fmt_dur(d) for d in env_df["duration_s"]])
+
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = make_subplots(
         rows=2, cols=1,
@@ -873,8 +928,8 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         row_heights=[0.62, 0.38],
         vertical_spacing=0.10,
         subplot_titles=[
-            "Decayed MMP vs PDC model  (point colour = decay weight)",
-            "Residual: aged MMP − PDC model  (green = above model; red = below / test needed)",
+            "Your power at each duration — colour shows data freshness (blue = recent, grey = old)",
+            "Gap to model: green = exceeded target, red = needs a test effort",
         ],
     )
 
@@ -889,7 +944,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         x=window["duration_s"],
         y=window["aged_power"],
         mode="markers",
-        name="All MMP points (aged)",
+        name="All efforts (weighted)",
         marker=dict(
             size=5,
             color=window["weight"].to_numpy(dtype=float),
@@ -902,12 +957,12 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             window["age_days"].round(0),
             window["ride_date"].to_numpy(),
             window["power"].round(0),
+            window_dur_fmt,
         ]),
         hovertemplate=(
-            "<b>%{x:.0f} s</b><br>"
-            "Aged power: %{y:.0f} W<br>"
-            "Raw power:  %{customdata[3]:.0f} W<br>"
-            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "<b>%{customdata[4]}</b><br>"
+            "Weighted power: %{y:.0f} W  (raw: %{customdata[3]:.0f} W)<br>"
+            "Freshness: %{customdata[0]} · Age: %{customdata[1]:.0f} days<br>"
             "Ride: %{customdata[2]}<extra></extra>"
         ),
     ), row=1, col=1)
@@ -917,7 +972,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         x=env_df["duration_s"],
         y=env_df["aged_power"],
         mode="lines+markers",
-        name="Decayed MMP envelope",
+        name="Best effort per duration",
         line=dict(color="steelblue", width=1.5, dash="dot"),
         marker=dict(
             size=10,
@@ -927,7 +982,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             line=dict(color="white", width=1.2),
             showscale=True,
             colorbar=dict(
-                title=dict(text="Decay weight", side="right"),
+                title=dict(text="Freshness", side="right"),
                 thickness=13, len=0.52, y=0.78,
                 tickvals=[0, 0.5, 1],
                 ticktext=["0 (old)", "0.5", "1 (fresh)"],
@@ -938,12 +993,12 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             env_df["age_days"].round(0),
             env_df["ride_date"].to_numpy(),
             env_df["raw_power"].round(0),
+            env_dur_fmt,
         ]),
         hovertemplate=(
-            "<b>%{x:.0f} s  (envelope best)</b><br>"
-            "Aged power: %{y:.0f} W<br>"
-            "Raw power:  %{customdata[3]:.0f} W<br>"
-            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
+            "<b>%{customdata[4]}  (best in window)</b><br>"
+            "Weighted power: %{y:.0f} W  (raw: %{customdata[3]:.0f} W)<br>"
+            "Freshness: %{customdata[0]} · Age: %{customdata[1]:.0f} days<br>"
             "Ride: %{customdata[2]}<extra></extra>"
         ),
     ), row=1, col=1)
@@ -955,7 +1010,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         p_tot = _power_model(t_sm, *popt)
         fig.add_trace(go.Scatter(
             x=t_sm, y=p_aer,
-            mode="lines", name="aerobic (MAP)",
+            mode="lines", name="Aerobic zone (MAP)",
             fill="tozeroy", fillcolor="rgba(46,139,87,0.15)",
             line=dict(color="rgba(46,139,87,0.6)", width=1),
             hoverinfo="skip",
@@ -965,8 +1020,22 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             mode="lines", name="PDC model",
             fill="tonexty", fillcolor="rgba(220,80,30,0.10)",
             line=dict(color="darkorange", width=2.5, dash="dash"),
-            hovertemplate="Model: %{y:.0f} W<extra></extra>",
+            hovertemplate="<b>%{x:.0f} s</b><br>Model: %{y:.0f} W<extra></extra>",
         ), row=1, col=1)
+        # Key power thresholds on panel 1
+        for y_val, label, color in [
+            (MAP, f"MAP {MAP:.0f} W", "seagreen"),
+            (ftp, f"FTP {ftp:.0f} W", "darkorange"),
+            (ltp, f"LTP {ltp:.0f} W", "steelblue"),
+        ]:
+            if y_val > 0:
+                fig.add_hline(
+                    y=y_val, row=1, col=1,
+                    line=dict(color=color, width=1, dash="dot"),
+                    annotation_text=label,
+                    annotation_position="right",
+                    annotation_font=dict(size=10, color=color),
+                )
 
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
@@ -975,19 +1044,20 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         fig.add_trace(go.Bar(
             x=dur_arr,
             y=residuals,
-            name="Residual",
+            name="Gap to model",
             marker_color=bar_colors,
             customdata=np.column_stack([
                 env_df["residual_pct"].to_numpy(),
                 env_df["aged_power"].round(0),
                 env_df["model_power"].round(0),
                 env_df["weight"].round(3),
+                env_dur_fmt,
             ]),
             hovertemplate=(
-                "<b>%{x:.0f} s</b><br>"
-                "Residual: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
-                "Envelope: %{customdata[1]:.0f} W  ·  Model: %{customdata[2]:.0f} W<br>"
-                "Weight: %{customdata[3]}<extra></extra>"
+                "<b>%{customdata[4]}</b><br>"
+                "Gap: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Your best: %{customdata[1]:.0f} W · Model: %{customdata[2]:.0f} W<br>"
+                "Freshness: %{customdata[3]}<extra></extra>"
             ),
         ), row=2, col=1)
         fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=2, col=1)
@@ -1002,21 +1072,17 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Duration", row=2, col=1)
     fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
                      row=1, col=1)
-    fig.update_yaxes(title_text="Residual (W)", showgrid=True, gridcolor="lightgrey",
+    fig.update_yaxes(title_text="Gap (W)", showgrid=True, gridcolor="lightgrey",
                      row=2, col=1)
 
     if ok:
         title_sub = (
             f"MAP {MAP:.0f} W  ·  FTP {ftp:.0f} W  ·  LTP {ltp:.0f} W  ·  "
             f"AWC {AWC / 1000:.1f} kJ  ·  Pmax {Pmax:.0f} W  ·  "
-            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
-            f"K={PDC_K}  ·  ref {today_str}"
+            f"{PDC_WINDOW}-day window  ·  ref {today_str}"
         )
     else:
-        title_sub = (
-            f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
-            f"K={PDC_K}  ·  ref {today_str}"
-        )
+        title_sub = f"{PDC_WINDOW}-day window  ·  ref {today_str}"
 
     fig.update_layout(
         title=dict(
@@ -1026,7 +1092,8 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         height=640,
         margin=dict(t=110, b=50, l=70, r=90),
         template="plotly_white",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(**_LEGEND_STYLE, x=0.01, y=0.61, xanchor="left", yanchor="top"),
         hovermode="x unified",
     )
     return fig
