@@ -719,6 +719,15 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
 
     diagnosis = _wbal_clamp_analysis(elapsed, power, AWC, CP)
 
+    # 30-second rolling mean of power for the overlay
+    power_smooth = (
+        pd.Series(power)
+        .rolling(30, center=True, min_periods=1)
+        .mean()
+        .to_numpy()
+    )
+    max_power_w = float(np.nanmax(power)) if not np.all(np.isnan(power)) else CP * 2
+
     fig = go.Figure()
 
     # Highlight clamped periods before drawing the W'bal trace
@@ -730,6 +739,31 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
                 line_width=0,
                 layer="below",
             )
+
+    # Power trace on secondary (right) Y-axis
+    fig.add_trace(go.Scatter(
+        x=t_min, y=power_smooth,
+        mode="lines", name="Power (30s avg)",
+        line=dict(color="rgba(180,100,0,0.45)", width=1.2),
+        yaxis="y2",
+        hovertemplate="%{y:.0f} W<extra>Power (30s avg)</extra>",
+    ))
+
+    # MAP reference line on the power axis
+    fig.add_shape(
+        type="line",
+        xref="paper", yref="y2",
+        x0=0, x1=1, y0=CP, y1=CP,
+        line=dict(color="rgba(200,70,0,0.70)", dash="dash", width=1.5),
+    )
+    fig.add_annotation(
+        xref="paper", yref="y2",
+        x=0.99, y=CP,
+        xanchor="right", yanchor="bottom",
+        text=f"MAP = {CP:.0f} W",
+        showarrow=False,
+        font=dict(size=9, color="rgba(180,60,0,0.90)"),
+    )
 
     fig.add_hline(y=awc_kj, line=dict(color="grey", dash="dot", width=1),
                   annotation_text=f"W' = {awc_kj:.1f} kJ",
@@ -795,12 +829,21 @@ def fig_wbal(records: pd.DataFrame, ride: pd.Series,
                      range=[-awc_kj * 0.05, awc_kj * 1.12],
                      fixedrange=True)
     fig.update_layout(
-        title=dict(text="W' Balance", font=dict(size=14)),
+        title=dict(text=f"W' Balance  (MAP = {CP:.0f} W, W' = {awc_kj:.1f} kJ)",
+                   font=dict(size=14)),
         height=280,
-        margin=dict(t=55, b=40, l=60, r=20),
+        margin=dict(t=55, b=40, l=60, r=65),
         showlegend=False,
         hovermode="x unified",
         template="plotly_white",
+        yaxis2=dict(
+            title_text="Power (W)",
+            overlaying="y",
+            side="right",
+            range=[0, max_power_w * 1.15],
+            showgrid=False,
+            fixedrange=True,
+        ),
     )
     return fig
 
