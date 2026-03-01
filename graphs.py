@@ -1092,8 +1092,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         height=640,
         margin=dict(t=110, b=50, l=70, r=90),
         template="plotly_white",
-        showlegend=True,
-        legend=dict(**_LEGEND_STYLE, x=0.01, y=0.61, xanchor="left", yanchor="top"),
+        showlegend=False,
         hovermode="x unified",
     )
     return fig
