@@ -4,25 +4,22 @@ This file provides guidance for AI assistants working in this repository.
 
 ## Project Overview
 
-A cycling power analysis tool that parses Garmin/ANT+ FIT files, extracts
-power and heart rate data, stores everything in a SQLite database, and
-generates Mean Maximal Power (MMP) charts and per-ride visualisations.
+A cycling power analysis tool that imports ride data from the Strava API,
+stores everything in a SQLite database, and provides a Dash web dashboard
+with Mean Maximal Power (MMP) charts, PDC fitting, and per-ride visualisations.
 
 ## Repository Structure
 
 ```
 claude_power_analysis/
-├── 2026/                    # Source FIT files (one per ride, ~12 files)
-├── plots/                   # Generated PNG charts (created on first run)
-│   ├── <ride>.png           # Power + heart rate vs elapsed time
-│   └── <ride>_mmp.png       # Ride MMP vs rolling 90-day best
-├── extract_fit_data.py      # Script 1: extract data → CSV + per-ride plots
-├── build_database.py        # Script 2: build SQLite DB, MMP calc, charts
-├── strava_import.py         # Import rides from the Strava API
-├── 2026_fit_data.csv        # Combined raw data (generated artefact)
+├── app.py                   # Dash web dashboard (auto-syncs Strava on startup + interval)
+├── build_database.py        # Core DB schema, MMP/PDC calc, ingest_ride()
+├── strava_import.py         # Strava API OAuth + import logic
+├── graphs.py                # Plotly figure builders for the dashboard
 ├── cycling.db               # SQLite database (generated artefact)
 ├── strava_config.json       # Strava OAuth credentials (gitignored)
-└── mmp_chart.png            # All-rides MMP overlay chart (generated artefact)
+├── extract_fit_data.py      # Legacy FIT extraction script (not used by the app)
+└── raw_data/                # Legacy FIT files directory
 ```
 
 ## Scripts
@@ -49,7 +46,7 @@ Rides already present in the database are skipped (idempotent).
 
 The shared `ingest_ride(conn, name, df)` function handles inserting a ride
 DataFrame into the database (records, MMP, MMH, PDC recomputation) and is
-used by both FIT file processing and the Strava importer.
+used by the Strava importer.
 
 ```bash
 # Build / update the database (default action)
@@ -151,28 +148,25 @@ Python 3.11+ is required (uses `list[int]` / `dict[int, float]` type hints).
 
 ## Adding New Rides
 
-### From FIT files
-
-1. Drop the `.fit` file(s) into `2026/`.
-2. Run `python build_database.py` — new rides are processed; existing ones
-   are skipped.
-3. Optionally regenerate charts: `python build_database.py --plot-rides`.
-
-To extend to future years, update `FIT_DIR` / `BASE_DIR` constants or
-parameterise them via `argparse`.
-
-### From Strava
+New rides are imported automatically from Strava:
 
 1. Run `python strava_import.py --setup` (first time only).
-2. Run `python strava_import.py --after YYYY-MM-DD` to import rides after
-   that date.  Already-imported rides are skipped automatically.
+2. Start the app with `python app.py` — it syncs the last 90 days of
+   Strava rides on startup and re-checks every 15 minutes.
+3. Already-imported rides are skipped automatically (dedup by activity ID).
+
+For manual / one-off imports use the CLI directly:
+
+```bash
+python strava_import.py --after 2026-01-01
+```
 
 ## Key Implementation Notes
 
-- FIT file parsing uses `fitdecode.FitDataMessage` with `frame.name == "record"`.
-  Other frame types (file headers, device info, session summaries) are ignored.
-- `elapsed_s` is computed as `(timestamp - first_timestamp).total_seconds()`,
-  not taken from a FIT field directly.
+- The app syncs Strava rides on startup (last 90 days) and every 15 minutes
+  via a daemon thread. The sync interval and lookback are configurable via
+  `STRAVA_SYNC_INTERVAL` and `STRAVA_SYNC_LOOKBACK` in `app.py`.
+- `elapsed_s` is computed from Strava time streams (seconds since activity start).
 - The 90-day MMP comparison in `plot_ride_vs_90day_mmp()` **excludes the
   current ride** from the baseline window to avoid self-comparison.
 - Chart x-axes use a log scale for duration (standard in cycling literature).

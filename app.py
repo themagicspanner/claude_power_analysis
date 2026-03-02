@@ -5,11 +5,13 @@ Usage
 ─────
   python app.py          # starts on http://127.0.0.1:8050
 
-Auto-watch
-──────────
-  Dropping a new .fit file into the raw_data/ folder is all that is needed.
-  A background watchdog thread detects it, processes it into cycling.db,
-  and the UI refreshes automatically within a few seconds.
+Strava sync
+───────────
+  On startup, the app imports any new Strava rides from the last 90 days.
+  A background thread re-checks every 15 minutes, so new Strava uploads
+  appear automatically without restarting the app.
+
+  Requires a one-time OAuth setup:  python strava_import.py --setup
 
 Pages / sections
 ────────────────
@@ -32,16 +34,14 @@ import pandas as pd
 import plotly.express as px
 import dash
 from dash import dcc, html, dash_table, Input, Output, State, ctx, Patch
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
 from build_database import (
-    init_db, process_ride, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
+    init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones,
     recompute_all_pdc_params,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
+from strava_import import get_client, fetch_and_import, CONFIG_PATH
 
 from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
@@ -54,7 +54,9 @@ from graphs import (
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
-FIT_DIR  = os.path.join(BASE_DIR, "raw_data")
+
+STRAVA_SYNC_INTERVAL = 15 * 60  # seconds between background Strava syncs
+STRAVA_SYNC_LOOKBACK = 90       # days to look back when syncing
 
 # ── Shared data store (updated by watcher, read by callbacks) ─────────────────
 
@@ -274,48 +276,43 @@ def _maybe_migrate(conn: sqlite3.Connection) -> None:
         print("[migrate] Done.")
 
 
-# ── Watchdog ──────────────────────────────────────────────────────────────────
+# ── Strava background sync ────────────────────────────────────────────────────
 
-class _FitHandler(FileSystemEventHandler):
-    """Process any new .fit file that lands in FIT_DIR."""
+def _strava_sync() -> None:
+    """Fetch recent Strava rides and import any new ones into the database."""
+    if not os.path.exists(CONFIG_PATH):
+        print("[strava] No config found — run 'python strava_import.py --setup' first.")
+        return
 
-    def _handle(self, path: str) -> None:
-        if not path.lower().endswith(".fit"):
-            return
-        # Small delay to let the file finish copying before we read it
-        time.sleep(1)
-        print(f"[watcher] New file detected: {path}")
-        conn = None
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            init_db(conn)
-            process_ride(conn, path)
-            backfill_vi_aedec(conn)
-            backfill_zones(conn)
-            _reload()
-            print(f"[watcher] Processed and reloaded data.")
-        except Exception as exc:
-            print(f"[watcher] Error processing {path}: {exc}")
-        finally:
-            if conn is not None:
-                conn.close()
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path)
-
-    def on_moved(self, event):
-        if not event.is_directory:
-            self._handle(event.dest_path)
+    after = (datetime.date.today() - datetime.timedelta(days=STRAVA_SYNC_LOOKBACK)).isoformat()
+    conn = None
+    try:
+        client = get_client()
+        conn = sqlite3.connect(DB_PATH)
+        init_db(conn)
+        fetch_and_import(client, conn, after)
+        backfill_vi_aedec(conn)
+        backfill_zones(conn)
+        _reload()
+        print("[strava] Sync complete.")
+    except Exception as exc:
+        print(f"[strava] Sync error: {exc}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
-def _start_watcher() -> None:
-    os.makedirs(FIT_DIR, exist_ok=True)
-    observer = Observer()
-    observer.schedule(_FitHandler(), FIT_DIR, recursive=False)
-    observer.daemon = True
-    observer.start()
-    print(f"[watcher] Watching {FIT_DIR} for new .fit files …")
+def _start_strava_timer() -> None:
+    """Run _strava_sync on a repeating background timer."""
+    def _loop():
+        while True:
+            time.sleep(STRAVA_SYNC_INTERVAL)
+            print(f"[strava] Periodic sync starting …")
+            _strava_sync()
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    print(f"[strava] Background sync every {STRAVA_SYNC_INTERVAL // 60} minutes.")
 
 
 # ── PDC on-the-fly helper ─────────────────────────────────────────────────────
@@ -773,8 +770,9 @@ backfill_mmh(_boot_conn)
 backfill_gps_elevation(_boot_conn)
 _boot_conn.close()
 
-_reload()          # initial load (picks up freshly computed pdc_params)
-_start_watcher()   # background thread
+_reload()              # initial load (picks up freshly computed pdc_params)
+_strava_sync()         # import any new Strava rides on startup
+_start_strava_timer()  # periodic background sync
 
 app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None,
                 suppress_callback_exceptions=True)
