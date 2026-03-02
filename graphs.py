@@ -764,17 +764,19 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 # ── Performance Management Chart ──────────────────────────────────────────────
 
-def _compute_pmc(daily_tss: pd.Series) -> pd.DataFrame:
+def _compute_pmc(daily_tss: pd.Series, future_days: int = 0) -> pd.DataFrame:
     """Exponential-weighted ATL (τ=7 d) and CTL (τ=42 d) from a daily TSS series.
 
     daily_tss : Series with a DatetimeIndex.  Missing dates → 0 TSS (rest days).
+    future_days : number of extra days (0 TSS) to project beyond today.
     Returns DataFrame with columns: date, atl, ctl, tsb
     where TSB(d) = CTL(d-1) − ATL(d-1)  (form before today's ride).
     """
     if daily_tss.empty:
         return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
 
-    dates = pd.date_range(daily_tss.index.min(), pd.Timestamp.today().normalize(), freq="D")
+    end = pd.Timestamp.today().normalize() + pd.Timedelta(days=future_days)
+    dates = pd.date_range(daily_tss.index.min(), end, freq="D")
     tss   = daily_tss.reindex(dates, fill_value=0.0)
 
     k_atl = 1.0 - np.exp(-1.0 / 7.0)
@@ -1227,9 +1229,10 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     df["ride_date"] = pd.to_datetime(df["ride_date"])
     daily = df.groupby("ride_date")[["tss", "tss_map", "tss_awc"]].sum()
 
-    pmc_tot = _compute_pmc(daily["tss"])
-    pmc_map = _compute_pmc(daily["tss_map"])
-    pmc_awc = _compute_pmc(daily["tss_awc"])
+    FUTURE_DAYS = 7
+    pmc_tot = _compute_pmc(daily["tss"],     future_days=FUTURE_DAYS)
+    pmc_map = _compute_pmc(daily["tss_map"], future_days=FUTURE_DAYS)
+    pmc_awc = _compute_pmc(daily["tss_awc"], future_days=FUTURE_DAYS)
 
     # Align daily TSS to the continuous date grid used by pmc_tot
     _idx          = pd.DatetimeIndex(pmc_tot["date"])
@@ -1313,7 +1316,13 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         fig.update_yaxes(title_text="Load", showgrid=True, gridcolor="lightgrey",
                          zeroline=False, row=row, col=1)
 
-    fig.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    # Default visible window: last 90 days + 7-day projection
+    today = pd.Timestamp.today().normalize()
+    x_start = (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+    x_end   = (today + pd.Timedelta(days=FUTURE_DAYS)).strftime("%Y-%m-%d")
+
+    fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
+                     range=[x_start, x_end])
     fig.update_xaxes(title_text="Date", row=2, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
