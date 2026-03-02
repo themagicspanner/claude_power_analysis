@@ -888,17 +888,11 @@ app.layout = html.Div(
                     style={"color": "#7a8fbb", "fontSize": "13px",
                            "marginBottom": "20px", "maxWidth": "860px"},
                 ),
-                html.Div(style={"display": "flex", "gap": "12px",
-                                 "alignItems": "flex-start"}, children=[
-                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
-                        dcc.Graph(id="graph-pdc-investigation"),
-                    ]),
-                    html.Div(style={"width": "420px", "flexShrink": "0"}, children=[
-                        dcc.Graph(id="graph-sigmoid-decay"),
-                    ]),
-                ]),
+                dcc.Graph(id="graph-pdc-investigation"),
                 html.Hr(),
                 dcc.Graph(id="graph-pdc-summary"),
+                html.Hr(),
+                dcc.Graph(id="graph-sigmoid-decay"),
                 html.Div(style={"height": "40px"}),
             ]),
 
