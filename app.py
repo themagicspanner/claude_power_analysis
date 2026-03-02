@@ -35,7 +35,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, ctx, Patch
+import dash_ag_grid as dag
+from dash import dcc, html, Input, Output, State, ctx, Patch
 from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones,
@@ -882,68 +883,33 @@ app.layout = html.Div(
             html.Div(id="page-activities-list", style={"display": "none"}, children=[
                 html.H2("Activities", style={"color": "#e8edf5", "marginBottom": "20px",
                                              "fontWeight": "600", "fontSize": "22px"}),
-                dash_table.DataTable(
+                dag.AgGrid(
                     id="activities-table",
-                    columns=[
-                        {"name": "",           "id": "Route",     "presentation": "markdown"},
-                        {"name": "Date",       "id": "Date"},
-                        {"name": "Name",       "id": "Name"},
-                        {"name": "Duration",   "id": "Duration"},
-                        {"name": "Avg Power",  "id": "Avg Power"},
-                        {"name": "NP",         "id": "NP"},
-                        {"name": "TSS",        "id": "TSS"},
-                        {"name": "IF",         "id": "IF"},
-                        {"name": "VI",         "id": "VI"},
-                        {"name": "AeDec%",     "id": "AeDec%"},
+                    columnDefs=[
+                        {"headerName": "",          "field": "Route",
+                         "cellRenderer": "markdown", "autoHeight": True,
+                         "width": 90, "minWidth": 90, "maxWidth": 90,
+                         "sortable": False, "cellStyle": {"textAlign": "center", "padding": "6px 10px"}},
+                        {"headerName": "Date",      "field": "Date",      "sortable": True},
+                        {"headerName": "Name",      "field": "Name",      "sortable": True},
+                        {"headerName": "Duration",  "field": "Duration",  "sortable": True},
+                        {"headerName": "Avg Power", "field": "Avg Power", "sortable": True},
+                        {"headerName": "NP",        "field": "NP",        "sortable": True},
+                        {"headerName": "TSS",       "field": "TSS",       "sortable": True},
+                        {"headerName": "IF",        "field": "IF",        "sortable": True},
+                        {"headerName": "VI",        "field": "VI",        "sortable": True},
+                        {"headerName": "AeDec%",    "field": "AeDec%",    "sortable": True},
                     ],
-                    markdown_options={"html": True},
-                    sort_action="native",
-                    style_table={"overflowX": "auto", "borderRadius": "8px", "overflow": "hidden"},
-                    style_header={
-                        "backgroundColor": "#ffffff",
-                        "color": "#6b7280",
-                        "fontWeight": "600",
-                        "fontSize": "11px",
-                        "letterSpacing": "0.06em",
-                        "textTransform": "uppercase",
-                        "borderTop": "none",
-                        "borderLeft": "none",
-                        "borderRight": "none",
-                        "borderBottom": "2px solid #e5e7eb",
+                    defaultColDef={"resizable": True},
+                    dangerously_allow_code=True,
+                    getRowId="params.data.id",
+                    dashGridOptions={
+                        "domLayout": "autoHeight",
+                        "rowHeight": 48,
+                        "headerHeight": 36,
                     },
-                    style_data={
-                        "backgroundColor": "#ffffff",
-                        "color": "#111827",
-                        "borderTop": "none",
-                        "borderLeft": "none",
-                        "borderRight": "none",
-                        "borderBottom": "1px solid #f3f4f6",
-                        "cursor": "pointer",
-                    },
-                    style_data_conditional=[
-                        {
-                            "if": {"state": "active"},
-                            "backgroundColor": "#f0f7ff",
-                            "borderBottom": "1px solid #bfdbfe",
-                            "color": "#111827",
-                        },
-                        {
-                            "if": {"row_index": "odd"},
-                            "backgroundColor": "#fafafa",
-                        },
-                    ],
-                    style_cell={
-                        "padding": "12px 16px",
-                        "textAlign": "left",
-                        "fontSize": "14px",
-                        "fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-                        "border": "none",
-                    },
-                    style_cell_conditional=[{
-                        "if": {"column_id": "Route"},
-                        "width": "90px", "minWidth": "90px", "maxWidth": "90px",
-                        "padding": "6px 10px", "textAlign": "center",
-                    }],
+                    style={"width": "100%", "borderRadius": "8px", "overflow": "hidden"},
+                    className="ag-theme-alpine",
                 ),
             ]),
 
@@ -1039,15 +1005,14 @@ def switch_page(_, __, ___):
     Output("ride-dropdown",          "value", allow_duplicate=True),
     Output("page-activities-list",   "style", allow_duplicate=True),
     Output("page-activities",        "style", allow_duplicate=True),
-    Input("activities-table",        "active_cell"),
-    State("activities-table",        "data"),
+    Input("activities-table",        "cellClicked"),
     prevent_initial_call=True,
 )
-def open_activity(active_cell, table_data):
-    if not active_cell or not table_data:
+def open_activity(cell_clicked):
+    if not cell_clicked:
         raise dash.exceptions.PreventUpdate
-    ride_id = table_data[active_cell["row"]]["id"]
-    return ride_id, {"display": "none"}, {"display": "block"}
+    ride_id = cell_clicked["rowId"]
+    return int(ride_id), {"display": "none"}, {"display": "block"}
 
 
 @app.callback(
@@ -1074,7 +1039,7 @@ def go_back_to_list(n_clicks):
     Output("graph-pdc-summary",        "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
-    Output("activities-table",         "data"),
+    Output("activities-table",         "rowData"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("ride-dropdown",    "value"),
