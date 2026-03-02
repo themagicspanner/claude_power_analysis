@@ -1381,10 +1381,31 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
         fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
                       row=row, col=1, secondary_y=True)
+
+        # ── Align zero across both axes ──────────────────────────────────
+        # Left axis is non-negative (TSS bars); right axis spans negative
+        # TSB to positive CTL/ATL.  Extend the left range below 0 so that
+        # zero sits at the same vertical fraction on both axes.
+        r_min = float(min(pmc["tsb"].min(), 0))
+        r_max = float(max(pmc["ctl"].max(), pmc["atl"].max(),
+                          pmc["tsb"].max(), 1))
+        l_max = float(max(np.max(bar_vals), 1))
+        pad   = 0.05                              # 5 % visual padding
+        r_min, r_max = r_min * (1 + pad), r_max * (1 + pad)
+        l_max *= (1 + pad)
+        r_span = r_max - r_min
+        if r_span > 0 and r_min < 0:
+            zero_frac = -r_min / r_span            # fraction of right axis below 0
+            l_min = -l_max * zero_frac / (1 - zero_frac)
+        else:
+            l_min = 0.0
+
         fig.update_yaxes(title_text="Daily TSS", showgrid=False,
-                         zeroline=False, row=row, col=1, secondary_y=False)
+                         zeroline=False, range=[l_min, l_max],
+                         row=row, col=1, secondary_y=False)
         fig.update_yaxes(title_text="CTL / ATL / TSB", showgrid=True,
                          gridcolor="lightgrey", zeroline=False,
+                         range=[r_min, r_max],
                          row=row, col=1, secondary_y=True)
 
     # Default visible window: last 90 days + 7-day projection
