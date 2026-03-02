@@ -1316,6 +1316,9 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             "Anaerobic (> MAP) — CTL / ATL / TSB",
         ],
         vertical_spacing=0.07,
+        specs=[[{"secondary_y": True}],
+               [{"secondary_y": True}],
+               [{"secondary_y": True}]],
     )
 
     panels = [
@@ -1331,15 +1334,15 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         tsb_pos = np.where(pmc["tsb"] >= 0, pmc["tsb"], 0.0)
         tsb_neg = np.where(pmc["tsb"] <  0, pmc["tsb"], 0.0)
 
-        # TSS bars — drawn first so ATL/CTL/TSB lines sit on top
+        # TSS bars on LEFT axis (background context)
         fig.add_trace(go.Bar(
             x=dates, y=bar_vals,
             name=f"TSS {label}", marker_color=bar_col,
             showlegend=show,
             hovertemplate=f"TSS {label}: %{{y:.0f}}<extra></extra>",
-        ), row=row, col=1)
+        ), row=row, col=1, secondary_y=False)
 
-        # TSB shading
+        # TSB shading on RIGHT axis
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_pos.round(1),
             mode="lines", fill="tozeroy",
@@ -1347,7 +1350,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             line=dict(color="rgba(0,0,0,0)", width=0),
             name="TSB (fresh)", showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
-        ), row=row, col=1)
+        ), row=row, col=1, secondary_y=True)
 
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_neg.round(1),
@@ -1356,29 +1359,33 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             line=dict(color="rgba(0,0,0,0)", width=0),
             name="TSB (tired)", showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
-        ), row=row, col=1)
+        ), row=row, col=1, secondary_y=True)
 
-        # ATL — short-term fatigue (dashed)
+        # ATL on RIGHT axis — short-term fatigue (dashed)
         fig.add_trace(go.Scatter(
             x=dates, y=pmc["atl"].round(1),
             mode="lines", name=f"ATL 7d ({label})",
             line=dict(color=atl_col, width=1.8, dash="dash"),
             showlegend=show,
             hovertemplate=f"ATL ({label}): %{{y:.1f}}<extra></extra>",
-        ), row=row, col=1)
+        ), row=row, col=1, secondary_y=True)
 
-        # CTL — long-term fitness (solid)
+        # CTL on RIGHT axis — long-term fitness (solid)
         fig.add_trace(go.Scatter(
             x=dates, y=pmc["ctl"].round(1),
             mode="lines", name=f"CTL 42d ({label})",
             line=dict(color=ctl_col, width=2.2),
             showlegend=show,
             hovertemplate=f"CTL ({label}): %{{y:.1f}}<extra></extra>",
-        ), row=row, col=1)
+        ), row=row, col=1, secondary_y=True)
 
-        fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1), row=row, col=1)
-        fig.update_yaxes(title_text="Load", showgrid=True, gridcolor="lightgrey",
-                         zeroline=False, row=row, col=1)
+        fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
+                      row=row, col=1, secondary_y=True)
+        fig.update_yaxes(title_text="Daily TSS", showgrid=False,
+                         zeroline=False, row=row, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="CTL / ATL / TSB", showgrid=True,
+                         gridcolor="lightgrey", zeroline=False,
+                         row=row, col=1, secondary_y=True)
 
     # Default visible window: last 90 days + 7-day projection
     today = pd.Timestamp.today().normalize()
