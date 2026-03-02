@@ -1093,6 +1093,84 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def fig_sigmoid_decay() -> go.Figure:
+    """Plot the sigmoid decay curve used by the PDC model.
+
+    X-axis is age in days (0 = today, rightward = older), Y-axis is the
+    decay weight (0–1).  Key landmarks (today, inflection, window cutoff)
+    are annotated.
+    """
+    days = np.linspace(0, PDC_WINDOW + 20, 500)
+    weights = 1.0 / (1.0 + np.exp(PDC_K * (days - PDC_INFLECTION)))
+
+    fig = go.Figure()
+
+    # Sigmoid curve
+    fig.add_trace(go.Scatter(
+        x=days, y=weights,
+        mode="lines",
+        line=dict(color="steelblue", width=2.5),
+        hovertemplate="Age: %{x:.0f} d<br>Weight: %{y:.3f}<extra></extra>",
+        name="Decay weight",
+    ))
+
+    # Shaded area under the curve
+    fig.add_trace(go.Scatter(
+        x=days, y=weights,
+        mode="lines", line=dict(width=0),
+        fill="tozeroy", fillcolor="rgba(70,130,180,0.12)",
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    # Today marker (day 0)
+    fig.add_vline(x=0, line=dict(color="limegreen", width=2))
+    fig.add_annotation(
+        x=0, y=1.02, yref="paper",
+        text="<b>Today</b>", showarrow=False,
+        font=dict(color="limegreen", size=11),
+        xanchor="left", xshift=4,
+    )
+
+    # Inflection point
+    fig.add_vline(x=PDC_INFLECTION, line=dict(color="orange", width=1.5, dash="dash"))
+    fig.add_annotation(
+        x=PDC_INFLECTION, y=0.5,
+        text=f"  inflection {PDC_INFLECTION} d  (w = 0.50)",
+        showarrow=False,
+        font=dict(color="orange", size=10),
+        xanchor="left",
+    )
+
+    # Window cutoff
+    fig.add_vline(x=PDC_WINDOW, line=dict(color="crimson", width=1.5, dash="dot"))
+    w_at_cutoff = 1.0 / (1.0 + np.exp(PDC_K * (PDC_WINDOW - PDC_INFLECTION)))
+    fig.add_annotation(
+        x=PDC_WINDOW, y=1.02, yref="paper",
+        text=f"<b>window {PDC_WINDOW} d</b>",
+        showarrow=False,
+        font=dict(color="crimson", size=10),
+        xanchor="right", xshift=-4,
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=(f"Sigmoid Decay Curve<br>"
+                  f"<sup>K = {PDC_K}  ·  inflection = {PDC_INFLECTION} d  ·  "
+                  f"window = {PDC_WINDOW} d</sup>"),
+            font=dict(size=14),
+        ),
+        xaxis=dict(title="Age (days)", showgrid=True, gridcolor="lightgrey",
+                   range=[-5, PDC_WINDOW + 20]),
+        yaxis=dict(title="Decay weight", showgrid=True, gridcolor="lightgrey",
+                   range=[-0.02, 1.05]),
+        height=340,
+        margin=dict(t=70, b=50, l=60, r=20),
+        template="plotly_white",
+        showlegend=False,
+    )
+    return fig
+
+
 def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
     """Priority testing table for the PDC investigation page.
 
