@@ -697,14 +697,18 @@ def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
 
 # ── Per-ride processing ───────────────────────────────────────────────────────
 
-def process_ride(conn: sqlite3.Connection, path: str) -> None:
-    name = os.path.splitext(os.path.basename(path))[0]
+def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
+    """Store a ride DataFrame in the database (records, MMP, MMH, PDC).
 
+    *name* is the unique ride identifier (e.g. FIT filename stem or
+    ``strava_<id>``).  *df* must contain at least ``timestamp`` and
+    ``elapsed_s`` columns; ``power``, ``heart_rate``, ``latitude``,
+    ``longitude``, and ``altitude_m`` are optional.
+    """
     if conn.execute("SELECT 1 FROM rides WHERE name = ?", (name,)).fetchone():
         print(f"  {name}: already in database, skipping.")
         return
 
-    df = read_fit(path)
     if df.empty:
         print(f"  {name}: no record data, skipping.")
         return
@@ -712,7 +716,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     # Ride metadata
     ride_date = df["timestamp"].iloc[0].date().isoformat()
     duration  = float(df["elapsed_s"].iloc[-1])
-    has_power = df["power"].notna().any()
+    has_power = "power" in df.columns and df["power"].notna().any()
     has_hr    = "heart_rate" in df.columns and df["heart_rate"].notna().any()
 
     cur = conn.execute(
@@ -729,10 +733,14 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         ),
     )
     if cur.rowcount == 0:
-        # Another concurrent call already inserted this ride (race condition).
         print(f"  {name}: already in database, skipping.")
         return
     ride_id = cur.lastrowid
+
+    # Ensure optional columns exist
+    for col in ("power", "heart_rate", "latitude", "longitude", "altitude_m"):
+        if col not in df.columns:
+            df[col] = None
 
     # Raw records
     conn.executemany(
@@ -794,6 +802,12 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         (ride_date, end_affected),
     ).fetchall():
         compute_pdc_params(conn, rid)
+
+
+def process_ride(conn: sqlite3.Connection, path: str) -> None:
+    name = os.path.splitext(os.path.basename(path))[0]
+    df = read_fit(path)
+    ingest_ride(conn, name, df)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────

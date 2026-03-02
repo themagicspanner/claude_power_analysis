@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 *.pyo
 cycling.db
+strava_config.json

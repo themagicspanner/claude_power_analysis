@@ -18,8 +18,10 @@ claude_power_analysis/
 │   └── <ride>_mmp.png       # Ride MMP vs rolling 90-day best
 ├── extract_fit_data.py      # Script 1: extract data → CSV + per-ride plots
 ├── build_database.py        # Script 2: build SQLite DB, MMP calc, charts
+├── strava_import.py         # Import rides from the Strava API
 ├── 2026_fit_data.csv        # Combined raw data (generated artefact)
 ├── cycling.db               # SQLite database (generated artefact)
+├── strava_config.json       # Strava OAuth credentials (gitignored)
 └── mmp_chart.png            # All-rides MMP overlay chart (generated artefact)
 ```
 
@@ -45,6 +47,10 @@ Outputs:
 Full pipeline: SQLite storage, MMP calculation, and chart generation.
 Rides already present in the database are skipped (idempotent).
 
+The shared `ingest_ride(conn, name, df)` function handles inserting a ride
+DataFrame into the database (records, MMP, MMH, PDC recomputation) and is
+used by both FIT file processing and the Strava importer.
+
 ```bash
 # Build / update the database (default action)
 python build_database.py
@@ -58,6 +64,26 @@ python build_database.py --plot
 # Save per-ride MMP vs 90-day-best charts to plots/
 python build_database.py --plot-rides
 ```
+
+### `strava_import.py`
+
+Import cycling activities directly from the Strava API. Requires a one-time
+OAuth setup, then pulls ride data (power, heart rate, GPS, elevation) and
+stores it in the same database via `ingest_ride()`.
+
+```bash
+# One-time setup — walks you through OAuth credentials
+python strava_import.py --setup
+
+# Import cycling activities after a date
+python strava_import.py --after 2026-01-01
+
+# Import within a date range
+python strava_import.py --after 2026-01-01 --before 2026-03-01
+```
+
+Strava rides are stored with the name `strava_<activity_id>` for
+deduplication. Re-running the import skips already-imported activities.
 
 ## Database Schema (`cycling.db`)
 
@@ -93,7 +119,7 @@ window** for O(n) computation:
 No `requirements.txt` is committed. Install manually:
 
 ```bash
-pip install fitdecode pandas matplotlib numpy
+pip install fitdecode pandas matplotlib numpy stravalib
 ```
 
 | Package      | Role                              |
@@ -102,6 +128,7 @@ pip install fitdecode pandas matplotlib numpy
 | `pandas`     | DataFrame manipulation, CSV I/O   |
 | `matplotlib` | Chart generation (Agg backend)    |
 | `numpy`      | Cumulative-sum MMP calculation    |
+| `stravalib`  | Strava API client (OAuth + data)  |
 | `sqlite3`    | Built-in; no extra install needed |
 
 Python 3.11+ is required (uses `list[int]` / `dict[int, float]` type hints).
@@ -124,6 +151,8 @@ Python 3.11+ is required (uses `list[int]` / `dict[int, float]` type hints).
 
 ## Adding New Rides
 
+### From FIT files
+
 1. Drop the `.fit` file(s) into `2026/`.
 2. Run `python build_database.py` — new rides are processed; existing ones
    are skipped.
@@ -131,6 +160,12 @@ Python 3.11+ is required (uses `list[int]` / `dict[int, float]` type hints).
 
 To extend to future years, update `FIT_DIR` / `BASE_DIR` constants or
 parameterise them via `argparse`.
+
+### From Strava
+
+1. Run `python strava_import.py --setup` (first time only).
+2. Run `python strava_import.py --after YYYY-MM-DD` to import rides after
+   that date.  Already-imported rides are skipped automatically.
 
 ## Key Implementation Notes
 
