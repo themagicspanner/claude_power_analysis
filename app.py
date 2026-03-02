@@ -3,13 +3,14 @@ app.py — Dash application for cycling power analysis.
 
 Usage
 ─────
-  python app.py          # starts on http://127.0.0.1:8050
+  python app.py                 # starts on http://127.0.0.1:8050
+  python app.py --lookback 365  # sync the last year of Strava rides
 
 Strava sync
 ───────────
-  On startup, the app imports any new Strava rides from the last 90 days.
-  A background thread re-checks every 15 minutes, so new Strava uploads
-  appear automatically without restarting the app.
+  On startup, the app imports any new Strava rides from the last 90 days
+  (override with --lookback <days>).  A background thread re-checks every
+  15 minutes, so new Strava uploads appear automatically.
 
   Requires a one-time OAuth setup:  python strava_import.py --setup
 
@@ -22,6 +23,7 @@ Pages / sections
   • PDC parameter history (AWC, Pmax, MAP over time)
 """
 
+import argparse
 import base64
 import datetime
 import os
@@ -56,7 +58,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
 
 STRAVA_SYNC_INTERVAL = 15 * 60  # seconds between background Strava syncs
-STRAVA_SYNC_LOOKBACK = 90       # days to look back when syncing
+STRAVA_SYNC_LOOKBACK = 90       # default days to look back when syncing
 
 # ── Shared data store (updated by watcher, read by callbacks) ─────────────────
 
@@ -759,6 +761,17 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
+
+# Parse CLI args early so --lookback is available before the first sync.
+_parser = argparse.ArgumentParser(description="Cycling Power Analysis dashboard")
+_parser.add_argument(
+    "--lookback", type=int, default=None,
+    help="Override Strava sync lookback (days). Default: 90.",
+)
+_args, _ = _parser.parse_known_args()  # parse_known_args so Dash flags pass through
+if _args.lookback is not None:
+    STRAVA_SYNC_LOOKBACK = _args.lookback
+    print(f"[strava] Lookback overridden to {STRAVA_SYNC_LOOKBACK} days.")
 
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
