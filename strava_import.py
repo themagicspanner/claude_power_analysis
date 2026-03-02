@@ -130,7 +130,6 @@ def _activity_to_df(client: Client, activity) -> pd.DataFrame:
     streams = client.get_activity_streams(
         activity.id,
         types=STREAM_TYPES,
-        resolution="high",
     )
 
     if not streams or "time" not in streams:
