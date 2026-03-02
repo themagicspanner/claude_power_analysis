@@ -543,13 +543,15 @@ def fig_zone_distribution(zone_data: dict[int, float],
 # ── TSS component series ──────────────────────────────────────────────────────
 
 def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
-                     ftp: float, CP: float) -> tuple:
-    """Return TSS rate and cumulative TSS_MAP / TSS_AWC series over the ride.
+                     ftp: float, CP: float,
+                     ltp: float | None = None) -> tuple:
+    """Return TSS rate and cumulative LTP / Threshold / AWC series over the ride.
 
     Uses a 30-second rolling average (same-length via 'same' convolution),
-    splits at CP proportionally, and integrates second-by-second.
+    splits at CP and LTP proportionally, and integrates second-by-second.
 
-    Returns (t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg)
+    Returns (t_min, cum_ltp, cum_thresh, cum_awc,
+             rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
     where rate_*_ph are the instantaneous TSS rates in TSS/hour and
     rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
@@ -572,6 +574,15 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
     f_map = 1.0 - f_awc
 
+    # Sub-split aerobic fraction at LTP
+    if ltp is not None and ltp > 0:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
+        f_ltp = np.minimum(f_ltp, f_map)
+    else:
+        f_ltp = f_map
+    f_thresh = f_map - f_ltp
+
     if ftp > 0:
         tss_rate_ph = (p_30s / ftp) ** 2 * 100.0        # TSS per hour at each point
         tss_rate    = tss_rate_ph * dt / 3600.0          # TSS increment per sample
@@ -588,11 +599,13 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     tss_p30 = float(np.sum(tss_rate))
     scale   = (tss_np / tss_p30) if tss_p30 > 0 else 1.0
 
-    cum_tss_map  = np.cumsum(tss_rate * f_map) * scale
-    cum_tss_awc  = np.cumsum(tss_rate * f_awc) * scale
-    rate_map_ph  = tss_rate_ph * f_map * scale
-    rate_awc_ph  = tss_rate_ph * f_awc * scale
-    t_min        = elapsed_s / 60.0
+    cum_ltp      = np.cumsum(tss_rate * f_ltp)    * scale
+    cum_thresh   = np.cumsum(tss_rate * f_thresh)  * scale
+    cum_awc      = np.cumsum(tss_rate * f_awc)     * scale
+    rate_ltp_ph    = tss_rate_ph * f_ltp    * scale
+    rate_thresh_ph = tss_rate_ph * f_thresh * scale
+    rate_awc_ph    = tss_rate_ph * f_awc    * scale
+    t_min          = elapsed_s / 60.0
 
     # 1-hour time-weighted rolling average of total TSS rate.
     # Uses prefix sums for O(n log n) efficiency; dt-weighted so that
@@ -610,13 +623,14 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     with np.errstate(invalid="ignore", divide="ignore"):
         rate_1h_avg = np.where(window_dt > 0, window_rdt / window_dt, 0.0)
 
-    return t_min, cum_tss_map, cum_tss_awc, rate_map_ph, rate_awc_ph, rate_1h_avg
+    return (t_min, cum_ltp, cum_thresh, cum_awc,
+            rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
 
 
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
-    """TSS Rate (TSS/h) and cumulative TSS split into MAP and AWC components."""
+    """TSS Rate (TSS/h) and cumulative TSS split into Base / Threshold / AWC."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -625,21 +639,30 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     if live_pdc is not None:
         CP  = live_pdc["MAP"]
         ftp = live_pdc["ftp"]
+        ltp = live_pdc.get("ltp")
     elif not params_row.empty:
         r   = params_row.iloc[0]
         CP  = float(r["MAP"])
         ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
     else:
         return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
-    t_min, cum_map, cum_awc, rate_map, rate_awc, rate_1h_avg = _tss_rate_series(elapsed, power, ftp, CP)
+    (t_min, cum_ltp, cum_thresh, cum_awc,
+     rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
+        elapsed, power, ftp, CP, ltp=ltp)
 
-    final_map  = cum_map[-1]
-    final_awc  = cum_awc[-1]
-    rate_total = rate_map + rate_awc
-    cum_total  = cum_map + cum_awc
+    final_ltp    = cum_ltp[-1]
+    final_thresh = cum_thresh[-1]
+    final_awc    = cum_awc[-1]
+    rate_ltp_top    = rate_ltp
+    rate_thresh_top = rate_ltp + rate_thresh
+    rate_total      = rate_thresh_top + rate_awc
+    cum_ltp_top     = cum_ltp
+    cum_thresh_top  = cum_ltp + cum_thresh
+    cum_total       = cum_thresh_top + cum_awc
 
     fig = make_subplots(
         rows=2, cols=1,
@@ -650,14 +673,20 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     # ── Row 1: instantaneous TSS rate ────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=t_min, y=rate_map,
-        mode="lines", name=f"TSS_MAP (total {final_map:.0f})",
+        x=t_min, y=rate_ltp_top,
+        mode="lines", name=f"Base ≤LTP ({final_ltp:.0f})",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
+        x=t_min, y=rate_thresh_top,
+        mode="lines", name=f"Threshold ({final_thresh:.0f})",
+        fill="tonexty", fillcolor="rgba(70,130,180,0.25)",
+        line=dict(color="steelblue", width=1.5),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
-        mode="lines", name=f"TSS_AWC (total {final_awc:.0f})",
+        mode="lines", name=f"AWC ({final_awc:.0f})",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
     ), row=1, col=1)
@@ -669,15 +698,22 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
     # ── Row 2: cumulative TSS ────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=t_min, y=cum_map,
-        mode="lines", name="Cumulative TSS_MAP",
+        x=t_min, y=cum_ltp_top,
+        mode="lines", name="Cumulative Base",
         fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
         line=dict(color="seagreen", width=1.5),
         showlegend=False,
     ), row=2, col=1)
     fig.add_trace(go.Scatter(
+        x=t_min, y=cum_thresh_top,
+        mode="lines", name="Cumulative Threshold",
+        fill="tonexty", fillcolor="rgba(70,130,180,0.25)",
+        line=dict(color="steelblue", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
         x=t_min, y=cum_total,
-        mode="lines", name="Cumulative TSS_AWC",
+        mode="lines", name="Cumulative AWC",
         fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
         line=dict(color="darkorange", width=1.5),
         showlegend=False,
@@ -704,7 +740,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
 
 
 def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
-    """TSS per ride as stacked bars — TSS_MAP (aerobic) + TSS_AWC (anaerobic)."""
+    """TSS per ride as stacked bars — Base (≤LTP) + Threshold (LTP→MAP) + AWC."""
     if pdc_params.empty or "tss_map" not in pdc_params.columns:
         return go.Figure()
 
@@ -716,33 +752,56 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     if df.empty:
         return go.Figure()
 
-    cd = df[["ftp", "normalized_power", "intensity_factor", "tss_map", "tss_awc"]].values
+    # Derive the threshold component; tss_ltp may be missing on old DBs
+    if "tss_ltp" in df.columns:
+        df["tss_ltp"]    = df["tss_ltp"].fillna(df["tss_map"])
+        df["tss_thresh"] = (df["tss_map"] - df["tss_ltp"]).clip(lower=0)
+    else:
+        df["tss_ltp"]    = df["tss_map"]
+        df["tss_thresh"] = 0.0
+
+    cd = df[["ftp", "normalized_power", "intensity_factor",
+             "tss_ltp", "tss_thresh", "tss_awc"]].values
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=df["ride_date"], y=df["tss_map"],
-        name="TSS_MAP (aerobic)",
+        x=df["ride_date"], y=df["tss_ltp"],
+        name="Base (≤LTP)",
         marker_color="seagreen",
         customdata=cd,
         hovertemplate=(
             "<b>%{x}</b><br>"
-            "TSS_MAP = %{y:.0f}<br>"
-            "TSS_AWC = %{customdata[4]:.0f}<br>"
-            "Total = %{customdata[3]:.0f}<br>"
+            "Base ≤LTP = %{y:.0f}<br>"
+            "Threshold = %{customdata[4]:.0f}<br>"
+            "AWC = %{customdata[5]:.0f}<br>"
+            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "IF = %{customdata[2]:.2f}<extra></extra>"
+        ),
+    ))
+    fig.add_trace(go.Bar(
+        x=df["ride_date"], y=df["tss_thresh"],
+        name="Threshold (LTP→MAP)",
+        marker_color="steelblue",
+        customdata=cd,
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Threshold = %{y:.0f}<br>"
+            "Base ≤LTP = %{customdata[3]:.0f}<br>"
+            "AWC = %{customdata[5]:.0f}<br>"
             "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
             "IF = %{customdata[2]:.2f}<extra></extra>"
         ),
     ))
     fig.add_trace(go.Bar(
         x=df["ride_date"], y=df["tss_awc"],
-        name="TSS_AWC (anaerobic)",
+        name="AWC (anaerobic)",
         marker_color="darkorange",
         customdata=cd,
         hovertemplate=(
             "<b>%{x}</b><br>"
-            "TSS_AWC = %{y:.0f}<br>"
-            "TSS_MAP = %{customdata[3]:.0f}<br>"
-            "Total = %{customdata[3]:.0f}<br>"
+            "AWC = %{y:.0f}<br>"
+            "Base ≤LTP = %{customdata[3]:.0f}<br>"
+            "Threshold = %{customdata[4]:.0f}<br>"
             "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
             "IF = %{customdata[2]:.2f}<extra></extra>"
         ),
@@ -751,7 +810,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Date", showgrid=False)
     fig.update_yaxes(title_text="TSS", showgrid=True, gridcolor="lightgrey")
     fig.update_layout(
-        title=dict(text="Training Stress Score per Ride (MAP + AWC split)", font=dict(size=14)),
+        title=dict(text="Training Stress Score per Ride (Base + Threshold + AWC)", font=dict(size=14)),
         barmode="stack",
         height=320,
         margin=dict(t=55, b=50, l=60, r=20),
@@ -1208,9 +1267,9 @@ def fig_pdc_testing_summary(mmp_all: pd.DataFrame) -> go.Figure:
 def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     """Three-panel Performance Management Chart.
 
-    Row 1 — Total TSS (NP-based):   CTL (42d), ATL (7d), TSB
-    Row 2 — MAP component TSS:      CTL (42d), ATL (7d), TSB
-    Row 3 — AWC component TSS:      CTL (42d), ATL (7d), TSB
+    Row 1 — Base (≤ LTP) TSS:        CTL (42d), ATL (7d), TSB
+    Row 2 — Threshold (LTP→MAP) TSS: CTL (42d), ATL (7d), TSB
+    Row 3 — Anaerobic (> MAP) TSS:   CTL (42d), ATL (7d), TSB
 
     TSB = CTL − ATL from the previous day.
     Green fill → positive TSB (fresh); red fill → negative TSB (tired).
@@ -1227,55 +1286,60 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         return go.Figure()
 
     df["ride_date"] = pd.to_datetime(df["ride_date"])
-    daily = df.groupby("ride_date")[["tss", "tss_map", "tss_awc"]].sum()
+
+    # Derive tss_ltp and tss_thresh; handle missing column gracefully
+    if "tss_ltp" in df.columns:
+        df["tss_ltp"]    = df["tss_ltp"].fillna(df["tss_map"])
+        df["tss_thresh"] = (df["tss_map"] - df["tss_ltp"]).clip(lower=0)
+    else:
+        df["tss_ltp"]    = df["tss_map"]
+        df["tss_thresh"] = 0.0
+
+    daily = df.groupby("ride_date")[["tss", "tss_ltp", "tss_thresh", "tss_awc"]].sum()
 
     FUTURE_DAYS = 7
-    pmc_tot = _compute_pmc(daily["tss"],     future_days=FUTURE_DAYS)
-    pmc_map = _compute_pmc(daily["tss_map"], future_days=FUTURE_DAYS)
-    pmc_awc = _compute_pmc(daily["tss_awc"], future_days=FUTURE_DAYS)
+    pmc_ltp    = _compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
+    pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
+    pmc_awc    = _compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
 
-    # Align daily TSS to the continuous date grid used by pmc_tot
-    _idx          = pd.DatetimeIndex(pmc_tot["date"])
-    _tss_map_bars = daily["tss_map"].reindex(_idx, fill_value=0.0).round(1).values
-    _tss_awc_bars = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
+    # Align daily TSS to the continuous date grid used by pmc_ltp
+    _idx             = pd.DatetimeIndex(pmc_ltp["date"])
+    _tss_ltp_bars    = daily["tss_ltp"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_thresh_bars = daily["tss_thresh"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_awc_bars    = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
 
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
+        rows=3, cols=1, shared_xaxes=True,
         subplot_titles=[
-            "Aerobic (MAP) — Daily bars + CTL / ATL / TSB",
-            "Anaerobic (AWC) — Daily bars + CTL / ATL / TSB",
+            "Base (≤ LTP) — CTL / ATL / TSB",
+            "Threshold (LTP → MAP) — CTL / ATL / TSB",
+            "Anaerobic (> MAP) — CTL / ATL / TSB",
         ],
-        vertical_spacing=0.09,
+        vertical_spacing=0.07,
     )
 
     panels = [
-        (1, pmc_map, "seagreen",     "darkorange", "MAP"),
-        (2, pmc_awc, "mediumpurple", "tomato",     "AWC"),
+        # (row, pmc_df,     bar_data,         bar_color,                 ctl_col,        atl_col,      label)
+        (1, pmc_ltp,    _tss_ltp_bars,    "rgba(46,139,87,0.45)",    "seagreen",     "darkorange", "Base"),
+        (2, pmc_thresh, _tss_thresh_bars, "rgba(70,130,180,0.45)",   "steelblue",    "goldenrod",  "Threshold"),
+        (3, pmc_awc,    _tss_awc_bars,    "rgba(220,80,30,0.45)",    "mediumpurple", "tomato",     "AWC"),
     ]
 
-    for row, pmc, ctl_col, atl_col, label in panels:
-        show = row == 1   # show in legend only for the top panel
-        dates    = pmc["date"].dt.strftime("%Y-%m-%d")
-        tsb_pos  = np.where(pmc["tsb"] >= 0,  pmc["tsb"], 0.0)
-        tsb_neg  = np.where(pmc["tsb"] <  0,  pmc["tsb"], 0.0)
+    for row, pmc, bar_vals, bar_col, ctl_col, atl_col, label in panels:
+        show  = row == 1   # show in legend only for the top panel
+        dates = pmc["date"].dt.strftime("%Y-%m-%d")
+        tsb_pos = np.where(pmc["tsb"] >= 0, pmc["tsb"], 0.0)
+        tsb_neg = np.where(pmc["tsb"] <  0, pmc["tsb"], 0.0)
 
         # TSS bars — drawn first so ATL/CTL/TSB lines sit on top
-        if row == 1:
-            fig.add_trace(go.Bar(
-                x=dates, y=_tss_map_bars,
-                name="TSS MAP", marker_color="rgba(46,139,87,0.45)",
-                showlegend=show,
-                hovertemplate="TSS MAP: %{y:.0f}<extra></extra>",
-            ), row=row, col=1)
-        if row == 2:
-            fig.add_trace(go.Bar(
-                x=dates, y=_tss_awc_bars,
-                name="TSS AWC", marker_color="rgba(220,80,30,0.45)",
-                showlegend=show,
-                hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
-            ), row=row, col=1)
+        fig.add_trace(go.Bar(
+            x=dates, y=bar_vals,
+            name=f"TSS {label}", marker_color=bar_col,
+            showlegend=show,
+            hovertemplate=f"TSS {label}: %{{y:.0f}}<extra></extra>",
+        ), row=row, col=1)
 
-        # TSB shading — drawn after bars so lines sit on top
+        # TSB shading
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_pos.round(1),
             mode="lines", fill="tozeroy",
@@ -1323,11 +1387,11 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
                      range=[x_start, x_end])
-    fig.update_xaxes(title_text="Date", row=2, col=1)
+    fig.update_xaxes(title_text="Date", row=3, col=1)
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14)),
         barmode="stack",
-        height=580,
+        height=780,
         margin=dict(t=70, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",

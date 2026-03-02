@@ -61,21 +61,24 @@ def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
 
 def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
                     ftp: float, CP: float, tss_total: float,
-                    sample_hz: float = 1.0) -> tuple[float, float]:
-    """Split the NP-based TSS into aerobic (MAP) and anaerobic (AWC) parts.
+                    sample_hz: float = 1.0,
+                    ltp: float | None = None) -> tuple[float, float, float]:
+    """Split the NP-based TSS into base (LTP), threshold, and anaerobic parts.
 
     Uses p_30s² as a time-weighting kernel (same as NP methodology) to decide
-    how much of each second's training stress should be credited to MAP vs AWC.
-    The per-sample AWC fraction comes from instantaneous power so that even
-    brief above-CP efforts register:
+    how much of each second's training stress should be credited to each zone.
+    The per-sample fractions come from instantaneous power so that even brief
+    above-CP efforts register:
 
-        f_AWC(t) = max(0, P(t) − CP) / P(t)   [instantaneous]
-        f_MAP(t) = 1 − f_AWC(t)
+        f_AWC(t) = max(0, P(t) − CP) / P(t)        [above MAP]
+        f_LTP(t) = min(P(t), LTP) / P(t)            [at or below LTP]
+        f_THR(t) = 1 − f_AWC(t) − f_LTP(t)          [LTP → MAP]
 
-    The final values are scaled so that TSS_MAP + TSS_AWC = tss_total exactly
-    (the NP-based TSS).
+    The final values are scaled so that tss_ltp + tss_map + tss_awc = tss_total
+    exactly (tss_map is the *total* aerobic component, unchanged from before;
+    tss_ltp is the sub-component at or below LTP).
 
-    Returns (tss_map, tss_awc).
+    Returns (tss_ltp, tss_map, tss_awc).
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     window = max(1, int(30 * sample_hz))
@@ -92,17 +95,28 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
         f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
     f_map = 1.0 - f_awc
 
+    # Sub-split of aerobic fraction at LTP
+    if ltp is not None and ltp > 0:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
+        f_ltp = np.minimum(f_ltp, f_map)   # clamp: LTP fraction can't exceed MAP fraction
+    else:
+        f_ltp = f_map                       # no LTP → all aerobic is "base"
+
     # p_30s² weights — same basis as NP; used as split ratio only
     weights = (p_30s ** 2) * dt if ftp > 0 else np.zeros_like(p_30s)
     w_total = float(np.sum(weights))
     if w_total > 0 and tss_total > 0:
         awc_frac = float(np.sum(weights * f_awc)) / w_total
+        ltp_frac = float(np.sum(weights * f_ltp)) / w_total
         tss_awc  = tss_total * awc_frac
         tss_map  = tss_total - tss_awc
+        tss_ltp  = min(tss_total * ltp_frac, tss_map)  # clamp for float safety
     else:
         tss_awc = 0.0
         tss_map = float(tss_total)
-    return tss_map, tss_awc
+        tss_ltp = float(tss_total)
+    return tss_ltp, tss_map, tss_awc
 
 
 def _aerobic_decoupling(df: pd.DataFrame) -> float | None:
@@ -227,6 +241,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             tss                   REAL,
             tss_map               REAL,
             tss_awc               REAL,
+            tss_ltp               REAL,
             ltp                   REAL,
             variability_index     REAL,
             aerobic_decoupling_pct REAL
@@ -270,6 +285,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "tss                    REAL",
         "tss_map                REAL",
         "tss_awc                REAL",
+        "tss_ltp                REAL",
         "ltp                    REAL",
         "variability_index      REAL",
         "aerobic_decoupling_pct REAL",
@@ -301,6 +317,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         DELETE FROM pdc_params
         WHERE ltp IS NULL
            OR tss_awc IS NULL
+           OR tss_ltp IS NULL
            OR ABS(tss - (tss_map + tss_awc)) > 0.01
     """)
     # Remove zone rows whose PDC params were just purged (zones depend on LTP/MAP)
@@ -474,7 +491,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn, params=(ride_id,),
     )
-    np_val = if_val = tss = tss_map = tss_awc = 0.0
+    np_val = if_val = tss = tss_ltp = tss_map = tss_awc = 0.0
     vi = aedec = None
     if not rec.empty and rec["power"].notna().any():
         elapsed = rec["elapsed_s"].to_numpy(dtype=float)
@@ -485,7 +502,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         if_val  = np_val / ftp if ftp > 0 else 0.0
         dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
         tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
-        tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), tss, hz)
+        tss_ltp, tss_map, tss_awc = _tss_components(
+            elapsed, power, ftp, float(MAP), tss, hz, ltp=float(ltp))
         ap  = float(rec["power"].fillna(0).mean())
         vi  = round(np_val / ap, 3) if ap > 0 else None
         aedec = _aerobic_decoupling(rec)
@@ -494,8 +512,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc, ltp, variability_index, aerobic_decoupling_pct)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, tss_ltp, ltp, variability_index, aerobic_decoupling_pct)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -509,6 +527,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             tss,                      # full precision — tss_map + tss_awc == tss exactly
             tss_map,
             tss_awc,
+            tss_ltp,
             round(ltp,     1),
             vi,
             aedec,

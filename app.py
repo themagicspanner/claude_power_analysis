@@ -426,6 +426,7 @@ def _activities_table_data(rides: pd.DataFrame,
             "np":           _int(r.get("normalized_power")),
             "if":           _f2(r.get("intensity_factor")),
             "tss":          _int(r.get("tss")),
+            "tss_ltp":      _int(r.get("tss_ltp")),
             "tss_map":      _int(r.get("tss_map")),
             "tss_awc":      _int(r.get("tss_awc")),
             "map_w":        _int(r.get("MAP")),
@@ -598,6 +599,7 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
     tss_map_v = _tss(stored.get("tss_map"))         if stored is not None else "—"
+    tss_ltp_v = _tss(stored.get("tss_ltp"))         if stored is not None else "—"
     tss_awc_v = _tss(stored.get("tss_awc"))         if stored is not None else "—"
 
     ride_title = ride["name"].replace("_", " ")
@@ -622,6 +624,7 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
                 card("NP",      np_v,      "W"),
                 card("IF",      if_v,      ""),
                 card("TSS",     tss_v,     ""),
+                card("TSS LTP", tss_ltp_v, ""),
                 card("TSS MAP", tss_map_v, ""),
                 card("TSS AWC", tss_awc_v, ""),
             ]),
@@ -1150,6 +1153,7 @@ def update_ride_charts(ride_id, _ver):
     if_v      = _f2(stored.get("intensity_factor"))   if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))                 if stored is not None else "—"
     tss_map_v = _tss(stored.get("tss_map"))            if stored is not None else "—"
+    tss_ltp_v = _tss(stored.get("tss_ltp"))            if stored is not None else "—"
     tss_awc_v = _tss(stored.get("tss_awc"))            if stored is not None else "—"
     vi_v      = (f"{float(stored['variability_index']):.2f}"
                  if stored is not None and pd.notna(stored.get("variability_index")) else "—")
@@ -1205,6 +1209,7 @@ def update_ride_charts(ride_id, _ver):
         ("NP",         np_v,                         "W"),
         ("IF",         if_v,                         ""),
         ("TSS",        tss_v,                        ""),
+        ("TSS LTP",    tss_ltp_v,                    ""),
         ("TSS MAP",    tss_map_v,                    ""),
         ("TSS AWC",    tss_awc_v,                    ""),
         ("Difficulty", difficulty_v,                 "TSS/h"),
