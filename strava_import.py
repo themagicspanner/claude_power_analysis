@@ -25,6 +25,8 @@ import sqlite3
 import time
 
 import pandas as pd
+
+os.environ.setdefault("SILENCE_TOKEN_WARNINGS", "true")
 from stravalib import Client
 
 from build_database import DB_PATH, init_db, ingest_ride
