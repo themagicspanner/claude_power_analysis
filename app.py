@@ -36,7 +36,7 @@ import pandas as pd
 import plotly.express as px
 import dash
 import dash_ag_grid as dag
-from dash import dcc, html, Input, Output, State, ctx, Patch
+from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
 from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones,
@@ -823,7 +823,22 @@ app.layout = html.Div(
     children=[
         # Hidden stores / ticker
         dcc.Store(id="known-version", data=0),
+        dcc.Store(id="known-ride-ids", data=[]),
+        dcc.Store(id="toast-message", data=""),
         dcc.Interval(id="poll-interval", interval=3000, n_intervals=0),  # check every 3 s
+
+        # Toast notification (top-right pop-over)
+        html.Div(id="toast-container", children=[
+            html.Div(id="toast-text"),
+        ], style={
+            "position": "fixed", "top": "20px", "right": "20px",
+            "zIndex": "9999", "background": "#1e2a3a",
+            "border": "1px solid #2d4a6f", "borderRadius": "8px",
+            "padding": "14px 20px", "color": "#e8edf5",
+            "fontSize": "14px", "boxShadow": "0 4px 20px rgba(0,0,0,0.4)",
+            "maxWidth": "360px", "opacity": "0", "pointerEvents": "none",
+            "transition": "opacity 0.3s ease",
+        }),
 
         # ── Sidebar ────────────────────────────────────────────────────────
         html.Div(style={
@@ -1061,6 +1076,8 @@ def go_back_to_list(n_clicks):
 
 @app.callback(
     Output("known-version",   "data"),
+    Output("known-ride-ids",  "data"),
+    Output("toast-message",   "data"),
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
@@ -1076,14 +1093,31 @@ def go_back_to_list(n_clicks):
     Output("activities-table",         "rowData"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
+    State("known-ride-ids",   "data"),
     State("ride-dropdown",    "value"),
 )
-def poll_for_new_data(n_intervals, known_ver, current_ride_id):
+def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     ver, rides, mmp_all, mmh_all, pdc_params, gps_traces = get_data()
 
     if ver == known_ver and n_intervals > 0:
         # Nothing changed — return no-update for everything
         raise dash.exceptions.PreventUpdate
+
+    # Detect newly added rides
+    current_ids = rides["id"].tolist()
+    prev_set = set(known_ride_ids or [])
+    new_ids = [rid for rid in current_ids if rid not in prev_set]
+    toast_msg = ""
+    if prev_set and new_ids:
+        new_rides = rides[rides["id"].isin(new_ids)]
+        names = [
+            f"{r['ride_date']}  {r['name'].replace('strava_', '').replace('_', ' ')}"
+            for _, r in new_rides.iterrows()
+        ]
+        if len(names) == 1:
+            toast_msg = f"New activity loaded: {names[0]}"
+        else:
+            toast_msg = f"{len(names)} new activities loaded"
 
     options = [
         {"label": f"{r['ride_date']}  {r['name'].replace('_', ' ')}", "value": r["id"]}
@@ -1100,6 +1134,8 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
 
     return (
         ver,
+        current_ids,
+        toast_msg,
         options,
         selected,
         fig_90day_mmp(mmp_all),
@@ -1114,6 +1150,31 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
     )
+
+
+# Clientside callback: show toast pop-over and auto-dismiss after 5 s
+app.clientside_callback(
+    """
+    function(msg) {
+        var container = document.getElementById('toast-container');
+        var text = document.getElementById('toast-text');
+        if (!msg) {
+            return '';
+        }
+        text.innerText = msg;
+        container.style.opacity = '1';
+        container.style.pointerEvents = 'auto';
+        if (window._toastTimer) clearTimeout(window._toastTimer);
+        window._toastTimer = setTimeout(function() {
+            container.style.opacity = '0';
+            container.style.pointerEvents = 'none';
+        }, 5000);
+        return '';
+    }
+    """,
+    Output("toast-text", "children"),
+    Input("toast-message", "data"),
+)
 
 
 @app.callback(
