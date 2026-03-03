@@ -1535,13 +1535,12 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         df["tss_ltp"]    = df["tss_map"]
         df["tss_thresh"] = 0.0
 
-    daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc", "tss_map"]].sum()
+    daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc"]].sum()
 
     FUTURE_DAYS = 7
     pmc_ltp    = _compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
     pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
     pmc_awc    = _compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
-    pmc_map    = _compute_pmc(daily["tss_map"],    future_days=FUTURE_DAYS)
 
     # Align daily TSS to the continuous date grid
     _idx             = pd.DatetimeIndex(pmc_ltp["date"])
@@ -1608,9 +1607,9 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_map["tsb"].round(1),
+        x=dates, y=pmc_thresh["tsb"].round(1),
         mode="lines", name="aTSB MAP",
-        line=dict(color="green", width=2),
+        line=dict(color="steelblue", width=2),
         hovertemplate="aTSB MAP: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
@@ -1619,8 +1618,8 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
 
     # ── Align zero across both axes ────────────────────────────────────
     total_ctl = pmc_ltp["ctl"] + pmc_thresh["ctl"] + pmc_awc["ctl"]
-    r_min = float(min(pmc_awc["tsb"].min(), pmc_map["tsb"].min(), 0))
-    r_max = float(max(total_ctl.max(), pmc_map["tsb"].max(),
+    r_min = float(min(pmc_awc["tsb"].min(), pmc_thresh["tsb"].min(), 0))
+    r_max = float(max(total_ctl.max(), pmc_thresh["tsb"].max(),
                       pmc_awc["tsb"].max(), 1))
     l_max = float(max(
         np.max(_tss_ltp_bars + _tss_thresh_bars + _tss_awc_bars), 1))
