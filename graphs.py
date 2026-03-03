@@ -17,6 +17,25 @@ LOG_TICK_LBL = ["1s", "5s", "10s", "30s", "1min", "2min",
                  "5min", "10min", "20min", "30min", "1h"]
 
 
+# ── Zone colour palette (RAG: Red / Amber / Green) ───────────────────────────
+_RGB_BASE   = (46, 139, 87)     # green  — Base (≤ LTP)
+_RGB_THRESH = (235, 168, 36)    # amber  — Threshold (LTP → MAP)
+_RGB_AWC    = (214, 55, 46)     # red    — Anaerobic (> MAP)
+
+
+def _zc(rgb: tuple[int, int, int], a: float = 1.0) -> str:
+    """Return an rgb()/rgba() CSS string for a zone colour at the given opacity."""
+    if a >= 1.0:
+        return f"rgb({rgb[0]},{rgb[1]},{rgb[2]})"
+    return f"rgba({rgb[0]},{rgb[1]},{rgb[2]},{a})"
+
+
+# Convenience solid names (for line colours)
+Z_BASE   = _zc(_RGB_BASE)
+Z_THRESH = _zc(_RGB_THRESH)
+Z_AWC    = _zc(_RGB_AWC)
+
+
 # ── Figure builders ───────────────────────────────────────────────────────────
 
 def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
@@ -245,15 +264,15 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_aer,
                 mode="lines", name="aerobic (MAP)",
-                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
-                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+                fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
+                line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
             ))
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_tot,
                 mode="lines",
                 name="model",
-                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
-                line=dict(color="darkorange", width=2, dash="dash"),
+                fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.18),
+                line=dict(color=Z_AWC, width=2, dash="dash"),
             ))
 
         # Best aged MMP from other rides in the PDC window
@@ -335,16 +354,16 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_aerobic,
                 mode="lines", name="aerobic (MAP)",
-                fill="tozeroy", fillcolor="rgba(46,139,87,0.20)",
-                line=dict(color="rgba(46,139,87,0.7)", width=1.2),
+                fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
+                line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
             ))
             # Total model — fills from aerobic line, so the shaded band = anaerobic
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_total,
                 mode="lines",
                 name="model",
-                fill="tonexty", fillcolor="rgba(220,80,30,0.18)",
-                line=dict(color="darkorange", width=2, dash="dash"),
+                fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.18),
+                line=dict(color=Z_AWC, width=2, dash="dash"),
             ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
@@ -435,28 +454,28 @@ def fig_pdc_params_history(pdc_params: pd.DataFrame,
     fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["MAP"],
         mode="lines+markers", name="MAP (W)",
-        line=dict(color="seagreen", width=2),
+        line=dict(color=Z_THRESH, width=2),
         marker=dict(size=5),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["Pmax"],
         mode="lines+markers", name="Pmax (W)",
-        line=dict(color="crimson", width=2),
+        line=dict(color=Z_AWC, width=2, dash="dash"),
         marker=dict(size=5),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["ltp"],
         mode="lines+markers", name="LTP (W)",
-        line=dict(color="darkorange", width=2),
+        line=dict(color=Z_BASE, width=2),
         marker=dict(size=5),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["ride_date"], y=df["AWC"] / 1000,
         mode="lines+markers", name="AWC (kJ)",
-        line=dict(color="steelblue", width=2, dash="dot"),
+        line=dict(color=Z_AWC, width=2, dash="dot"),
         marker=dict(size=5),
     ), secondary_y=True)
 
@@ -505,9 +524,9 @@ def fig_zone_distribution(zone_data: dict[int, float],
         return f"{m}:{s:02d}"
 
     zones = [
-        (1, f"Z1  ≤{ltp:.0f} W",            zone_data.get(1, 0.0), "#4a90d9"),
-        (2, f"Z2  {ltp:.0f}–{map_:.0f} W",  zone_data.get(2, 0.0), "#f5a623"),
-        (3, f"Z3  >{map_:.0f} W",            zone_data.get(3, 0.0), "#e74c3c"),
+        (1, f"Z1  ≤{ltp:.0f} W",            zone_data.get(1, 0.0), Z_BASE),
+        (2, f"Z2  {ltp:.0f}–{map_:.0f} W",  zone_data.get(2, 0.0), Z_THRESH),
+        (3, f"Z3  >{map_:.0f} W",            zone_data.get(3, 0.0), Z_AWC),
     ]
 
     fig = go.Figure()
@@ -675,20 +694,20 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_ltp_top,
         mode="lines", name=f"Base ≤LTP ({final_ltp:.0f})",
-        fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
-        line=dict(color="seagreen", width=1.5),
+        fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
+        line=dict(color=Z_BASE, width=1.5),
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_thresh_top,
         mode="lines", name=f"Threshold ({final_thresh:.0f})",
-        fill="tonexty", fillcolor="rgba(70,130,180,0.25)",
-        line=dict(color="steelblue", width=1.5),
+        fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
+        line=dict(color=Z_THRESH, width=1.5),
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
         mode="lines", name=f"AWC ({final_awc:.0f})",
-        fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
-        line=dict(color="darkorange", width=1.5),
+        fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
+        line=dict(color=Z_AWC, width=1.5),
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
@@ -700,22 +719,22 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     fig.add_trace(go.Scatter(
         x=t_min, y=cum_ltp_top,
         mode="lines", name="Cumulative Base",
-        fill="tozeroy", fillcolor="rgba(46,139,87,0.25)",
-        line=dict(color="seagreen", width=1.5),
+        fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
+        line=dict(color=Z_BASE, width=1.5),
         showlegend=False,
     ), row=2, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=cum_thresh_top,
         mode="lines", name="Cumulative Threshold",
-        fill="tonexty", fillcolor="rgba(70,130,180,0.25)",
-        line=dict(color="steelblue", width=1.5),
+        fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
+        line=dict(color=Z_THRESH, width=1.5),
         showlegend=False,
     ), row=2, col=1)
     fig.add_trace(go.Scatter(
         x=t_min, y=cum_total,
         mode="lines", name="Cumulative AWC",
-        fill="tonexty", fillcolor="rgba(220,80,30,0.22)",
-        line=dict(color="darkorange", width=1.5),
+        fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
+        line=dict(color=Z_AWC, width=1.5),
         showlegend=False,
     ), row=2, col=1)
 
@@ -767,7 +786,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.add_trace(go.Bar(
         x=df["ride_date"], y=df["tss_ltp"],
         name="Base (≤LTP)",
-        marker_color="seagreen",
+        marker_color=Z_BASE,
         customdata=cd,
         hovertemplate=(
             "<b>%{x}</b><br>"
@@ -781,7 +800,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.add_trace(go.Bar(
         x=df["ride_date"], y=df["tss_thresh"],
         name="Threshold (LTP→MAP)",
-        marker_color="steelblue",
+        marker_color=Z_THRESH,
         customdata=cd,
         hovertemplate=(
             "<b>%{x}</b><br>"
@@ -795,7 +814,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.add_trace(go.Bar(
         x=df["ride_date"], y=df["tss_awc"],
         name="AWC (anaerobic)",
-        marker_color="darkorange",
+        marker_color=Z_AWC,
         customdata=cd,
         hovertemplate=(
             "<b>%{x}</b><br>"
@@ -1017,15 +1036,15 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=t_sm, y=p_aer,
             mode="lines", name="aerobic (MAP)",
-            fill="tozeroy", fillcolor="rgba(46,139,87,0.15)",
-            line=dict(color="rgba(46,139,87,0.6)", width=1),
+            fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.15),
+            line=dict(color=_zc(_RGB_BASE, 0.6), width=1),
             hoverinfo="skip",
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=t_sm, y=p_tot,
             mode="lines", name="PDC model",
-            fill="tonexty", fillcolor="rgba(220,80,30,0.10)",
-            line=dict(color="darkorange", width=2.5, dash="dash"),
+            fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.10),
+            line=dict(color=Z_AWC, width=2.5, dash="dash"),
             hovertemplate="Model: %{y:.0f} W<extra></extra>",
         ), row=1, col=1)
 
@@ -1400,10 +1419,10 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     )
 
     panels = [
-        # (row, pmc_df,     bar_data,         bar_color,                 ctl_col,        atl_col,      label)
-        (1, pmc_ltp,    _tss_ltp_bars,    "rgba(46,139,87,0.45)",    "seagreen",     "darkorange", "Base"),
-        (2, pmc_thresh, _tss_thresh_bars, "rgba(70,130,180,0.45)",   "steelblue",    "goldenrod",  "Threshold"),
-        (3, pmc_awc,    _tss_awc_bars,    "rgba(220,80,30,0.45)",    "mediumpurple", "tomato",     "AWC"),
+        # (row, pmc_df,     bar_data,         bar_color,                   ctl_col,   atl_col,                   label)
+        (1, pmc_ltp,    _tss_ltp_bars,    _zc(_RGB_BASE, 0.45),    Z_BASE,    _zc(_RGB_BASE, 0.6),    "Base"),
+        (2, pmc_thresh, _tss_thresh_bars, _zc(_RGB_THRESH, 0.45),  Z_THRESH,  _zc(_RGB_THRESH, 0.6),  "Threshold"),
+        (3, pmc_awc,    _tss_awc_bars,    _zc(_RGB_AWC, 0.45),     Z_AWC,     _zc(_RGB_AWC, 0.6),     "AWC"),
     ]
 
     for row, pmc, bar_vals, bar_col, ctl_col, atl_col, label in panels:
@@ -1424,7 +1443,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_pos.round(1),
             mode="lines", fill="tozeroy",
-            fillcolor="rgba(46,139,87,0.22)",
+            fillcolor=_zc(_RGB_BASE, 0.22),
             line=dict(color="rgba(0,0,0,0)", width=0),
             name="TSB (fresh)", showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
@@ -1433,7 +1452,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=dates, y=tsb_neg.round(1),
             mode="lines", fill="tozeroy",
-            fillcolor="rgba(220,80,30,0.22)",
+            fillcolor=_zc(_RGB_AWC, 0.22),
             line=dict(color="rgba(0,0,0,0)", width=0),
             name="TSB (tired)", showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
@@ -1554,19 +1573,19 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     # ── Stacked TSS bars on LEFT axis ──────────────────────────────────
     fig.add_trace(go.Bar(
         x=dates, y=_tss_ltp_bars,
-        name="TSS Base", marker_color="rgba(46,139,87,0.45)",
+        name="TSS Base", marker_color=_zc(_RGB_BASE, 0.45),
         hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
         x=dates, y=_tss_thresh_bars,
-        name="TSS Threshold", marker_color="rgba(70,130,180,0.45)",
+        name="TSS Threshold", marker_color=_zc(_RGB_THRESH, 0.45),
         hovertemplate="TSS Thresh: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
         x=dates, y=_tss_awc_bars,
-        name="TSS Anaerobic", marker_color="rgba(220,80,30,0.45)",
+        name="TSS Anaerobic", marker_color=_zc(_RGB_AWC, 0.45),
         hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
@@ -1574,8 +1593,8 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_ltp["ctl"].round(1),
         mode="lines", name="CTL Base",
-        line=dict(color="seagreen", width=0.5),
-        fillcolor="rgba(46,139,87,0.30)",
+        line=dict(color=Z_BASE, width=0.5),
+        fillcolor=_zc(_RGB_BASE, 0.30),
         stackgroup="ctl",
         hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
@@ -1583,8 +1602,8 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_thresh["ctl"].round(1),
         mode="lines", name="CTL Threshold",
-        line=dict(color="steelblue", width=0.5),
-        fillcolor="rgba(70,130,180,0.30)",
+        line=dict(color=Z_THRESH, width=0.5),
+        fillcolor=_zc(_RGB_THRESH, 0.30),
         stackgroup="ctl",
         hovertemplate="CTL Thresh: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
@@ -1592,8 +1611,8 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_awc["ctl"].round(1),
         mode="lines", name="CTL Anaerobic",
-        line=dict(color="firebrick", width=0.5),
-        fillcolor="rgba(220,80,30,0.30)",
+        line=dict(color=Z_AWC, width=0.5),
+        fillcolor=_zc(_RGB_AWC, 0.30),
         stackgroup="ctl",
         hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
@@ -1602,14 +1621,14 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_awc["tsb"].round(1),
         mode="lines", name="TSB AWC",
-        line=dict(color="red", width=2),
+        line=dict(color=Z_AWC, width=2),
         hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_thresh["tsb"].round(1),
         mode="lines", name="aTSB MAP",
-        line=dict(color="steelblue", width=2),
+        line=dict(color=Z_THRESH, width=2),
         hovertemplate="aTSB MAP: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
