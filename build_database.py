@@ -560,16 +560,15 @@ def backfill_vi_aedec(conn: sqlite3.Connection) -> None:
            FROM pdc_params p
            JOIN rides r ON r.id = p.ride_id
            WHERE p.variability_index IS NULL
+             AND p.normalized_power IS NOT NULL
+             AND r.avg_power > 0
            ORDER BY p.ride_id"""
     ).fetchall()
     if not rows:
         return
     print(f"[vi] Backfilling VI/AeDec for {len(rows)} ride(s) …")
     for ride_id, np_val, avg_pwr in rows:
-        if np_val is not None and avg_pwr is not None and float(avg_pwr) > 0:
-            vi = round(float(np_val) / float(avg_pwr), 3)
-        else:
-            vi = None
+        vi = round(float(np_val) / float(avg_pwr), 3)
         rec = pd.read_sql(
             "SELECT power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
             conn, params=(ride_id,),
@@ -662,7 +661,8 @@ def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
     """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
     rows = conn.execute(
         """SELECT r.id, r.name FROM rides r
-           WHERE NOT EXISTS (
+           WHERE r.name NOT LIKE 'strava_%'
+             AND NOT EXISTS (
                SELECT 1 FROM records rec
                WHERE rec.ride_id = r.id AND rec.latitude IS NOT NULL
            )
