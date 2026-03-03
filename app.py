@@ -50,7 +50,7 @@ from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_tss_components,
-    fig_tss_history, fig_pmc, fig_zone_distribution,
+    fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_distribution,
     fig_pdc_investigation, fig_sigmoid_decay, fig_pdc_testing_summary,
     _tss_rate_series, _compute_pmc,
 )
@@ -865,7 +865,22 @@ app.layout = html.Div(
 
                 html.Hr(),
 
-                dcc.Graph(id="graph-pmc"),
+                dcc.Graph(id="graph-pmc-combined"),
+
+                html.Details(
+                    style={"marginTop": "8px", "marginBottom": "8px"},
+                    children=[
+                        html.Summary(
+                            "Zone breakdown (Base / Threshold / Anaerobic)",
+                            style={
+                                "cursor": "pointer", "color": "#7a8fbb",
+                                "fontSize": "13px", "padding": "8px 0",
+                                "userSelect": "none",
+                            },
+                        ),
+                        dcc.Graph(id="graph-pmc"),
+                    ],
+                ),
 
                 html.Hr(),
 
@@ -1050,6 +1065,7 @@ def go_back_to_list(n_clicks):
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
     Output("graph-90day-mmh",          "figure"),
+    Output("graph-pmc-combined",       "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
     Output("graph-pdc-investigation",  "figure"),
@@ -1088,6 +1104,7 @@ def poll_for_new_data(n_intervals, known_ver, current_ride_id):
         selected,
         fig_90day_mmp(mmp_all),
         fig_90day_mmh(mmh_all),
+        fig_pmc_combined(pdc_params, rides),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(pdc_params, rides),
         fig_pdc_investigation(mmp_all),

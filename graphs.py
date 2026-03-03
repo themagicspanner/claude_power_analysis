@@ -1504,3 +1504,122 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         showlegend=False,
     )
     return fig
+
+
+def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
+    """Single-panel PMC chart with combined (summed) CTL, ATL, TSB across all zones.
+
+    Shows the total training load picture: daily TSS bars, CTL (42d), ATL (7d),
+    and TSB with green/red shading.
+    """
+    required = {"tss", "tss_map", "tss_awc"}
+    if pdc_params.empty or not required.issubset(pdc_params.columns):
+        return go.Figure()
+
+    df = (
+        pdc_params.dropna(subset=["tss", "tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+    )
+    if df.empty:
+        return go.Figure()
+
+    df["ride_date"] = pd.to_datetime(df["ride_date"])
+    daily = df.groupby("ride_date")[["tss"]].sum()
+
+    FUTURE_DAYS = 7
+    pmc = _compute_pmc(daily["tss"], future_days=FUTURE_DAYS)
+
+    _idx      = pd.DatetimeIndex(pmc["date"])
+    _tss_bars = daily["tss"].reindex(_idx, fill_value=0.0).round(1).values
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    dates   = pmc["date"].dt.strftime("%Y-%m-%d")
+    tsb_pos = np.where(pmc["tsb"] >= 0, pmc["tsb"], 0.0)
+    tsb_neg = np.where(pmc["tsb"] <  0, pmc["tsb"], 0.0)
+
+    # TSS bars on LEFT axis
+    fig.add_trace(go.Bar(
+        x=dates, y=_tss_bars,
+        name="TSS", marker_color="rgba(100,149,237,0.45)",
+        hovertemplate="TSS: %{y:.0f}<extra></extra>",
+    ), secondary_y=False)
+
+    # TSB shading on RIGHT axis
+    fig.add_trace(go.Scatter(
+        x=dates, y=tsb_pos.round(1),
+        mode="lines", fill="tozeroy",
+        fillcolor="rgba(46,139,87,0.22)",
+        line=dict(color="rgba(0,0,0,0)", width=0),
+        name="TSB (fresh)",
+        hovertemplate="TSB: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=tsb_neg.round(1),
+        mode="lines", fill="tozeroy",
+        fillcolor="rgba(220,80,30,0.22)",
+        line=dict(color="rgba(0,0,0,0)", width=0),
+        name="TSB (tired)",
+        hovertemplate="TSB: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    # ATL on RIGHT axis
+    fig.add_trace(go.Scatter(
+        x=dates, y=pmc["atl"].round(1),
+        mode="lines", name="ATL (7d)",
+        line=dict(color="darkorange", width=1.8, dash="dash"),
+        hovertemplate="ATL: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    # CTL on RIGHT axis
+    fig.add_trace(go.Scatter(
+        x=dates, y=pmc["ctl"].round(1),
+        mode="lines", name="CTL (42d)",
+        line=dict(color="steelblue", width=2.2),
+        hovertemplate="CTL: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
+                  secondary_y=True)
+
+    # Align zero across both axes
+    r_min = float(min(pmc["tsb"].min(), 0))
+    r_max = float(max(pmc["ctl"].max(), pmc["atl"].max(),
+                      pmc["tsb"].max(), 1))
+    l_max = float(max(np.max(_tss_bars), 1))
+    pad   = 0.05
+    r_min, r_max = r_min * (1 + pad), r_max * (1 + pad)
+    l_max *= (1 + pad)
+    r_span = r_max - r_min
+    if r_span > 0 and r_min < 0:
+        zero_frac = -r_min / r_span
+        l_min = -l_max * zero_frac / (1 - zero_frac)
+    else:
+        l_min = 0.0
+
+    fig.update_yaxes(title_text="Daily TSS", showgrid=False,
+                     zeroline=False, range=[l_min, l_max],
+                     secondary_y=False)
+    fig.update_yaxes(title_text="CTL / ATL / TSB", showgrid=True,
+                     gridcolor="lightgrey", zeroline=False,
+                     range=[r_min, r_max],
+                     secondary_y=True)
+
+    today   = pd.Timestamp.today().normalize()
+    x_start = (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+    x_end   = (today + pd.Timedelta(days=FUTURE_DAYS)).strftime("%Y-%m-%d")
+
+    fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
+                     range=[x_start, x_end], title_text="Date")
+    fig.update_layout(
+        title=dict(text="Performance Management Chart — Combined", font=dict(size=14)),
+        barmode="stack",
+        height=380,
+        margin=dict(t=50, b=50, l=70, r=20),
+        template="plotly_white",
+        hovermode="x unified",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return fig
