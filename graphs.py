@@ -1507,10 +1507,12 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 
 def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
-    """Single-panel PMC chart with combined (summed) CTL, ATL, TSB across all zones.
+    """Single-panel PMC chart with stacked CTL components and zone TSB lines.
 
-    Shows the total training load picture: daily TSS bars, CTL (42d), ATL (7d),
-    and TSB with green/red shading.
+    TSS bars (left axis) are stacked by zone: Base (≤ LTP), Threshold
+    (LTP→MAP), Anaerobic (> MAP).  CTL (right axis) is shown as stacked
+    areas for the same three zones.  TSB_AWC (red) and aTSB_MAP (green)
+    are plotted as lines on the right axis.
     """
     required = {"tss", "tss_map", "tss_awc"}
     if pdc_params.empty or not required.issubset(pdc_params.columns):
@@ -1524,70 +1526,104 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         return go.Figure()
 
     df["ride_date"] = pd.to_datetime(df["ride_date"])
-    daily = df.groupby("ride_date")[["tss"]].sum()
+
+    # Derive tss_ltp and tss_thresh; handle missing column gracefully
+    if "tss_ltp" in df.columns:
+        df["tss_ltp"]    = df["tss_ltp"].fillna(df["tss_map"])
+        df["tss_thresh"] = (df["tss_map"] - df["tss_ltp"]).clip(lower=0)
+    else:
+        df["tss_ltp"]    = df["tss_map"]
+        df["tss_thresh"] = 0.0
+
+    daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc", "tss_map"]].sum()
 
     FUTURE_DAYS = 7
-    pmc = _compute_pmc(daily["tss"], future_days=FUTURE_DAYS)
+    pmc_ltp    = _compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
+    pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
+    pmc_awc    = _compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
+    pmc_map    = _compute_pmc(daily["tss_map"],    future_days=FUTURE_DAYS)
 
-    _idx      = pd.DatetimeIndex(pmc["date"])
-    _tss_bars = daily["tss"].reindex(_idx, fill_value=0.0).round(1).values
+    # Align daily TSS to the continuous date grid
+    _idx             = pd.DatetimeIndex(pmc_ltp["date"])
+    _tss_ltp_bars    = daily["tss_ltp"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_thresh_bars = daily["tss_thresh"].reindex(_idx, fill_value=0.0).round(1).values
+    _tss_awc_bars    = daily["tss_awc"].reindex(_idx, fill_value=0.0).round(1).values
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    dates = pmc_ltp["date"].dt.strftime("%Y-%m-%d")
 
-    dates   = pmc["date"].dt.strftime("%Y-%m-%d")
-    tsb_pos = np.where(pmc["tsb"] >= 0, pmc["tsb"], 0.0)
-    tsb_neg = np.where(pmc["tsb"] <  0, pmc["tsb"], 0.0)
-
-    # TSS bars on LEFT axis
+    # ── Stacked TSS bars on LEFT axis ──────────────────────────────────
     fig.add_trace(go.Bar(
-        x=dates, y=_tss_bars,
-        name="TSS", marker_color="rgba(100,149,237,0.45)",
-        hovertemplate="TSS: %{y:.0f}<extra></extra>",
+        x=dates, y=_tss_ltp_bars,
+        name="TSS Base", marker_color="rgba(46,139,87,0.45)",
+        hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
-    # TSB shading on RIGHT axis
+    fig.add_trace(go.Bar(
+        x=dates, y=_tss_thresh_bars,
+        name="TSS Threshold", marker_color="rgba(70,130,180,0.45)",
+        hovertemplate="TSS Thresh: %{y:.0f}<extra></extra>",
+    ), secondary_y=False)
+
+    fig.add_trace(go.Bar(
+        x=dates, y=_tss_awc_bars,
+        name="TSS Anaerobic", marker_color="rgba(220,80,30,0.45)",
+        hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
+    ), secondary_y=False)
+
+    # ── Stacked CTL areas on RIGHT axis ────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=dates, y=tsb_pos.round(1),
-        mode="lines", fill="tozeroy",
-        fillcolor="rgba(46,139,87,0.22)",
-        line=dict(color="rgba(0,0,0,0)", width=0),
-        name="TSB (fresh)",
-        hovertemplate="TSB: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_ltp["ctl"].round(1),
+        mode="lines", name="CTL Base",
+        line=dict(color="seagreen", width=0.5),
+        fillcolor="rgba(46,139,87,0.30)",
+        stackgroup="ctl",
+        hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
-        x=dates, y=tsb_neg.round(1),
-        mode="lines", fill="tozeroy",
-        fillcolor="rgba(220,80,30,0.22)",
-        line=dict(color="rgba(0,0,0,0)", width=0),
-        name="TSB (tired)",
-        hovertemplate="TSB: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_thresh["ctl"].round(1),
+        mode="lines", name="CTL Threshold",
+        line=dict(color="steelblue", width=0.5),
+        fillcolor="rgba(70,130,180,0.30)",
+        stackgroup="ctl",
+        hovertemplate="CTL Thresh: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
-    # ATL on RIGHT axis
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc["atl"].round(1),
-        mode="lines", name="ATL (7d)",
-        line=dict(color="darkorange", width=1.8, dash="dash"),
-        hovertemplate="ATL: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_awc["ctl"].round(1),
+        mode="lines", name="CTL Anaerobic",
+        line=dict(color="firebrick", width=0.5),
+        fillcolor="rgba(220,80,30,0.30)",
+        stackgroup="ctl",
+        hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
-    # CTL on RIGHT axis
+    # ── TSB lines on RIGHT axis ────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc["ctl"].round(1),
-        mode="lines", name="CTL (42d)",
-        line=dict(color="steelblue", width=2.2),
-        hovertemplate="CTL: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_awc["tsb"].round(1),
+        mode="lines", name="TSB AWC",
+        line=dict(color="red", width=2),
+        hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=pmc_map["tsb"].round(1),
+        mode="lines", name="aTSB MAP",
+        line=dict(color="green", width=2),
+        hovertemplate="aTSB MAP: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
                   secondary_y=True)
 
-    # Align zero across both axes
-    r_min = float(min(pmc["tsb"].min(), 0))
-    r_max = float(max(pmc["ctl"].max(), pmc["atl"].max(),
-                      pmc["tsb"].max(), 1))
-    l_max = float(max(np.max(_tss_bars), 1))
+    # ── Align zero across both axes ────────────────────────────────────
+    total_ctl = pmc_ltp["ctl"] + pmc_thresh["ctl"] + pmc_awc["ctl"]
+    r_min = float(min(pmc_awc["tsb"].min(), pmc_map["tsb"].min(), 0))
+    r_max = float(max(total_ctl.max(), pmc_map["tsb"].max(),
+                      pmc_awc["tsb"].max(), 1))
+    l_max = float(max(
+        np.max(_tss_ltp_bars + _tss_thresh_bars + _tss_awc_bars), 1))
     pad   = 0.05
     r_min, r_max = r_min * (1 + pad), r_max * (1 + pad)
     l_max *= (1 + pad)
@@ -1601,7 +1637,7 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.update_yaxes(title_text="Daily TSS", showgrid=False,
                      zeroline=False, range=[l_min, l_max],
                      secondary_y=False)
-    fig.update_yaxes(title_text="CTL / ATL / TSB", showgrid=True,
+    fig.update_yaxes(title_text="CTL / TSB", showgrid=True,
                      gridcolor="lightgrey", zeroline=False,
                      range=[r_min, r_max],
                      secondary_y=True)
