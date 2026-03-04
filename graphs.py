@@ -455,25 +455,25 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["MAP"],
         mode="lines", name="MAP (W)",
-        line=dict(color=Z_THRESH, width=2),
+        line=dict(color=Z_THRESH, width=2, shape="hv"),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["Pmax"],
         mode="lines", name="Pmax (W)",
-        line=dict(color=Z_AWC, width=1.5, dash="dash"),
+        line=dict(color=Z_AWC, width=1.5, dash="dash", shape="hv"),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["ltp"],
         mode="lines", name="LTP (W)",
-        line=dict(color=Z_BASE, width=2),
+        line=dict(color=Z_BASE, width=2, shape="hv"),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["AWC"] / 1000,
         mode="lines", name="AWC (kJ)",
-        line=dict(color=Z_AWC, width=2, dash="dot"),
+        line=dict(color=Z_AWC, width=2, dash="dot", shape="hv"),
     ), secondary_y=True)
 
     # Ride-date markers on MAP to show when rides were recorded
