@@ -40,7 +40,7 @@ from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
 from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones,
-    recompute_all_pdc_params,
+    recompute_all_pdc_params, ensure_daily_pdc_current,
     _power_model, _fit_power_curve,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
@@ -69,31 +69,35 @@ _rides        = None
 _mmp_all      = None
 _mmh_all      = None
 _pdc_params   = None
+_daily_pdc    = None
 _gps_traces   = None  # dict: ride_id → [(lat, lon), ...] (downsampled)
 
 
 def _reload():
-    """Re-read rides, mmp, mmh, pdc_params and GPS traces from the DB and bump the version."""
-    global _rides, _mmp_all, _mmh_all, _pdc_params, _gps_traces, _data_version
-    r = _load_rides()
-    m = _load_mmp_all(r)
-    h = _load_mmh_all(r)
-    p = _load_pdc_params()
-    g = _load_gps_traces()
+    """Re-read rides, mmp, mmh, pdc_params, daily_pdc and GPS traces from the DB and bump the version."""
+    global _rides, _mmp_all, _mmh_all, _pdc_params, _daily_pdc, _gps_traces, _data_version
+    r  = _load_rides()
+    m  = _load_mmp_all(r)
+    h  = _load_mmh_all(r)
+    p  = _load_pdc_params()
+    dp = _load_daily_pdc()
+    g  = _load_gps_traces()
     with _lock:
         _rides        = r
         _mmp_all      = m
         _mmh_all      = h
         _pdc_params   = p
+        _daily_pdc    = dp
         _gps_traces   = g
         _data_version += 1
 
 
 def get_data():
-    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params, gps_traces) snapshot."""
+    """Return a consistent (version, rides, mmp_all, mmh_all, pdc_params, daily_pdc, gps_traces) snapshot."""
     with _lock:
         return (_data_version, _rides.copy(), _mmp_all.copy(),
-                _mmh_all.copy(), _pdc_params.copy(), _gps_traces)
+                _mmh_all.copy(), _pdc_params.copy(), _daily_pdc.copy(),
+                _gps_traces)
 
 
 # ── Duration formatting ────────────────────────────────────────────────────────
@@ -223,6 +227,16 @@ def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
 def _load_pdc_params() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql("SELECT * FROM pdc_params", conn)
+    conn.close()
+    return df
+
+
+def _load_daily_pdc() -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
+        "SELECT date, MAP, Pmax, AWC, ltp FROM daily_pdc_params ORDER BY date",
+        conn,
+    )
     conn.close()
     return df
 
@@ -797,6 +811,7 @@ backfill_vi_aedec(_boot_conn)
 backfill_zones(_boot_conn)
 backfill_mmh(_boot_conn)
 backfill_gps_elevation(_boot_conn)
+ensure_daily_pdc_current(_boot_conn)
 _boot_conn.close()
 
 _reload()              # initial load (picks up freshly computed pdc_params)
@@ -1097,7 +1112,7 @@ def go_back_to_list(n_clicks):
     State("ride-dropdown",    "value"),
 )
 def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
-    ver, rides, mmp_all, mmh_all, pdc_params, gps_traces = get_data()
+    ver, rides, mmp_all, mmh_all, pdc_params, daily_pdc, gps_traces = get_data()
 
     if ver == known_ver and n_intervals > 0:
         # Nothing changed — return no-update for everything
@@ -1142,7 +1157,7 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         fig_90day_mmh(mmh_all),
         fig_pmc_combined(pdc_params, rides),
         fig_pmc(pdc_params, rides),
-        fig_pdc_params_history(mmp_all, rides),
+        fig_pdc_params_history(daily_pdc, rides),
         fig_pdc_investigation(mmp_all),
         fig_sigmoid_decay(),
         fig_pdc_testing_summary(mmp_all),
@@ -1197,7 +1212,7 @@ app.clientside_callback(
 def update_ride_charts(ride_id, _ver):
     if ride_id is None:
         raise dash.exceptions.PreventUpdate
-    _, rides, mmp_all, mmh_all, pdc_params, _gps = get_data()
+    _, rides, mmp_all, mmh_all, pdc_params, _daily_pdc, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
     records = load_records(ride_id)
     # Fit on-the-fly once; share params with TSS components so all

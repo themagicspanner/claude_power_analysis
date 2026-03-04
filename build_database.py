@@ -264,6 +264,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (ride_id, zone)
         );
 
+        CREATE TABLE IF NOT EXISTS daily_pdc_params (
+            date  TEXT PRIMARY KEY,
+            MAP   REAL NOT NULL,
+            Pmax  REAL NOT NULL,
+            AWC   REAL NOT NULL,
+            tau2  REAL NOT NULL,
+            ltp   REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS db_meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -559,6 +568,119 @@ def backfill_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
 
 
+def recompute_daily_pdc_params(conn: sqlite3.Connection,
+                               from_date: str | None = None) -> None:
+    """(Re)compute daily PDC parameters and store in daily_pdc_params.
+
+    If *from_date* (ISO ``YYYY-MM-DD``) is given, recompute from that date to
+    today.  Otherwise, recompute from the earliest ride date.  Uses warm-
+    starting from the previous day's stored popt when available.
+    """
+    today = datetime.date.today()
+
+    if from_date is None:
+        row = conn.execute("SELECT MIN(ride_date) FROM rides").fetchone()
+        if not row or not row[0]:
+            return
+        start = datetime.date.fromisoformat(row[0])
+        conn.execute("DELETE FROM daily_pdc_params")
+        prev_popt: list | None = None
+    else:
+        start = datetime.date.fromisoformat(from_date)
+        conn.execute("DELETE FROM daily_pdc_params WHERE date >= ?", (from_date,))
+        # Warm-start from the most recent stored day before start
+        prev_row = conn.execute(
+            "SELECT AWC, Pmax, MAP, tau2 FROM daily_pdc_params "
+            "WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (from_date,),
+        ).fetchone()
+        prev_popt = list(prev_row) if prev_row else None
+
+    # Load all MMP data with ride dates
+    mmp = pd.read_sql(
+        "SELECT m.duration_s, m.power, r.ride_date "
+        "FROM mmp m JOIN rides r ON m.ride_id = r.id",
+        conn,
+    )
+    if mmp.empty:
+        conn.commit()
+        return
+
+    mmp["date_obj"] = pd.to_datetime(mmp["ride_date"]).dt.date
+    ride_dates = set(mmp["date_obj"].unique())
+    n_days = (today - start).days + 1
+
+    rows: list[tuple] = []
+    for i in range(n_days):
+        ref    = start + datetime.timedelta(days=i)
+        cutoff = ref - datetime.timedelta(days=PDC_WINDOW)
+
+        w = mmp[(mmp["date_obj"] >= cutoff) & (mmp["date_obj"] <= ref)]
+        if w.empty:
+            prev_popt = None
+            continue
+
+        age        = w["date_obj"].apply(lambda d: (ref - d).days)
+        aged_power = w["power"] * (1.0 / (1.0 + np.exp(PDC_K * (age - PDC_INFLECTION))))
+        aged = (
+            w.assign(aged_power=aged_power)
+            .groupby("duration_s")["aged_power"].max()
+            .reset_index().sort_values("duration_s")
+        )
+        if len(aged) < 4:
+            prev_popt = None
+            continue
+
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+
+        has_new_ride = ref in ride_dates
+        n_iter = 8 if (has_new_ride or prev_popt is None) else 4
+        popt, ok = _fit_power_curve(dur, pwr, n_iter=n_iter, p0_init=prev_popt)
+        if not ok:
+            prev_popt = None
+            continue
+
+        prev_popt = list(popt)
+        AWC, Pmax, MAP, tau2 = popt
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
+        rows.append((
+            ref.isoformat(),
+            round(float(MAP), 1),
+            round(float(Pmax), 1),
+            round(float(AWC), 1),
+            round(float(tau2), 1),
+            round(ltp, 1),
+        ))
+
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO daily_pdc_params "
+            "(date, MAP, Pmax, AWC, tau2, ltp) VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    conn.commit()
+
+
+def ensure_daily_pdc_current(conn: sqlite3.Connection) -> None:
+    """Ensure daily_pdc_params is populated up to today.
+
+    If the table is empty, does a full recompute.  Otherwise, only fills in
+    days after the last stored date (typically just today on a new calendar
+    day with no new rides).
+    """
+    row = conn.execute("SELECT MAX(date) FROM daily_pdc_params").fetchone()
+    if not row or not row[0]:
+        recompute_daily_pdc_params(conn)
+        return
+    last_date = datetime.date.fromisoformat(row[0])
+    today = datetime.date.today()
+    if last_date < today:
+        next_date = last_date + datetime.timedelta(days=1)
+        recompute_daily_pdc_params(conn, from_date=next_date.isoformat())
+
+
 def backfill_vi_aedec(conn: sqlite3.Connection) -> None:
     """Compute variability_index and aerobic_decoupling_pct for rides missing them.
 
@@ -831,6 +953,9 @@ def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
         (ride_date, end_affected),
     ).fetchall():
         compute_pdc_params(conn, rid)
+
+    # Recompute daily PDC history from this ride's date onward
+    recompute_daily_pdc_params(conn, from_date=ride_date)
 
 
 def process_ride(conn: sqlite3.Connection, path: str) -> None:
