@@ -397,13 +397,29 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
                 line=dict(color="steelblue", width=1.5, dash="dot"),
             ))
 
-    # This ride's MMP on top
+    # This ride's MMP on top — black line, markers only where it beats
+    # the prior decayed MMP from other rides (improvements).
     if not this_ride.empty:
+        tr_dur = this_ride["duration_s"].to_numpy()
+        tr_pwr = this_ride["power"].to_numpy()
+
+        # Build a lookup of the prior best aged MMP (excluding this ride)
+        if not window.empty and not other.empty:
+            prior_lookup = dict(zip(other["duration_s"], other["aged_power"]))
+        else:
+            prior_lookup = {}
+
+        # Marker sizes: visible (7) where this ride beats prior, hidden (0) otherwise
+        sizes = []
+        for d, p in zip(tr_dur, tr_pwr):
+            prior = prior_lookup.get(d)
+            sizes.append(7 if prior is not None and p > prior else 0)
+
         fig.add_trace(go.Scatter(
-            x=this_ride["duration_s"], y=this_ride["power"],
+            x=tr_dur, y=tr_pwr,
             mode="lines+markers", name=f"this ride ({ride_date})",
-            marker=dict(size=5),
-            line=dict(color="tomato", width=2.2),
+            marker=dict(size=sizes, color="tomato", line=dict(width=0)),
+            line=dict(color="black", width=2.2),
         ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
