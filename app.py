@@ -268,7 +268,7 @@ def load_records(ride_id: int) -> pd.DataFrame:
 # ── One-time DB migration ─────────────────────────────────────────────────────
 
 # Bump this when stored PDC params need to be fully recomputed.
-_DB_SCHEMA_VERSION = 2
+_DB_SCHEMA_VERSION = 3
 
 
 def _maybe_migrate(conn: sqlite3.Connection) -> None:
@@ -858,7 +858,6 @@ if _args.lookback is not None:
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
-recompute_all_pdc_params(_boot_conn)  # recalc TSS split with proportional LTP/MAP
 backfill_pdc_params(_boot_conn)
 backfill_vi_aedec(_boot_conn)
 backfill_zones(_boot_conn)
