@@ -808,6 +808,27 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         line=dict(color="midnightblue", width=1),
     ))
 
+    # Annotate the point of max difficulty (peak 1h rolling avg)
+    if len(rate_1h_avg) > 0:
+        peak_idx = int(np.argmax(rate_1h_avg))
+        peak_x   = t_min[peak_idx]
+        peak_y   = rate_1h_avg[peak_idx]
+        if peak_y > 0:
+            fig.add_annotation(
+                x=peak_x, y=peak_y,
+                text=f"Max Difficulty: {peak_y:.0f} TSS/h",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1,
+                arrowcolor="midnightblue",
+                ax=0, ay=-30,
+                font=dict(size=10, color="midnightblue"),
+                bgcolor="rgba(255,255,255,0.8)",
+                bordercolor="midnightblue",
+                borderwidth=1,
+                borderpad=3,
+            )
+
     fig.update_xaxes(title_text="Elapsed Time (min)",
                      showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
