@@ -1152,8 +1152,6 @@ app.layout = html.Div(
                 ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
-                dcc.Graph(id="graph-hr"),
-                html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-zone-bars"),
@@ -1169,16 +1167,19 @@ app.layout = html.Div(
                     ]),
                     html.Hr(),
                 ]),
-                html.Div(style={"display": "flex", "gap": "16px"}, children=[
+                html.Div(style={"display": "flex", "gap": "16px", "alignItems": "flex-start"}, children=[
                     html.Div(style={"flex": "1", "minWidth": "0"}, children=[
                         dcc.Graph(id="graph-mmp-pdc"),
                     ]),
-                    html.Div(id="mmh-section", style={"flex": "1", "minWidth": "0"}, children=[
-                        dcc.Graph(id="graph-mmh"),
-                    ]),
+                    html.Div(id="mmp-table-container",
+                             style={"flex": "1", "minWidth": "0", "paddingTop": "8px"}),
                 ]),
-                html.Hr(),
-                html.Div(id="mmp-table-container"),
+
+                # Hidden: kept in DOM for callback compatibility
+                dcc.Graph(id="graph-hr", style={"display": "none"}),
+                html.Div(id="mmh-section", style={"display": "none"}, children=[
+                    dcc.Graph(id="graph-mmh"),
+                ]),
 
                 html.Div(style={"height": "40px"}),
             ]),
