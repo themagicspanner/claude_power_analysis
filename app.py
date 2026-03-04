@@ -501,15 +501,32 @@ def _save_workouts(workouts: dict[str, list[dict]]) -> None:
         json.dump(workouts, f, indent=2)
 
 
+def _resolve_ref_watts(ref: str, pdc: dict | None, map_watts: float) -> float:
+    """Return the reference power in watts for a given zone label."""
+    if pdc is None:
+        return map_watts
+    ref = (ref or "MAP").upper()
+    if ref == "FTP":
+        return float(pdc.get("ftp") or map_watts)
+    if ref == "LTP":
+        return float(pdc.get("ltp") or 0.0) or map_watts * 0.75
+    if ref == "PMAX":
+        return float(pdc.get("Pmax") or map_watts)
+    return map_watts  # default: MAP
+
+
 def _build_workout_records(row_data: list[dict],
-                           map_watts: float) -> pd.DataFrame:
+                           map_watts: float,
+                           pdc: dict | None = None) -> pd.DataFrame:
     """Generate a 1-Hz simulated power DataFrame from workout interval rows."""
     power_samples: list[float] = []
     for row in row_data:
         work_s = int(float(row.get("work_duration_min") or 0) * 60)
         rest_s = int(float(row.get("rest_duration_min") or 0) * 60)
-        work_w = float(row.get("work_intensity_pct") or 0) / 100.0 * map_watts
-        rest_w = float(row.get("rest_intensity_pct") or 0) / 100.0 * map_watts
+        work_ref_w = _resolve_ref_watts(row.get("work_ref", "MAP"), pdc, map_watts)
+        rest_ref_w = _resolve_ref_watts(row.get("rest_ref", "MAP"), pdc, map_watts)
+        work_w = float(row.get("work_intensity_pct") or 0) / 100.0 * work_ref_w
+        rest_w = float(row.get("rest_intensity_pct") or 0) / 100.0 * rest_ref_w
         reps   = int(row.get("repetitions") or 1)
         for _ in range(max(reps, 0)):
             power_samples.extend([work_w] * work_s)
@@ -1286,22 +1303,34 @@ app.layout = html.Div(
                         {"field": "work_duration_min", "rowDrag": True,
                          "headerName": "Work (min)", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "work_ref",
+                         "headerName": "Work Ref", "editable": True,
+                         "cellEditor": "agSelectCellEditor",
+                         "cellEditorParams": {"values": ["MAP", "FTP", "LTP", "Pmax"]},
+                         "width": 90},
                         {"field": "work_intensity_pct",
-                         "headerName": "Work (% MAP)", "editable": True,
+                         "headerName": "Work %", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                         {"field": "rest_duration_min",
                          "headerName": "Rest (min)", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "rest_ref",
+                         "headerName": "Rest Ref", "editable": True,
+                         "cellEditor": "agSelectCellEditor",
+                         "cellEditorParams": {"values": ["MAP", "FTP", "LTP", "Pmax"]},
+                         "width": 90},
                         {"field": "rest_intensity_pct",
-                         "headerName": "Rest (% MAP)", "editable": True,
+                         "headerName": "Rest %", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                         {"field": "repetitions",
                          "headerName": "Reps", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                     ],
                     rowData=[
-                        {"work_duration_min": 5, "work_intensity_pct": 100,
-                         "rest_duration_min": 5, "rest_intensity_pct": 40,
+                        {"work_duration_min": 5, "work_ref": "MAP",
+                         "work_intensity_pct": 100,
+                         "rest_duration_min": 5, "rest_ref": "LTP",
+                         "rest_intensity_pct": 80,
                          "repetitions": 5},
                     ],
                     defaultColDef={"flex": 1, "minWidth": 100, "sortable": False},
@@ -1763,7 +1792,7 @@ def _workout_summary_row(name: str, rows: list[dict],
     ftp_w = pdc["ftp"] if pdc else map_w
     ltp_w = pdc.get("ltp", 0.0) if pdc else 0.0
 
-    records = _build_workout_records(rows, map_w)
+    records = _build_workout_records(rows, map_w, pdc)
     total_s = len(records)
 
     if records.empty or total_s < 2:
@@ -1838,8 +1867,10 @@ def open_workout(cell_clicked, new_clicks):
     hide = {"display": "none"}
     if ctx.triggered_id == "workout-new-btn":
         default_rows = [{
-            "work_duration_min": 5, "work_intensity_pct": 100,
-            "rest_duration_min": 5, "rest_intensity_pct": 40,
+            "work_duration_min": 5, "work_ref": "MAP",
+            "work_intensity_pct": 100,
+            "rest_duration_min": 5, "rest_ref": "LTP",
+            "rest_intensity_pct": 80,
             "repetitions": 5,
         }]
         return default_rows, "", hide, show
@@ -1873,8 +1904,10 @@ def go_back_to_workout_list(n_clicks):
 def manage_workout_rows(add_clicks, remove_clicks, current_rows):
     if ctx.triggered_id == "workout-add-row":
         current_rows.append({
-            "work_duration_min": 5, "work_intensity_pct": 100,
-            "rest_duration_min": 5, "rest_intensity_pct": 40,
+            "work_duration_min": 5, "work_ref": "MAP",
+            "work_intensity_pct": 100,
+            "rest_duration_min": 5, "rest_ref": "LTP",
+            "rest_intensity_pct": 80,
             "repetitions": 3,
         })
         return current_rows
@@ -1950,7 +1983,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
     ltp_w = latest_pdc["ltp"]
     ftp_w = latest_pdc["ftp"]
 
-    records = _build_workout_records(row_data, map_w)
+    records = _build_workout_records(row_data, map_w, latest_pdc)
     if records.empty or len(records) < 2:
         raise dash.exceptions.PreventUpdate
 
