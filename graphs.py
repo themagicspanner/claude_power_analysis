@@ -369,17 +369,27 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             if ok:
                 AWC, Pmax, MAP, tau2 = popt
 
-        # Aerobic and total model fills (drawn first = behind data points)
+        # Zone fills: base / threshold / anaerobic (drawn first = behind data)
         if ok:
             tau   = AWC / Pmax
             t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
             p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+            ltp = max(ltp, 0.0)
+            ltp_frac = ltp / MAP if MAP > 0 else 0.0
+            p_base = p_aer * ltp_frac
             fig.add_trace(go.Scatter(
-                x=t_sm, y=p_aer,
-                mode="lines", name="aerobic (MAP)",
+                x=t_sm, y=p_base,
+                mode="lines", name="base (≤LTP)",
                 fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
                 line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=t_sm, y=p_aer,
+                mode="lines", name="threshold (LTP→MAP)",
+                fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.20),
+                line=dict(color=_zc(_RGB_THRESH, 0.7), width=1.2),
             ))
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_tot,
