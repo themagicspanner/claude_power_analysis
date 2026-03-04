@@ -418,7 +418,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         fig.add_trace(go.Scatter(
             x=tr_dur, y=tr_pwr,
             mode="lines+markers", name=f"this ride ({ride_date})",
-            marker=dict(size=sizes, color="tomato", line=dict(width=0)),
+            marker=dict(size=sizes, color="#00e676", line=dict(width=1, color="white")),
             line=dict(color="black", width=2.2),
         ))
 

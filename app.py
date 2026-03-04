@@ -1560,33 +1560,68 @@ def _fmt_mmp_duration(seconds: int) -> str:
     return f"{h}h{m:02d}" if m else f"{h}h"
 
 
-def _build_mmp_table(this_mmp: pd.DataFrame) -> html.Div:
-    """Build a compact horizontal MMP table from a ride's MMP data."""
+def _build_mmp_table(this_mmp: pd.DataFrame,
+                     prior_best: dict[int, float]) -> html.Div:
+    """Build a vertical MMP table with this ride's power, prior best, and delta.
+
+    prior_best maps duration_s → best aged power from other rides in the
+    PDC window, used to highlight improvements.
+    """
     if this_mmp.empty:
         return html.Div()
 
-    cell_style = {
-        "padding": "6px 12px", "textAlign": "center",
+    cell = {
+        "padding": "7px 14px",
         "borderBottom": "1px solid #dee2e6",
-        "borderRight": "1px solid #eee",
         "fontSize": "13px",
+        "color": "#222",
     }
-    hdr_style = {
-        **cell_style,
+    hdr_cell = {
+        **cell,
         "background": "#f1f3f5", "fontWeight": "600",
         "color": "#555", "fontSize": "11px",
         "textTransform": "uppercase", "letterSpacing": "0.03em",
     }
-    val_style = {
-        **cell_style,
-        "fontWeight": "bold", "color": "#222", "fontSize": "15px",
-    }
 
-    durations = this_mmp["duration_s"].tolist()
-    powers = this_mmp["power"].tolist()
+    header = html.Tr([
+        html.Th("Duration", style={**hdr_cell, "textAlign": "left"}),
+        html.Th("Power", style={**hdr_cell, "textAlign": "right"}),
+        html.Th("Prior Best", style={**hdr_cell, "textAlign": "right"}),
+        html.Th("Delta", style={**hdr_cell, "textAlign": "right"}),
+    ])
 
-    header_cells = [html.Td(_fmt_mmp_duration(int(d)), style=hdr_style) for d in durations]
-    value_cells = [html.Td(f"{p:.0f}", style=val_style) for p in powers]
+    rows = []
+    for _, r in this_mmp.iterrows():
+        d = int(r["duration_s"])
+        p = float(r["power"])
+        prior = prior_best.get(d)
+        improved = prior is not None and p > prior
+        delta = p - prior if prior is not None else None
+
+        row_style = {"background": "rgba(0, 230, 118, 0.10)"} if improved else {}
+
+        dur_style = {**cell, "textAlign": "left", "fontWeight": "500", **row_style}
+        pwr_style = {**cell, "textAlign": "right", "fontWeight": "bold", **row_style}
+        prior_style = {**cell, "textAlign": "right", "color": "#888", **row_style}
+        delta_style = {**cell, "textAlign": "right", **row_style}
+
+        if improved:
+            delta_style["color"] = "#00c853"
+            delta_style["fontWeight"] = "bold"
+            delta_text = f"+{delta:.0f}"
+        elif delta is not None:
+            delta_style["color"] = "#999"
+            delta_text = f"{delta:.0f}"
+        else:
+            delta_style["color"] = "#ccc"
+            delta_text = "—"
+
+        rows.append(html.Tr([
+            html.Td(_fmt_mmp_duration(d), style=dur_style),
+            html.Td(f"{p:.0f} W", style=pwr_style),
+            html.Td(f"{prior:.0f} W" if prior is not None else "—", style=prior_style),
+            html.Td(delta_text, style=delta_style),
+        ]))
 
     table = html.Table(
         style={
@@ -1595,12 +1630,12 @@ def _build_mmp_table(this_mmp: pd.DataFrame) -> html.Div:
             "overflow": "hidden", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
         },
         children=[
-            html.Thead(html.Tr(header_cells)),
-            html.Tbody(html.Tr(value_cells)),
+            html.Thead(header),
+            html.Tbody(rows),
         ],
     )
 
-    return html.Div(style={"overflowX": "auto"}, children=[
+    return html.Div(children=[
         html.H4("Mean Maximal Power", style={
             "color": "#e8edf5", "fontSize": "14px", "fontWeight": "600",
             "marginBottom": "8px",
@@ -1763,7 +1798,24 @@ def update_ride_charts(ride_id, _ver):
 
     # ── MMP table ──────────────────────────────────────────────────────────
     this_mmp = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
-    mmp_table = _build_mmp_table(this_mmp)
+
+    # Compute prior decayed best from other rides (same logic as fig_mmp_pdc)
+    ride_date_obj = datetime.date.fromisoformat(ride["ride_date"])
+    _cutoff = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
+    _window = mmp_all[mmp_all["ride_date"].between(_cutoff, ride["ride_date"])].copy()
+    prior_best: dict[int, float] = {}
+    if not _window.empty:
+        _window["_age"] = _window["ride_date"].apply(
+            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+        )
+        _window["_w"] = 1.0 / (1.0 + np.exp(PDC_K * (_window["_age"] - PDC_INFLECTION)))
+        _window["_ap"] = _window["power"] * _window["_w"]
+        _other = _window[_window["ride_id"] != ride["id"]]
+        if not _other.empty:
+            _best = _other.groupby("duration_s")["_ap"].max()
+            prior_best = _best.to_dict()
+
+    mmp_table = _build_mmp_table(this_mmp, prior_best)
 
     return (
         fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
