@@ -1288,7 +1288,7 @@ app.layout = html.Div(
 
                 html.P(
                     "Define intervals below. Charts update as you edit. "
-                    "Intensities are expressed as % of your current MAP.",
+                    "Intensities are expressed as % of the selected reference zone.",
                     style={"color": "#7a8fbb", "fontSize": "13px",
                            "marginBottom": "16px", "maxWidth": "660px"},
                 ),
@@ -1300,10 +1300,7 @@ app.layout = html.Div(
                 dag.AgGrid(
                     id="workout-table",
                     columnDefs=[
-                        {"field": "work_duration_min", "rowDrag": True,
-                         "headerName": "Work (min)", "editable": True,
-                         "type": "numericColumn", "cellDataType": "number"},
-                        {"field": "work_ref",
+                        {"field": "work_ref", "rowDrag": True,
                          "headerName": "Work Ref", "editable": True,
                          "cellEditor": "agSelectCellEditor",
                          "cellEditorParams": {"values": ["MAP", "FTP", "LTP", "Pmax"]},
@@ -1311,8 +1308,8 @@ app.layout = html.Div(
                         {"field": "work_intensity_pct",
                          "headerName": "Work %", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
-                        {"field": "rest_duration_min",
-                         "headerName": "Rest (min)", "editable": True,
+                        {"field": "work_duration_min",
+                         "headerName": "Work (min)", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                         {"field": "rest_ref",
                          "headerName": "Rest Ref", "editable": True,
@@ -1321,6 +1318,9 @@ app.layout = html.Div(
                          "width": 90},
                         {"field": "rest_intensity_pct",
                          "headerName": "Rest %", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "rest_duration_min",
+                         "headerName": "Rest (min)", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                         {"field": "repetitions",
                          "headerName": "Reps", "editable": True,
