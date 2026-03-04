@@ -461,7 +461,7 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["Pmax"],
         mode="lines", name="Pmax (W)",
-        line=dict(color=Z_AWC, width=1.5, dash="dash", shape="hv"),
+        line=dict(color="mediumpurple", width=1.5, dash="dash", shape="hv"),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
