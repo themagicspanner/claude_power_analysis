@@ -157,7 +157,8 @@ def _power_model(t, AWC, Pmax, MAP, tau2):
 
 
 def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
-                     n_iter: int = 8, asymmetry: float = 10.0):
+                     n_iter: int = 8, asymmetry: float = 10.0,
+                     p0_init: list | None = None):
     """Skimming fit via iteratively reweighted least squares (IRLS).
 
     Points above the model (hard efforts) receive weight `asymmetry`; points
@@ -165,17 +166,26 @@ def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
 
     Returns (popt, True) on success or (None, False) on failure.
     popt = [AWC, Pmax, MAP, tau2]
+
+    Pass p0_init (a previous popt) to warm-start the solver; it is treated as
+    the result of iteration 0, skipping the cold-start phase.  Only used when
+    it lies within bounds.
     """
-    p0      = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    p0_default = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
     bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
     weights = np.ones(len(dur))
-    popt    = None
+    # Warm-start: validate p0_init against bounds before using it
+    popt: list | None = None
+    if p0_init is not None:
+        lo, hi = bounds
+        if all(lo[j] <= p0_init[j] <= hi[j] for j in range(4)):
+            popt = list(p0_init)
 
     for i in range(n_iter):
         try:
             popt, _ = curve_fit(
                 _power_model, dur, pwr,
-                p0=p0 if popt is None else popt,
+                p0=p0_default if popt is None else popt,
                 bounds=bounds,
                 sigma=1.0 / weights,
                 absolute_sigma=False,

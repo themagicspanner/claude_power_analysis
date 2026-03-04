@@ -433,51 +433,133 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_pdc_params_history(pdc_params: pd.DataFrame,
-                           rides: pd.DataFrame) -> go.Figure:
-    """History of the fitted two-component PDC parameters over time.
+def _daily_pdc_params(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> pd.DataFrame:
+    """Recompute PDC model parameters for every calendar day.
 
-    Left y-axis  : MAP and Pmax (W)
+    For each day from the first ride to today, applies the same sigmoid decay
+    used by ``compute_pdc_params``, so the resulting lines show smooth daily
+    evolution rather than snapshots at ride dates only.
+
+    Uses warm-starting (previous day's popt as p0) and fewer IRLS iterations
+    on days with no new rides to keep the computation fast.
+
+    Returns a DataFrame with columns: date (str ISO), MAP, Pmax, AWC, ltp.
+    """
+    if mmp_all.empty or rides.empty:
+        return pd.DataFrame()
+
+    mmp = mmp_all.merge(
+        rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left"
+    ).dropna(subset=["ride_date"])
+    mmp["date_obj"] = pd.to_datetime(mmp["ride_date"]).dt.date
+
+    first_date  = mmp["date_obj"].min()
+    today       = datetime.date.today()
+    ride_dates  = set(mmp["date_obj"].unique())
+    n_days      = (today - first_date).days + 1
+
+    rows: list[dict] = []
+    prev_popt: list | None = None
+
+    for i in range(n_days):
+        ref    = first_date + datetime.timedelta(days=i)
+        cutoff = ref - datetime.timedelta(days=PDC_WINDOW)
+
+        w = mmp[(mmp["date_obj"] >= cutoff) & (mmp["date_obj"] <= ref)]
+        if w.empty:
+            prev_popt = None
+            continue
+
+        age          = w["date_obj"].apply(lambda d: (ref - d).days)
+        aged_power   = w["power"] * (1.0 / (1.0 + np.exp(PDC_K * (age - PDC_INFLECTION))))
+        aged         = (
+            w.assign(aged_power=aged_power)
+            .groupby("duration_s")["aged_power"].max()
+            .reset_index().sort_values("duration_s")
+        )
+        if len(aged) < 4:
+            prev_popt = None
+            continue
+
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+
+        # Full IRLS on ride days (data changed); warm-started 4-iter on others
+        has_new_ride = ref in ride_dates
+        n_iter       = 8 if (has_new_ride or prev_popt is None) else 4
+        popt, ok     = _fit_power_curve(dur, pwr, n_iter=n_iter, p0_init=prev_popt)
+        if not ok:
+            prev_popt = None
+            continue
+
+        prev_popt        = list(popt)
+        AWC, Pmax, MAP, tau2 = popt
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
+        rows.append({
+            "date": ref.isoformat(),
+            "MAP":  round(float(MAP),  1),
+            "Pmax": round(float(Pmax), 1),
+            "AWC":  round(float(AWC),  1),
+            "ltp":  round(ltp,         1),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def fig_pdc_params_history(mmp_all: pd.DataFrame,
+                           rides: pd.DataFrame) -> go.Figure:
+    """History of the fitted two-component PDC parameters for every calendar day.
+
+    Recomputes the sigmoid-decayed PDC fit as if each calendar day were the
+    reference date, so the lines reflect both new ride data being added AND
+    older data fading via the sigmoid — not just snapshots at ride dates.
+
+    Left y-axis  : MAP, Pmax and LTP (W)
     Right y-axis : AWC (kJ)
     """
-    if pdc_params.empty:
+    df = _daily_pdc_params(mmp_all, rides)
+    if df.empty:
         return go.Figure()
 
-    df = (
-        pdc_params
-        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
-        .sort_values("ride_date")
-    )
+    ride_dates = set(rides["ride_date"].dropna().unique())
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     fig.add_trace(go.Scatter(
-        x=df["ride_date"], y=df["MAP"],
-        mode="lines+markers", name="MAP (W)",
+        x=df["date"], y=df["MAP"],
+        mode="lines", name="MAP (W)",
         line=dict(color=Z_THRESH, width=2),
-        marker=dict(size=5),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
-        x=df["ride_date"], y=df["Pmax"],
-        mode="lines+markers", name="Pmax (W)",
-        line=dict(color=Z_AWC, width=2, dash="dash"),
-        marker=dict(size=5),
+        x=df["date"], y=df["Pmax"],
+        mode="lines", name="Pmax (W)",
+        line=dict(color=Z_AWC, width=1.5, dash="dash"),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
-        x=df["ride_date"], y=df["ltp"],
-        mode="lines+markers", name="LTP (W)",
+        x=df["date"], y=df["ltp"],
+        mode="lines", name="LTP (W)",
         line=dict(color=Z_BASE, width=2),
-        marker=dict(size=5),
     ), secondary_y=False)
 
     fig.add_trace(go.Scatter(
-        x=df["ride_date"], y=df["AWC"] / 1000,
-        mode="lines+markers", name="AWC (kJ)",
+        x=df["date"], y=df["AWC"] / 1000,
+        mode="lines", name="AWC (kJ)",
         line=dict(color=Z_AWC, width=2, dash="dot"),
-        marker=dict(size=5),
     ), secondary_y=True)
+
+    # Ride-date markers on MAP to show when rides were recorded
+    ride_rows = df[df["date"].isin(ride_dates)]
+    if not ride_rows.empty:
+        fig.add_trace(go.Scatter(
+            x=ride_rows["date"], y=ride_rows["MAP"],
+            mode="markers", name="Ride",
+            marker=dict(color=Z_THRESH, size=7, symbol="circle-open",
+                        line=dict(color=Z_THRESH, width=2)),
+            hovertemplate="%{x}  MAP: %{y:.0f} W<extra>Ride</extra>",
+        ), secondary_y=False)
 
     fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",

@@ -1142,7 +1142,7 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         fig_90day_mmh(mmh_all),
         fig_pmc_combined(pdc_params, rides),
         fig_pmc(pdc_params, rides),
-        fig_pdc_params_history(pdc_params, rides),
+        fig_pdc_params_history(mmp_all, rides),
         fig_pdc_investigation(mmp_all),
         fig_sigmoid_decay(),
         fig_pdc_testing_summary(mmp_all),
