@@ -57,35 +57,42 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
                  and ltp > 0 and map_power > 0)
 
     if has_power and zone_fill:
-        x = records["elapsed_min"]
+        x = records["elapsed_min"].to_numpy(dtype=float)
         power = records["power"].fillna(0).to_numpy(dtype=float)
         if len(power) >= _SMOOTH:
             kernel = np.ones(_SMOOTH) / _SMOOTH
             power = np.convolve(power, kernel, mode="same")
-        base_y    = np.minimum(power, ltp)
-        thresh_y  = np.minimum(power, map_power)
 
-        fig.add_trace(go.Scatter(
-            x=x, y=base_y,
-            mode="lines", name="Base ≤LTP",
-            fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
-            line=dict(color=Z_BASE, width=1),
-            yaxis="y1",
-        ))
-        fig.add_trace(go.Scatter(
-            x=x, y=thresh_y,
-            mode="lines", name="Threshold",
-            fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
-            line=dict(color=Z_THRESH, width=1),
-            yaxis="y1",
-        ))
-        fig.add_trace(go.Scatter(
-            x=x, y=power,
-            mode="lines", name="AWC",
-            fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
-            line=dict(color=Z_AWC, width=1),
-            yaxis="y1",
-        ))
+        # Assign each sample to a zone: 0=base, 1=threshold, 2=awc
+        zones = np.where(power > map_power, 2, np.where(power > ltp, 1, 0))
+
+        zone_cfg = [
+            (0, "Base ≤LTP",    _RGB_BASE,   0.25, Z_BASE),
+            (1, "Threshold",    _RGB_THRESH, 0.25, Z_THRESH),
+            (2, "AWC",          _RGB_AWC,    0.22, Z_AWC),
+        ]
+        first_trace = True
+        for z_id, z_name, z_rgb, z_alpha, z_line in zone_cfg:
+            # Mask power to NaN outside this zone; overlap by one sample
+            # at boundaries so segments join seamlessly.
+            mask = zones == z_id
+            # Extend mask one sample into neighbours for seamless joins
+            extended = mask.copy()
+            extended[:-1] |= mask[1:]
+            extended[1:]  |= mask[:-1]
+            y = np.where(extended, power, np.nan)
+            if np.all(np.isnan(y)):
+                continue
+            fig.add_trace(go.Scatter(
+                x=x, y=y,
+                mode="lines", name=z_name,
+                fill="tozeroy", fillcolor=_zc(z_rgb, z_alpha),
+                line=dict(color=z_line, width=1),
+                yaxis="y1",
+                showlegend=first_trace,
+                legendgroup="power",
+            ))
+            first_trace = False
     elif has_power:
         power_s = records["power"].fillna(0).rolling(_SMOOTH, min_periods=1, center=True).mean()
         fig.add_trace(go.Scatter(
