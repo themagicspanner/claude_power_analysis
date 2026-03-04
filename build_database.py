@@ -38,20 +38,22 @@ PDC_INFLECTION = 97     # days to midpoint (weight = 0.5)
 PDC_WINDOW     = 150    # days of history to include
 
 # Standard MMP durations in seconds
-MMP_DURATIONS = [
-    1, 2, 3, 5, 8, 10, 12, 15, 20, 30,
-    60, 90, 120, 180, 240, 300, 420, 600,
-    900, 1200, 1800, 2400, 3600,
-]
+MMP_DURATIONS = sorted(set(
+    list(range(1, 61))                        # 1–60 s, every 1 s
+    + list(range(60, 121, 5))                 # 60–120 s, every 5 s
+    + list(range(120, 301, 10))               # 120–300 s, every 10 s
+    + list(range(300, 601, 30))               # 300–600 s, every 30 s
+    + list(range(600, 3601, 60))              # 600–3600 s, every 60 s
+))
 
 
 def mmp_durations_for_ride(n_samples: int) -> list[int]:
-    """Return MMP durations list extended in 30-min intervals to the ride length."""
+    """Return MMP durations list extended in 5-min intervals to the ride length."""
     durations = list(MMP_DURATIONS)
-    t = 3600 + 1800
+    t = 3600 + 300
     while t <= n_samples:
         durations.append(t)
-        t += 1800
+        t += 300
     return durations
 
 
