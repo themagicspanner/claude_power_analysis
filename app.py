@@ -34,6 +34,7 @@ import time
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import dash
 import dash_ag_grid as dag
 from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
@@ -41,7 +42,8 @@ from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones,
     recompute_all_pdc_params, ensure_daily_pdc_current,
-    _power_model, _fit_power_curve,
+    _power_model, _fit_power_curve, _normalized_power,
+    calculate_mmp, calculate_zones, MMP_DURATIONS,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 from strava_import import get_client, fetch_and_import, CONFIG_PATH
@@ -453,6 +455,59 @@ def _activities_table_data(rides: pd.DataFrame,
 
 
 
+
+
+# ── Workout builder helpers ────────────────────────────────────────────────────
+
+def _get_latest_pdc(pdc_params: pd.DataFrame,
+                    rides: pd.DataFrame) -> dict | None:
+    """Return the most recent PDC params as a dict, or None."""
+    if pdc_params.empty or rides.empty:
+        return None
+    merged = (
+        pdc_params
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date", ascending=False)
+        .dropna(subset=["MAP", "AWC", "Pmax"])
+    )
+    if merged.empty:
+        return None
+    r = merged.iloc[0]
+    return {
+        "MAP":  float(r["MAP"]),
+        "AWC":  float(r["AWC"]),
+        "Pmax": float(r["Pmax"]),
+        "tau2": float(r["tau2"]) if pd.notna(r.get("tau2")) else 300.0,
+        "ftp":  float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
+        "ltp":  float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
+    }
+
+
+def _build_workout_records(row_data: list[dict],
+                           map_watts: float) -> pd.DataFrame:
+    """Generate a 1-Hz simulated power DataFrame from workout interval rows."""
+    power_samples: list[float] = []
+    for row in row_data:
+        work_s = int(float(row.get("work_duration_min") or 0) * 60)
+        rest_s = int(float(row.get("rest_duration_min") or 0) * 60)
+        work_w = float(row.get("work_intensity_pct") or 0) / 100.0 * map_watts
+        rest_w = float(row.get("rest_intensity_pct") or 0) / 100.0 * map_watts
+        reps   = int(row.get("repetitions") or 1)
+        for _ in range(max(reps, 0)):
+            power_samples.extend([work_w] * work_s)
+            if rest_s > 0:
+                power_samples.extend([rest_w] * rest_s)
+
+    if not power_samples:
+        return pd.DataFrame(columns=["elapsed_s", "elapsed_min", "power", "heart_rate"])
+
+    n = len(power_samples)
+    return pd.DataFrame({
+        "elapsed_s":   np.arange(n, dtype=float),
+        "elapsed_min": np.arange(n, dtype=float) / 60.0,
+        "power":       np.array(power_samples, dtype=float),
+        "heart_rate":  np.full(n, np.nan),
+    })
 
 
 # ── Freshness status ──────────────────────────────────────────────────────────
@@ -919,6 +974,7 @@ app.layout = html.Div(
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
             html.Button("PDC Model",  id="nav-pdc-model",   n_clicks=0, style=_NAV_BASE),
+            html.Button("Workout",    id="nav-workout",     n_clicks=0, style=_NAV_BASE),
             html.Div(id="status-bar", style={
                 "marginTop": "auto", "padding": "12px 20px",
                 "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
@@ -1088,6 +1144,84 @@ app.layout = html.Div(
 
                 html.Div(style={"height": "40px"}),
             ]),
+
+            # ── Workout Builder page ──────────────────────────────────
+            html.Div(id="page-workout", style={"display": "none"}, children=[
+                html.H2("Workout Builder",
+                        style={"color": "#e8edf5", "marginBottom": "8px",
+                               "fontWeight": "600", "fontSize": "22px"}),
+                html.P(
+                    "Define intervals below. Charts update as you edit. "
+                    "Intensities are expressed as % of your current MAP.",
+                    style={"color": "#7a8fbb", "fontSize": "13px",
+                           "marginBottom": "20px", "maxWidth": "660px"},
+                ),
+
+                html.Div(id="workout-pdc-cards",
+                         style={"display": "flex", "gap": "12px",
+                                "marginBottom": "16px", "flexWrap": "wrap"}),
+
+                dag.AgGrid(
+                    id="workout-table",
+                    columnDefs=[
+                        {"field": "work_duration_min",
+                         "headerName": "Work (min)", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "work_intensity_pct",
+                         "headerName": "Work (% MAP)", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "rest_duration_min",
+                         "headerName": "Rest (min)", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "rest_intensity_pct",
+                         "headerName": "Rest (% MAP)", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                        {"field": "repetitions",
+                         "headerName": "Reps", "editable": True,
+                         "type": "numericColumn", "cellDataType": "number"},
+                    ],
+                    rowData=[
+                        {"work_duration_min": 5, "work_intensity_pct": 100,
+                         "rest_duration_min": 5, "rest_intensity_pct": 40,
+                         "repetitions": 5},
+                    ],
+                    defaultColDef={"flex": 1, "minWidth": 100, "sortable": False},
+                    dashGridOptions={
+                        "singleClickEdit": True,
+                        "stopEditingWhenCellsLoseFocus": True,
+                    },
+                    style={"height": "200px", "marginBottom": "12px"},
+                ),
+
+                html.Div(style={"display": "flex", "gap": "10px",
+                                "marginBottom": "20px"}, children=[
+                    html.Button("+ Add Row", id="workout-add-row", n_clicks=0,
+                                style={"padding": "6px 16px", "cursor": "pointer",
+                                       "borderRadius": "4px",
+                                       "border": "1px solid #4a9eff",
+                                       "background": "transparent",
+                                       "color": "#4a9eff", "fontSize": "13px"}),
+                    html.Button("- Remove Last Row", id="workout-remove-row",
+                                n_clicks=0,
+                                style={"padding": "6px 16px", "cursor": "pointer",
+                                       "borderRadius": "4px",
+                                       "border": "1px solid #888",
+                                       "background": "transparent",
+                                       "color": "#888", "fontSize": "13px"}),
+                ]),
+
+                html.Div(id="workout-stats", style={"marginBottom": "8px"}),
+
+                dcc.Graph(id="graph-workout-power"),
+                html.Hr(),
+                dcc.Graph(id="graph-workout-tss-components"),
+                html.Hr(),
+                dcc.Graph(id="graph-workout-zone-bars"),
+                html.Hr(),
+                dcc.Graph(id="graph-workout-mmp-pdc"),
+
+                html.Div(style={"height": "40px"}),
+            ]),
         ]),
     ],
 )
@@ -1100,21 +1234,30 @@ app.layout = html.Div(
     Output("page-pdc-model",        "style"),
     Output("page-activities-list",  "style"),
     Output("page-activities",       "style"),
+    Output("page-workout",          "style"),
     Output("nav-fitness",           "style"),
     Output("nav-pdc-model",         "style"),
     Output("nav-activities",        "style"),
+    Output("nav-workout",           "style"),
     Input("nav-fitness",            "n_clicks"),
     Input("nav-pdc-model",          "n_clicks"),
     Input("nav-activities",         "n_clicks"),
+    Input("nav-workout",            "n_clicks"),
 )
-def switch_page(_, __, ___):
+def switch_page(_, __, ___, ____):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return hide, hide, show, hide, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE
+        return (hide, hide, show, hide, hide,
+                _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
     if ctx.triggered_id == "nav-pdc-model":
-        return hide, show, hide, hide, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE
-    return show, hide, hide, hide, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE
+        return (hide, show, hide, hide, hide,
+                _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE)
+    if ctx.triggered_id == "nav-workout":
+        return (hide, hide, hide, hide, show,
+                _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE)
+    return (show, hide, hide, hide, hide,
+            _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
 
 
 @app.callback(
@@ -1461,6 +1604,131 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
         return p
 
     return make_patch(), make_patch(), make_patch(), make_patch()
+
+
+# ── Workout builder callbacks ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("workout-table", "rowData"),
+    Input("workout-add-row",    "n_clicks"),
+    Input("workout-remove-row", "n_clicks"),
+    State("workout-table",      "rowData"),
+    prevent_initial_call=True,
+)
+def manage_workout_rows(add_clicks, remove_clicks, current_rows):
+    if ctx.triggered_id == "workout-add-row":
+        current_rows.append({
+            "work_duration_min": 5, "work_intensity_pct": 100,
+            "rest_duration_min": 5, "rest_intensity_pct": 40,
+            "repetitions": 3,
+        })
+    elif ctx.triggered_id == "workout-remove-row" and len(current_rows) > 1:
+        current_rows.pop()
+    else:
+        raise dash.exceptions.PreventUpdate
+    return current_rows
+
+
+@app.callback(
+    Output("graph-workout-power",          "figure"),
+    Output("graph-workout-tss-components", "figure"),
+    Output("graph-workout-zone-bars",      "figure"),
+    Output("graph-workout-mmp-pdc",        "figure"),
+    Output("workout-stats",                "children"),
+    Output("workout-pdc-cards",            "children"),
+    Input("workout-table",                 "cellValueChanged"),
+    Input("workout-table",                 "rowData"),
+    State("known-version",                 "data"),
+)
+def update_workout_charts(cell_changed, row_data, _ver):
+    if not row_data:
+        raise dash.exceptions.PreventUpdate
+
+    _, rides, mmp_all, _, pdc_params, _, _ = get_data()
+    latest_pdc = _get_latest_pdc(pdc_params, rides)
+    if latest_pdc is None:
+        empty = go.Figure()
+        empty.add_annotation(
+            text="Import rides to establish your power profile first",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=14, color="grey"),
+        )
+        empty.update_layout(height=200, template="plotly_white")
+        return empty, empty, empty, empty, [], []
+
+    map_w = latest_pdc["MAP"]
+    ltp_w = latest_pdc["ltp"]
+    ftp_w = latest_pdc["ftp"]
+
+    records = _build_workout_records(row_data, map_w)
+    if records.empty or len(records) < 2:
+        raise dash.exceptions.PreventUpdate
+
+    # Power chart (zone-coloured line)
+    wk_fig_power = fig_power_hr(records, "Workout", ltp=ltp_w, map_power=map_w)
+
+    # TSS components (stacked areas + difficulty)
+    dummy_ride = pd.Series({
+        "id": -1, "name": "Workout",
+        "ride_date": datetime.date.today().isoformat(),
+    })
+    wk_fig_tss = fig_tss_components(
+        records, dummy_ride, pd.DataFrame(columns=["ride_id"]),
+        live_pdc=latest_pdc,
+    )
+
+    # Zone bars
+    zone_data = calculate_zones(records, ltp_w, map_w)
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+    power   = records["power"].to_numpy(dtype=float)
+    (_, cum_ltp, cum_thresh, cum_awc, *_rest) = _tss_rate_series(
+        elapsed, power, ftp_w, map_w, ltp=ltp_w,
+    )
+    wk_fig_zones = fig_zone_bars(
+        zone_data,
+        cum_ltp[-1], cum_thresh[-1], cum_awc[-1],
+        ltp_w, map_w,
+    )
+
+    # MMP / PDC overlay
+    workout_mmp = calculate_mmp(records, MMP_DURATIONS)
+    today_str = datetime.date.today().isoformat()
+    workout_mmp_rows = pd.DataFrame([
+        {"ride_id": -1, "duration_s": d, "power": p, "ride_date": today_str}
+        for d, p in workout_mmp.items()
+    ])
+    combined_mmp = pd.concat([mmp_all, workout_mmp_rows], ignore_index=True)
+    wk_fig_mmp = fig_mmp_pdc(dummy_ride, combined_mmp, live_pdc=latest_pdc)
+
+    # Summary stats
+    total_s = len(records)
+    np_val  = _normalized_power(power)
+    tss     = (total_s / 3600.0) * (np_val / ftp_w) ** 2 * 100.0 if ftp_w > 0 else 0.0
+    if_val  = np_val / ftp_w if ftp_w > 0 else 0.0
+    avg_w   = float(np.nanmean(power))
+    stats = _graph_stat_row([
+        ("Duration", f"{total_s // 60}", "min"),
+        ("Avg Power", f"{int(avg_w)}", "W"),
+        ("NP", f"{int(np_val)}", "W"),
+        ("IF", f"{if_val:.2f}", ""),
+        ("TSS", f"{int(tss)}", ""),
+    ])
+
+    # PDC reference cards
+    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
+           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
+    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+           "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+    pdc_cards = [
+        _make_card("MAP", f"{int(map_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("LTP", f"{int(ltp_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("FTP", f"{int(ftp_w)}", "W", _cs, _ls, _vs, _us),
+    ]
+
+    return wk_fig_power, wk_fig_tss, wk_fig_zones, wk_fig_mmp, stats, pdc_cards
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
