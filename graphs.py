@@ -12,9 +12,11 @@ from build_database import (
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 
-LOG_TICK_S   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+LOG_TICK_S   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600,
+                5400, 7200, 9000, 10800]
 LOG_TICK_LBL = ["1s", "5s", "10s", "30s", "1min", "2min",
-                 "5min", "10min", "20min", "30min", "1h"]
+                 "5min", "10min", "20min", "30min", "1h",
+                 "1h30", "2h", "2h30", "3h"]
 
 
 # ── Zone colour palette (RAG: Red / Amber / Green) ───────────────────────────

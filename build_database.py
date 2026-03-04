@@ -45,6 +45,16 @@ MMP_DURATIONS = [
 ]
 
 
+def mmp_durations_for_ride(n_samples: int) -> list[int]:
+    """Return MMP durations list extended in 30-min intervals to the ride length."""
+    durations = list(MMP_DURATIONS)
+    t = 3600 + 1800
+    while t <= n_samples:
+        durations.append(t)
+        t += 1800
+    return durations
+
+
 # ── Power-duration model ──────────────────────────────────────────────────────
 
 def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
@@ -870,6 +880,62 @@ def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Recomputed PDC params for {len(rows)} ride(s).")
 
 
+def backfill_extended_mmp(conn: sqlite3.Connection) -> None:
+    """Backfill MMP (and MMH) for durations >1h that are missing.
+
+    Rides longer than 1 hour get additional 30-minute-interval MMP entries.
+    Only computes durations not already present in the mmp table.
+    """
+    rows = conn.execute(
+        "SELECT id, name, total_records FROM rides WHERE total_records > 3600 ORDER BY id"
+    ).fetchall()
+    if not rows:
+        return
+
+    backfilled = 0
+    for ride_id, name, n_records in rows:
+        durations = mmp_durations_for_ride(n_records)
+        extended = [d for d in durations if d > 3600]
+        if not extended:
+            continue
+
+        existing = {r[0] for r in conn.execute(
+            "SELECT duration_s FROM mmp WHERE ride_id = ? AND duration_s > 3600",
+            (ride_id,),
+        ).fetchall()}
+        missing = [d for d in extended if d not in existing]
+        if not missing:
+            continue
+
+        df = pd.read_sql(
+            "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+            conn, params=(ride_id,),
+        )
+        if df.empty or df["power"].isna().all():
+            continue
+
+        mmp = calculate_mmp(df, missing)
+        if mmp:
+            conn.executemany(
+                "INSERT OR IGNORE INTO mmp (ride_id, duration_s, power) VALUES (?,?,?)",
+                [(ride_id, d, round(p, 1)) for d, p in mmp.items()],
+            )
+
+        if "heart_rate" in df.columns and df["heart_rate"].notna().any():
+            mmh = calculate_mmh(df, missing)
+            if mmh:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
+                    [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
+                )
+
+        backfilled += 1
+
+    conn.commit()
+    if backfilled:
+        print(f"[mmp] Backfilled extended MMP (>1h) for {backfilled} ride(s).")
+
+
 # ── Per-ride processing ───────────────────────────────────────────────────────
 
 def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
@@ -936,15 +1002,16 @@ def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
         ),
     )
 
-    # MMP
-    mmp = calculate_mmp(df, MMP_DURATIONS)
+    # MMP — extend durations in 30-min intervals to the ride length
+    ride_durations = mmp_durations_for_ride(len(df))
+    mmp = calculate_mmp(df, ride_durations)
     conn.executemany(
         "INSERT INTO mmp (ride_id, duration_s, power) VALUES (?,?,?)",
         [(ride_id, d, round(p, 1)) for d, p in mmp.items()],
     )
 
     # MMH
-    mmh = calculate_mmh(df, MMP_DURATIONS)
+    mmh = calculate_mmh(df, ride_durations)
     if mmh:
         conn.executemany(
             "INSERT INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
