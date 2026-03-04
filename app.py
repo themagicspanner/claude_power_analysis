@@ -1163,7 +1163,7 @@ app.layout = html.Div(
                         dcc.Graph(id="graph-mmp-pdc"),
                     ]),
                     html.Div(id="mmp-table-container",
-                             style={"flex": "1", "minWidth": "0", "paddingTop": "8px"}),
+                             style={"display": "none"}),
                 ]),
 
                 # Hidden: kept in DOM for callback compatibility
@@ -1786,26 +1786,7 @@ def update_ride_charts(ride_id, _ver):
                                     AWC=_d_awc, Pmax=_d_pmax, tau2=_d_tau2)
             zone_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
 
-    # ── MMP table ──────────────────────────────────────────────────────────
-    this_mmp = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
-
-    # Compute prior decayed best from other rides (same logic as fig_mmp_pdc)
-    ride_date_obj = datetime.date.fromisoformat(ride["ride_date"])
-    _cutoff = (ride_date_obj - datetime.timedelta(days=PDC_WINDOW)).isoformat()
-    _window = mmp_all[mmp_all["ride_date"].between(_cutoff, ride["ride_date"])].copy()
-    prior_best: dict[int, float] = {}
-    if not _window.empty:
-        _window["_age"] = _window["ride_date"].apply(
-            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-        )
-        _window["_w"] = 1.0 / (1.0 + np.exp(PDC_K * (_window["_age"] - PDC_INFLECTION)))
-        _window["_ap"] = _window["power"] * _window["_w"]
-        _other = _window[_window["ride_id"] != ride["id"]]
-        if not _other.empty:
-            _best = _other.groupby("duration_s")["_ap"].max()
-            prior_best = _best.to_dict()
-
-    mmp_table = _build_mmp_table(this_mmp, prior_best)
+    mmp_table = []
 
     return (
         fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
