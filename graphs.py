@@ -715,77 +715,42 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     rate_ltp_top    = rate_ltp
     rate_thresh_top = rate_ltp + rate_thresh
     rate_total      = rate_thresh_top + rate_awc
-    cum_ltp_top     = cum_ltp
-    cum_thresh_top  = cum_ltp + cum_thresh
-    cum_total       = cum_thresh_top + cum_awc
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.12,
-        row_heights=[0.5, 0.5],
-    )
+    fig = go.Figure()
 
-    # ── Row 1: instantaneous TSS rate ────────────────────────────────────────
+    # ── Instantaneous TSS rate ─────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_ltp_top,
         mode="lines", name=f"Base ≤LTP ({final_ltp:.0f})",
         fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
-        line=dict(color=Z_BASE, width=1.5),
-    ), row=1, col=1)
+        line=dict(color=Z_BASE, width=1),
+    ))
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_thresh_top,
         mode="lines", name=f"Threshold ({final_thresh:.0f})",
         fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
-        line=dict(color=Z_THRESH, width=1.5),
-    ), row=1, col=1)
+        line=dict(color=Z_THRESH, width=1),
+    ))
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
         mode="lines", name=f"AWC ({final_awc:.0f})",
         fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
-        line=dict(color=Z_AWC, width=1.5),
-    ), row=1, col=1)
+        line=dict(color=Z_AWC, width=1),
+    ))
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
         mode="lines", name="Difficulty",
-        line=dict(color="midnightblue", width=1.5),
-    ), row=1, col=1)
-
-    # ── Row 2: cumulative TSS ────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=t_min, y=cum_ltp_top,
-        mode="lines", name="Cumulative Base",
-        fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
-        line=dict(color=Z_BASE, width=1.5),
-        showlegend=False,
-    ), row=2, col=1)
-    fig.add_trace(go.Scatter(
-        x=t_min, y=cum_thresh_top,
-        mode="lines", name="Cumulative Threshold",
-        fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
-        line=dict(color=Z_THRESH, width=1.5),
-        showlegend=False,
-    ), row=2, col=1)
-    fig.add_trace(go.Scatter(
-        x=t_min, y=cum_total,
-        mode="lines", name="Cumulative AWC",
-        fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
-        line=dict(color=Z_AWC, width=1.5),
-        showlegend=False,
-    ), row=2, col=1)
+        line=dict(color="midnightblue", width=1),
+    ))
 
     fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey", row=2, col=1)
-    fig.update_xaxes(showgrid=True, gridcolor="lightgrey", row=1, col=1)
+                     showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True, row=1, col=1)
-    fig.update_yaxes(title_text="Cumulative TSS",
-                     showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True, row=2, col=1)
+                     fixedrange=True)
     fig.update_layout(
         title=dict(text="TSS Rate", font=dict(size=14)),
-        height=420,
+        height=250,
         margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
         showlegend=False,
