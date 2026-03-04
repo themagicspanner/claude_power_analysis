@@ -1207,6 +1207,7 @@ app.layout = html.Div(
                          "sortable": False,
                          "cellStyle": {"textAlign": "center", "padding": "6px 10px"}},
                         {"headerName": "Name",      "field": "Name",       "sortable": True, "flex": 2},
+                        {"headerName": "Type",      "field": "Type",       "sortable": True, "width": 120},
                         {"headerName": "Duration",  "field": "Duration",   "sortable": True, "width": 90},
                         {"headerName": "Avg Power", "field": "Avg Power",  "sortable": True, "width": 90},
                         {"headerName": "NP",        "field": "NP",         "sortable": True, "width": 70},
@@ -1796,7 +1797,7 @@ def _workout_summary_row(name: str, rows: list[dict],
     total_s = len(records)
 
     if records.empty or total_s < 2:
-        return {"Name": name, "Power": "", "Duration": "0m",
+        return {"Name": name, "Power": "", "Type": "—", "Duration": "0m",
                 "Avg Power": "—", "NP": "—", "IF": "—",
                 "TSS": "—", "Base TSS": "—", "Thresh TSS": "—",
                 "AWC TSS": "—"}
@@ -1824,17 +1825,29 @@ def _workout_summary_row(name: str, rows: list[dict],
         b64 = base64.b64encode(svg.encode()).decode()
         thumb = f'<img src="data:image/svg+xml;base64,{b64}" style="display:block"/>'
 
+    base_tss   = cum_ltp[-1]
+    thresh_tss = cum_thresh[-1]
+    awc_tss    = cum_awc[-1]
+
+    if awc_tss >= 1:
+        zone_type = "All Zones"
+    elif thresh_tss >= 1:
+        zone_type = "Base + Threshold"
+    else:
+        zone_type = "Base"
+
     return {
         "Name":       name,
         "Power":      thumb,
+        "Type":       zone_type,
         "Duration":   dur_str,
         "Avg Power":  f"{avg_w:.0f}",
         "NP":         f"{np_val:.0f}",
         "IF":         f"{if_val:.2f}",
         "TSS":        f"{tss:.0f}",
-        "Base TSS":   f"{cum_ltp[-1]:.0f}",
-        "Thresh TSS": f"{cum_thresh[-1]:.0f}",
-        "AWC TSS":    f"{cum_awc[-1]:.0f}",
+        "Base TSS":   f"{base_tss:.0f}",
+        "Thresh TSS": f"{thresh_tss:.0f}",
+        "AWC TSS":    f"{awc_tss:.0f}",
     }
 
 
