@@ -238,7 +238,7 @@ def _load_pdc_params() -> pd.DataFrame:
 def _load_daily_pdc() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT date, MAP, Pmax, AWC, ltp FROM daily_pdc_params ORDER BY date",
+        "SELECT date, MAP, Pmax, AWC, ltp, tau2 FROM daily_pdc_params ORDER BY date",
         conn,
     )
     conn.close()
@@ -1071,6 +1071,9 @@ app.layout = html.Div(
                            "marginBottom": "20px", "maxWidth": "860px"},
                 ),
                 dcc.Store(id="pdc-slider-dates"),
+                html.Div(id="pdc-historical-cards",
+                         style={"display": "flex", "gap": "12px",
+                                "flexWrap": "wrap", "marginBottom": "12px"}),
                 dcc.Graph(id="graph-pdc-historical"),
                 dcc.Slider(
                     id="pdc-date-slider",
@@ -1510,15 +1513,23 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     slider_dates = sorted(daily_pdc["date"].dropna().unique().tolist())
     slider_max = max(len(slider_dates) - 1, 0)
     slider_value = slider_max  # default to today
-    # ~5 evenly-spaced marks
+    # ~6 evenly-spaced marks with styled labels
     if len(slider_dates) > 1:
-        step = max(1, len(slider_dates) // 5)
+        step = max(1, len(slider_dates) // 6)
         mark_indices = list(range(0, len(slider_dates), step))
         if mark_indices[-1] != slider_max:
             mark_indices.append(slider_max)
-        slider_marks = {i: slider_dates[i] for i in mark_indices}
+        slider_marks = {
+            i: {"label": slider_dates[i],
+                "style": {"color": "#7a8fbb", "fontSize": "11px"}}
+            for i in mark_indices
+        }
     else:
-        slider_marks = {0: slider_dates[0]} if slider_dates else {}
+        slider_marks = (
+            {0: {"label": slider_dates[0],
+                 "style": {"color": "#7a8fbb", "fontSize": "11px"}}}
+            if slider_dates else {}
+        )
 
     return (
         ver,
@@ -1571,7 +1582,8 @@ app.clientside_callback(
 # ── Historical PDC slider callback ────────────────────────────────────────────
 
 @app.callback(
-    Output("graph-pdc-historical", "figure"),
+    Output("graph-pdc-historical",  "figure"),
+    Output("pdc-historical-cards",  "children"),
     Input("pdc-date-slider",  "value"),
     State("pdc-slider-dates", "data"),
 )
@@ -1580,8 +1592,40 @@ def update_pdc_historical(slider_idx, dates):
         raise dash.exceptions.PreventUpdate
     ref_str = dates[int(slider_idx)]
     ref_date = datetime.date.fromisoformat(ref_str)
-    _, _rides, mmp_all, *_ = get_data()
-    return fig_90day_mmp(mmp_all, reference_date=ref_date)
+    _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
+    fig = fig_90day_mmp(mmp_all, reference_date=ref_date)
+
+    # Build PDC parameter cards from daily_pdc for the selected date
+    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
+           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
+    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+           "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    row = daily_pdc[daily_pdc["date"] == ref_str]
+    if not row.empty:
+        r = row.iloc[0]
+        map_v  = int(round(r["MAP"]))
+        pmax_v = int(round(r["Pmax"]))
+        awc_v  = f"{r['AWC']/1000:.1f}"
+        ltp_v  = int(round(r["ltp"]))
+        ftp_v  = int(round(_power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
+        cards = [
+            _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
+                       {**_ls, "fontSize": "13px", "color": "#222"},
+                       {**_vs, "fontSize": "16px", "color": "#7a8fbb"}, _us),
+            _make_card("FTP",  str(ftp_v),  "W", _cs, _ls, _vs, _us),
+            _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
+            _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
+            _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
+            _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
+        ]
+    else:
+        cards = []
+
+    return fig, cards
 
 
 def _fmt_mmp_duration(seconds: int) -> str:
