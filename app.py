@@ -50,7 +50,7 @@ from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_tss_components,
-    fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_distribution, fig_zone_donuts,
+    fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_bars,
     fig_pdc_investigation, fig_sigmoid_decay, fig_pdc_testing_summary,
     _tss_rate_series, _compute_pmc,
 )
@@ -1075,8 +1075,7 @@ app.layout = html.Div(
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
-                dcc.Graph(id="graph-zone-distribution"),
-                dcc.Graph(id="graph-zone-donuts"),
+                dcc.Graph(id="graph-zone-bars"),
                 html.Hr(),
                 html.Div(id="graph-map-elevation-section", children=[
                     html.Div(style={"display": "flex", "gap": "16px"}, children=[
@@ -1261,8 +1260,7 @@ app.clientside_callback(
 @app.callback(
     Output("graph-power-hr",              "figure"),
     Output("graph-tss-components",       "figure"),
-    Output("graph-zone-distribution",    "figure"),
-    Output("graph-zone-donuts",          "figure"),
+    Output("graph-zone-bars",            "figure"),
     Output("graph-mmp-pdc",              "figure"),
     Output("graph-mmh",                  "figure"),
     Output("mmh-section",                "style"),
@@ -1409,8 +1407,9 @@ def update_ride_charts(ride_id, _ver):
                      else (float(stored["MAP"]) if stored is not None and pd.notna(stored.get("MAP")) else 0.0))
 
     # Compute TSS per zone from the power stream using stored (ingest-time) PDC
-    # params so the donut and cumulative TSS chart are consistent with the PMC.
-    donut_tss = (0.0, 0.0, 0.0)
+    # Compute TSS per zone from the power stream using stored (ingest-time) PDC
+    # params so the bars and cumulative TSS chart are consistent with the PMC.
+    zone_tss = (0.0, 0.0, 0.0)
     if not records["power"].isna().all() and stored is not None:
         _d_cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
         _d_ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _d_cp
@@ -1420,15 +1419,14 @@ def update_ride_charts(ride_id, _ver):
             _pw = records["power"].to_numpy(dtype=float)
             (_t, cum_ltp_s, cum_thresh_s, cum_awc_s,
              *_) = _tss_rate_series(_el, _pw, float(_d_ftp), float(_d_cp), ltp=_d_ltp)
-            donut_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
+            zone_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
 
     return (
         fig_power_hr(records, ride["name"]),
         fig_tss_components(records, ride, pdc_params),
-        fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
-        fig_zone_donuts(
+        fig_zone_bars(
             zone_data,
-            donut_tss[0], donut_tss[1], donut_tss[2],
+            zone_tss[0], zone_tss[1], zone_tss[2],
             ltp_for_zones, map_for_zones,
         ),
         fig_mmp_pdc(ride, mmp_all, live_pdc),

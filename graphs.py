@@ -505,15 +505,36 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
 
 # ── Zone distribution ─────────────────────────────────────────────────────────
 
-def fig_zone_distribution(zone_data: dict[int, float],
-                          ltp: float, map_: float) -> go.Figure:
-    """Horizontal stacked bar showing time in each of the three physiological zones.
+def fig_zone_bars(zone_data: dict[int, float],
+                  tss_ltp: float | None,
+                  tss_map: float | None,
+                  tss_awc: float | None,
+                  ltp: float, map_: float) -> go.Figure:
+    """Two horizontal stacked bars: time-in-zone (top) and TSS-by-zone (bottom)."""
+    colors = [Z_BASE, Z_THRESH, Z_AWC]
+    zone_names = [
+        f"Z1  ≤{ltp:.0f} W",
+        f"Z2  {ltp:.0f}–{map_:.0f} W",
+        f"Z3  >{map_:.0f} W",
+    ]
 
-    Zone 1 (≤ LTP)       — base / recovery
-    Zone 2 (LTP – MAP)   — threshold / sweet-spot
-    Zone 3 (> MAP)       — high intensity / VO₂ max+
-    """
-    if not zone_data:
+    def _fmt(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}:{s:02d}"
+
+    t_vals = [zone_data.get(z, 0.0) for z in (1, 2, 3)] if zone_data else [0, 0, 0]
+    t_total = sum(t_vals)
+
+    tss_vals = [
+        float(v) if v is not None and pd.notna(v) else 0.0
+        for v in (tss_ltp, tss_map, tss_awc)
+    ]
+    tss_total = sum(tss_vals)
+
+    has_time = t_total > 0
+    has_tss = tss_total > 0
+
+    if not has_time and not has_tss:
         fig = go.Figure()
         fig.update_layout(
             height=150, template="plotly_white",
@@ -525,135 +546,51 @@ def fig_zone_distribution(zone_data: dict[int, float],
         )
         return fig
 
-    total = sum(zone_data.values())
-
-    def _fmt(seconds: float) -> str:
-        m, s = divmod(int(seconds), 60)
-        return f"{m}:{s:02d}"
-
-    zones = [
-        (1, f"Z1  ≤{ltp:.0f} W",            zone_data.get(1, 0.0), Z_BASE),
-        (2, f"Z2  {ltp:.0f}–{map_:.0f} W",  zone_data.get(2, 0.0), Z_THRESH),
-        (3, f"Z3  >{map_:.0f} W",            zone_data.get(3, 0.0), Z_AWC),
-    ]
-
     fig = go.Figure()
-    for _, name, secs, color in zones:
-        pct = secs / total * 100 if total > 0 else 0.0
+    rows = ["TSS by Zone", "Time in Zone"]  # bottom-up for plotly y ordering
+
+    for i, (name, color) in enumerate(zip(zone_names, colors)):
+        # Time bar
+        t_pct = t_vals[i] / t_total * 100 if has_time else 0.0
         fig.add_trace(go.Bar(
-            y=[""],
-            x=[pct],
-            name=f"{name}  {pct:.0f}%  ({_fmt(secs)})",
-            orientation="h",
-            marker_color=color,
-            hovertemplate=f"{name}<br>{pct:.1f}%  ·  {_fmt(secs)}<extra></extra>",
+            y=["Time in Zone"], x=[t_pct],
+            name=name, legendgroup=name,
+            showlegend=True,
+            orientation="h", marker_color=color,
+            hovertemplate=(f"{name}<br>{t_pct:.1f}%  ·  {_fmt(t_vals[i])}<extra></extra>"
+                           if has_time else f"{name}<br>No data<extra></extra>"),
+            text=f"{t_pct:.0f}%  ({_fmt(t_vals[i])})" if has_time and t_pct >= 8 else "",
+            textposition="inside", textfont=dict(size=11, color="white"),
+        ))
+
+    for i, (name, color) in enumerate(zip(zone_names, colors)):
+        # TSS bar
+        tss_pct = tss_vals[i] / tss_total * 100 if has_tss else 0.0
+        fig.add_trace(go.Bar(
+            y=["TSS by Zone"], x=[tss_pct],
+            name=name, legendgroup=name,
+            showlegend=False,
+            orientation="h", marker_color=color,
+            hovertemplate=(f"{name}<br>{tss_pct:.1f}%  ·  TSS {tss_vals[i]:.1f}<extra></extra>"
+                           if has_tss else f"{name}<br>No data<extra></extra>"),
+            text=f"{tss_pct:.0f}%  ({tss_vals[i]:.1f})" if has_tss and tss_pct >= 8 else "",
+            textposition="inside", textfont=dict(size=11, color="white"),
         ))
 
     fig.update_xaxes(range=[0, 100], showgrid=False, showticklabels=False)
-    fig.update_yaxes(showticklabels=False)
+    fig.update_yaxes(tickfont=dict(size=12))
     fig.update_layout(
         title=dict(text="Zone Distribution  (LTP / MAP 3-zone model)", font=dict(size=14)),
         barmode="stack",
-        height=150,
-        margin=dict(t=55, b=10, l=10, r=10),
+        height=180,
+        margin=dict(t=55, b=10, l=110, r=10),
         template="plotly_white",
         showlegend=True,
         legend=dict(
-            orientation="h", x=0, y=-0.05,
+            orientation="h", x=0, y=-0.15,
             font=dict(size=11), traceorder="normal",
         ),
         hovermode="closest",
-    )
-    return fig
-
-
-def fig_zone_donuts(zone_data: dict[int, float],
-                    tss_ltp: float | None,
-                    tss_map: float | None,
-                    tss_awc: float | None,
-                    ltp: float, map_: float) -> go.Figure:
-    """Side-by-side donut charts: time-in-zone and TSS-per-zone."""
-    colors = [Z_BASE, Z_THRESH, Z_AWC]
-    zone_labels = [
-        f"Z1  ≤{ltp:.0f} W",
-        f"Z2  {ltp:.0f}–{map_:.0f} W",
-        f"Z3  >{map_:.0f} W",
-    ]
-
-    fig = make_subplots(
-        rows=1, cols=2,
-        specs=[[{"type": "pie"}, {"type": "pie"}]],
-        subplot_titles=["Time in Zone", "TSS by Zone"],
-    )
-
-    # — Time in Zone donut ─────────────────────────────────────────────────
-    if zone_data:
-        t_vals = [zone_data.get(z, 0.0) for z in (1, 2, 3)]
-
-        def _hms(s):
-            m, sec = divmod(int(s), 60)
-            return f"{m}:{sec:02d}"
-
-        fig.add_trace(go.Pie(
-            labels=zone_labels,
-            values=t_vals,
-            hole=0.50,
-            marker=dict(colors=colors),
-            textinfo="percent",
-            textfont=dict(size=12),
-            hovertemplate="%{label}<br>%{value:.0f}s  (%{percent})<extra></extra>",
-            sort=False,
-        ), row=1, col=1)
-
-        total = sum(t_vals)
-        fig.add_annotation(
-            text=f"{_hms(total)}", font=dict(size=14, color="#333"),
-            showarrow=False, x=0.195, y=0.5, xref="paper", yref="paper",
-        )
-    else:
-        fig.add_trace(go.Pie(
-            labels=["No data"], values=[1], hole=0.50,
-            marker=dict(colors=["#e5e7eb"]), textinfo="none",
-            hoverinfo="skip", sort=False,
-        ), row=1, col=1)
-
-    # — TSS by Zone donut ──────────────────────────────────────────────────
-    tss_vals = [
-        float(tss_ltp) if tss_ltp is not None and pd.notna(tss_ltp) else 0.0,
-        float(tss_map) if tss_map is not None and pd.notna(tss_map) else 0.0,
-        float(tss_awc) if tss_awc is not None and pd.notna(tss_awc) else 0.0,
-    ]
-    if any(v > 0 for v in tss_vals):
-        fig.add_trace(go.Pie(
-            labels=zone_labels,
-            values=tss_vals,
-            hole=0.50,
-            marker=dict(colors=colors),
-            textinfo="percent",
-            textfont=dict(size=12),
-            hovertemplate="%{label}<br>TSS %{value:.1f}  (%{percent})<extra></extra>",
-            sort=False,
-        ), row=1, col=2)
-
-        tss_total = sum(tss_vals)
-        fig.add_annotation(
-            text=f"{tss_total:.0f}", font=dict(size=14, color="#333"),
-            showarrow=False, x=0.805, y=0.5, xref="paper", yref="paper",
-        )
-    else:
-        fig.add_trace(go.Pie(
-            labels=["No data"], values=[1], hole=0.50,
-            marker=dict(colors=["#e5e7eb"]), textinfo="none",
-            hoverinfo="skip", sort=False,
-        ), row=1, col=2)
-
-    fig.update_layout(
-        height=250,
-        margin=dict(t=40, b=10, l=10, r=10),
-        template="plotly_white",
-        showlegend=True,
-        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.05,
-                    font=dict(size=11)),
     )
     return fig
 
