@@ -1408,18 +1408,13 @@ def update_ride_charts(ride_id, _ver):
     map_for_zones = (float(live_pdc["MAP"]) if live_pdc and live_pdc.get("MAP")
                      else (float(stored["MAP"]) if stored is not None and pd.notna(stored.get("MAP")) else 0.0))
 
-    # Compute TSS per zone from the power stream (same method as cumulative TSS chart)
+    # Compute TSS per zone from the power stream using stored (ingest-time) PDC
+    # params so the donut and cumulative TSS chart are consistent with the PMC.
     donut_tss = (0.0, 0.0, 0.0)
-    if not records["power"].isna().all():
-        if live_pdc is not None:
-            _d_cp, _d_ftp = live_pdc["MAP"], live_pdc["ftp"]
-            _d_ltp = live_pdc.get("ltp")
-        elif stored is not None:
-            _d_cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
-            _d_ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _d_cp
-            _d_ltp = float(stored["ltp"]) if pd.notna(stored.get("ltp")) else None
-        else:
-            _d_cp = _d_ftp = _d_ltp = None
+    if not records["power"].isna().all() and stored is not None:
+        _d_cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
+        _d_ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _d_cp
+        _d_ltp = float(stored["ltp"]) if pd.notna(stored.get("ltp")) else None
         if _d_cp is not None and _d_ftp and _d_ftp > 0:
             _el = records["elapsed_s"].to_numpy(dtype=float)
             _pw = records["power"].to_numpy(dtype=float)
@@ -1429,7 +1424,7 @@ def update_ride_charts(ride_id, _ver):
 
     return (
         fig_power_hr(records, ride["name"]),
-        fig_tss_components(records, ride, pdc_params, live_pdc),
+        fig_tss_components(records, ride, pdc_params),
         fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
         fig_zone_donuts(
             zone_data,
