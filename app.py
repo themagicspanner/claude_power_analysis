@@ -719,7 +719,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     pmax_v = f"{int(round(latest['Pmax']))}"
     as_of  = latest["ride_date"]
 
-    # Freshness status card
+    # Training readiness card
     (status, tsb_base, tsb_thresh, tsb_awc,
      base_threshold, thresh_threshold,
      atl_base, ctl_base, atl_thresh, ctl_thresh,
@@ -727,60 +727,99 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     if status is not None:
         cfg = _FRESHNESS_CFG[status]
 
-        # Days-until-trainable countdown
+        # Per-zone status: (zone_label, ok?, tsb, cutoff_label)
+        base_ok   = tsb_base  > base_threshold
+        thresh_ok = tsb_thresh > thresh_threshold
+        awc_ok    = tsb_awc   > 0
+
+        _zone_dot_style = lambda ok: {
+            "width": "9px", "height": "9px", "borderRadius": "50%",
+            "background": "#16a34a" if ok else "#dc2626", "flexShrink": "0",
+        }
+        _zone_label_style = {"fontSize": "12px", "color": "#333", "fontWeight": "600"}
+        _zone_detail_style = {"fontSize": "10px", "color": "#888"}
+
+        def _zone_row(label, ok, tsb_val, cut_val, cut_str):
+            return html.Div(style={
+                "display": "flex", "alignItems": "center", "gap": "8px",
+                "padding": "4px 0",
+            }, children=[
+                html.Div(style=_zone_dot_style(ok)),
+                html.Span(label, style=_zone_label_style),
+                html.Span(
+                    f"TSB {tsb_val:+.1f}  /  cutoff {cut_val:.1f}",
+                    style=_zone_detail_style,
+                ),
+            ])
+
+        zone_rows = [
+            _zone_row("Base",      base_ok,   tsb_base,   base_threshold,   "−0.5 CTL"),
+            _zone_row("Threshold", thresh_ok, tsb_thresh, thresh_threshold, "−0.3 CTL"),
+            _zone_row("Anaerobic", awc_ok,    tsb_awc,    0.0,              "0"),
+        ]
+
+        # Summary text and next-zone countdown
         if status == "black":
+            summary = "Full rest recommended — base fatigue is too high for any riding."
             days = _days_to_trainable(atl_base, ctl_base, threshold_pct=0.50)
-            days_text  = (f"Base riding in {days} day{'s' if days != 1 else ''}"
-                          if days is not None else "Recovery > 60 days")
-            days_color = _FRESHNESS_CFG["red"]["color"]
+            countdown = (f"Base riding in ~{days} day{'s' if days != 1 else ''}"
+                         if days is not None else "Recovery > 60 days")
+            countdown_color = _FRESHNESS_CFG["red"]["color"]
         elif status == "red":
+            summary = "Recovery rides only — threshold fatigue needs to clear before intensity."
             days = _days_to_trainable(atl_thresh, ctl_thresh, threshold_pct=0.30)
-            days_text  = (f"Aerobic in {days} day{'s' if days != 1 else ''}"
-                          if days is not None else "Recovery > 60 days")
-            days_color = _FRESHNESS_CFG["amber"]["color"]
+            countdown = (f"Threshold sessions in ~{days} day{'s' if days != 1 else ''}"
+                         if days is not None else "Recovery > 60 days")
+            countdown_color = _FRESHNESS_CFG["amber"]["color"]
         elif status == "amber":
+            summary = "Aerobic training OK — endurance and tempo, but avoid VO2max / anaerobic work."
             days = _days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
-            days_text  = (f"High intensity in {days} day{'s' if days != 1 else ''}"
-                          if days is not None else "High intensity > 60 days")
-            days_color = _FRESHNESS_CFG["green"]["color"]
+            countdown = (f"High intensity in ~{days} day{'s' if days != 1 else ''}"
+                         if days is not None else "High intensity > 60 days")
+            countdown_color = _FRESHNESS_CFG["green"]["color"]
         else:
-            days_text  = None
-            days_color = None
+            summary = "All systems go — ready for any session including high-intensity intervals."
+            countdown = None
+            countdown_color = None
 
-        detail = (f"Base {tsb_base:+.1f} (cut {base_threshold:.1f})"
-                  f"  ·  Thresh {tsb_thresh:+.1f} (cut {thresh_threshold:.1f})"
-                  f"  ·  AWC {tsb_awc:+.1f}")
-
-        card_children = [
-            html.Div("Freshness", style=label_style),
+        readiness_children = [
+            # Header: overall status
             html.Div(style={
-                "display": "flex", "alignItems": "center",
-                "justifyContent": "center", "gap": "7px",
+                "display": "flex", "alignItems": "center", "gap": "8px",
+                "marginBottom": "8px",
             }, children=[
                 html.Div(style={
-                    "width": "11px", "height": "11px", "borderRadius": "50%",
+                    "width": "13px", "height": "13px", "borderRadius": "50%",
                     "background": cfg["color"], "flexShrink": "0",
                 }),
                 html.Span(cfg["label"], style={
-                    **value_style, "fontSize": "17px", "color": cfg["color"],
+                    "fontSize": "18px", "fontWeight": "bold", "color": cfg["color"],
                 }),
             ]),
-            html.Div(
-                f"{cfg['desc']}  ·  {detail}",
-                style={"fontSize": "10px", "color": "#888", "marginTop": "4px"},
-            ),
+            # Summary sentence
+            html.Div(summary, style={
+                "fontSize": "12px", "color": "#555", "marginBottom": "10px",
+                "lineHeight": "1.4",
+            }),
+            # Per-zone breakdown
+            html.Div(style={
+                "borderTop": "1px solid #e5e7eb", "paddingTop": "6px",
+            }, children=zone_rows),
         ]
-        if days_text is not None:
-            card_children.append(html.Div(days_text, style={
-                "fontSize": "10px", "fontWeight": "600",
-                "color": days_color, "marginTop": "3px",
+        # Countdown to next zone clearing
+        if countdown is not None:
+            readiness_children.append(html.Div(countdown, style={
+                "fontSize": "11px", "fontWeight": "600", "color": countdown_color,
+                "marginTop": "8px", "paddingTop": "6px",
+                "borderTop": "1px solid #e5e7eb",
             }))
 
         freshness_card = html.Div(style={
-            **card_style,
             "background": cfg["bg"], "border": f"1px solid {cfg['border']}",
-            "minWidth": "130px", "marginLeft": "auto",
-        }, children=card_children)
+            "borderRadius": "8px", "padding": "14px 18px",
+            "minWidth": "300px", "marginLeft": "auto",
+            "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        }, children=readiness_children)
     else:
         freshness_card = None
 
