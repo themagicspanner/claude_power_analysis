@@ -567,6 +567,97 @@ def fig_zone_distribution(zone_data: dict[int, float],
     return fig
 
 
+def fig_zone_donuts(zone_data: dict[int, float],
+                    tss_ltp: float | None,
+                    tss_map: float | None,
+                    tss_awc: float | None,
+                    ltp: float, map_: float) -> go.Figure:
+    """Side-by-side donut charts: time-in-zone and TSS-per-zone."""
+    colors = [Z_BASE, Z_THRESH, Z_AWC]
+    zone_labels = [
+        f"Z1  ≤{ltp:.0f} W",
+        f"Z2  {ltp:.0f}–{map_:.0f} W",
+        f"Z3  >{map_:.0f} W",
+    ]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        specs=[[{"type": "pie"}, {"type": "pie"}]],
+        subplot_titles=["Time in Zone", "TSS by Zone"],
+    )
+
+    # — Time in Zone donut ─────────────────────────────────────────────────
+    if zone_data:
+        t_vals = [zone_data.get(z, 0.0) for z in (1, 2, 3)]
+
+        def _hms(s):
+            m, sec = divmod(int(s), 60)
+            return f"{m}:{sec:02d}"
+
+        fig.add_trace(go.Pie(
+            labels=zone_labels,
+            values=t_vals,
+            hole=0.50,
+            marker=dict(colors=colors),
+            textinfo="percent",
+            textfont=dict(size=12),
+            hovertemplate="%{label}<br>%{value:.0f}s  (%{percent})<extra></extra>",
+            sort=False,
+        ), row=1, col=1)
+
+        total = sum(t_vals)
+        fig.add_annotation(
+            text=f"{_hms(total)}", font=dict(size=14, color="#333"),
+            showarrow=False, x=0.195, y=0.5, xref="paper", yref="paper",
+        )
+    else:
+        fig.add_trace(go.Pie(
+            labels=["No data"], values=[1], hole=0.50,
+            marker=dict(colors=["#e5e7eb"]), textinfo="none",
+            hoverinfo="skip", sort=False,
+        ), row=1, col=1)
+
+    # — TSS by Zone donut ──────────────────────────────────────────────────
+    tss_vals = [
+        float(tss_ltp) if tss_ltp is not None and pd.notna(tss_ltp) else 0.0,
+        float(tss_map) if tss_map is not None and pd.notna(tss_map) else 0.0,
+        float(tss_awc) if tss_awc is not None and pd.notna(tss_awc) else 0.0,
+    ]
+    if any(v > 0 for v in tss_vals):
+        fig.add_trace(go.Pie(
+            labels=zone_labels,
+            values=tss_vals,
+            hole=0.50,
+            marker=dict(colors=colors),
+            textinfo="percent",
+            textfont=dict(size=12),
+            hovertemplate="%{label}<br>TSS %{value:.1f}  (%{percent})<extra></extra>",
+            sort=False,
+        ), row=1, col=2)
+
+        tss_total = sum(tss_vals)
+        fig.add_annotation(
+            text=f"{tss_total:.0f}", font=dict(size=14, color="#333"),
+            showarrow=False, x=0.805, y=0.5, xref="paper", yref="paper",
+        )
+    else:
+        fig.add_trace(go.Pie(
+            labels=["No data"], values=[1], hole=0.50,
+            marker=dict(colors=["#e5e7eb"]), textinfo="none",
+            hoverinfo="skip", sort=False,
+        ), row=1, col=2)
+
+    fig.update_layout(
+        height=250,
+        margin=dict(t=40, b=10, l=10, r=10),
+        template="plotly_white",
+        showlegend=True,
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.05,
+                    font=dict(size=11)),
+    )
+    return fig
+
+
 # ── TSS component series ──────────────────────────────────────────────────────
 
 def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,

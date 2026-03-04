@@ -50,7 +50,7 @@ from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_tss_components,
-    fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_distribution,
+    fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_distribution, fig_zone_donuts,
     fig_pdc_investigation, fig_sigmoid_decay, fig_pdc_testing_summary,
     _tss_rate_series, _compute_pmc,
 )
@@ -1076,6 +1076,7 @@ app.layout = html.Div(
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-zone-distribution"),
+                dcc.Graph(id="graph-zone-donuts"),
                 html.Hr(),
                 html.Div(id="graph-map-elevation-section", children=[
                     html.Div(style={"display": "flex", "gap": "16px"}, children=[
@@ -1261,6 +1262,7 @@ app.clientside_callback(
     Output("graph-power-hr",              "figure"),
     Output("graph-tss-components",       "figure"),
     Output("graph-zone-distribution",    "figure"),
+    Output("graph-zone-donuts",          "figure"),
     Output("graph-mmp-pdc",              "figure"),
     Output("graph-mmh",                  "figure"),
     Output("mmh-section",                "style"),
@@ -1410,6 +1412,13 @@ def update_ride_charts(ride_id, _ver):
         fig_power_hr(records, ride["name"]),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
+        fig_zone_donuts(
+            zone_data,
+            stored.get("tss_ltp") if stored is not None else None,
+            stored.get("tss_map") if stored is not None else None,
+            stored.get("tss_awc") if stored is not None else None,
+            ltp_for_zones, map_for_zones,
+        ),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
         fig_mmh(ride, mmh_all),
         mmh_style,
