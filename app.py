@@ -858,6 +858,7 @@ if _args.lookback is not None:
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
+recompute_all_pdc_params(_boot_conn)  # recalc TSS split with proportional LTP/MAP
 backfill_pdc_params(_boot_conn)
 backfill_vi_aedec(_boot_conn)
 backfill_zones(_boot_conn)
