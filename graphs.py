@@ -292,8 +292,10 @@ def fig_elevation(records: pd.DataFrame) -> go.Figure:
         )
         return fig
 
+    x_s = alt["elapsed_s"].to_numpy(dtype=float)
+    max_s = float(x_s[-1]) if len(x_s) else 3600
     fig = go.Figure(go.Scatter(
-        x=alt["elapsed_min"], y=alt["altitude_m"],
+        x=x_s, y=alt["altitude_m"],
         mode="lines", name="Elevation",
         fill="tozeroy",
         line=dict(color="#6aaa64", width=2),
@@ -306,8 +308,8 @@ def fig_elevation(records: pd.DataFrame) -> go.Figure:
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
+        xaxis=_time_axis_props(max_s),
     )
-    fig.update_xaxes(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Elevation (m)", showgrid=True, gridcolor="lightgrey",
                      fixedrange=True)
     return fig
@@ -805,7 +807,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_ltp_ph    = rate_total_ph * f_ltp
     rate_thresh_ph = rate_total_ph * f_thresh
     rate_awc_ph    = rate_total_ph * f_awc
-    t_min          = elapsed_s / 60.0
+    t_s            = elapsed_s
 
     # 1-hour time-weighted rolling average of total TSS rate.
     cum_dt_ext      = np.empty(n + 1)
@@ -821,7 +823,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     with np.errstate(invalid="ignore", divide="ignore"):
         rate_1h_avg = np.where(window_dt > 0, window_rdt / window_dt, 0.0)
 
-    return (t_min, cum_ltp, cum_thresh, cum_awc,
+    return (t_s, cum_ltp, cum_thresh, cum_awc,
             rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
 
 
@@ -867,8 +869,7 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
         line=dict(color="midnightblue", width=1),
     ))
 
-    fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+    wk_max_s = float(t_min[-1]) if len(t_min) else 3600
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey",
                      fixedrange=True)
@@ -879,6 +880,7 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
         template="plotly_white",
         showlegend=False,
         hovermode="x unified",
+        xaxis=_time_axis_props(wk_max_s),
     )
     return fig
 
@@ -963,8 +965,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                 borderpad=3,
             )
 
-    fig.update_xaxes(title_text="Elapsed Time (min)",
-                     showgrid=True, gridcolor="lightgrey")
+    max_s = float(t_min[-1]) if len(t_min) else 3600
     fig.update_yaxes(title_text="TSS Rate (TSS/h)",
                      showgrid=True, gridcolor="lightgrey",
                      fixedrange=True)
@@ -975,6 +976,7 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         template="plotly_white",
         showlegend=False,
         hovermode="x unified",
+        xaxis=_time_axis_props(max_s),
     )
     return fig
 
