@@ -1145,11 +1145,9 @@ app.layout = html.Div(
                 ]),
 
                 # Per-ride charts
-                html.Div(style={"display": "flex", "justifyContent": "space-between",
-                                "alignItems": "flex-start"}, children=[
-                    html.Div(id="power-stats"),
-                    html.Div(id="hr-stats"),
-                ]),
+                html.Div(id="power-stats"),
+                # Hidden: kept in DOM for callback compatibility
+                html.Div(id="hr-stats", style={"display": "none"}),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
