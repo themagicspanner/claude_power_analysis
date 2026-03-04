@@ -62,17 +62,19 @@ def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
 def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
                     ftp: float, CP: float, tss_total: float,
                     sample_hz: float = 1.0,
-                    ltp: float | None = None) -> tuple[float, float, float]:
+                    ltp: float | None = None,
+                    AWC_val: float | None = None,
+                    Pmax_val: float | None = None,
+                    tau2_val: float | None = None) -> tuple[float, float, float]:
     """Split the NP-based TSS into base (LTP), threshold, and anaerobic parts.
 
     Uses p_30s² as a time-weighting kernel (same as NP methodology) to decide
     how much of each second's training stress should be credited to each zone.
-    The per-sample fractions come from instantaneous power so that even brief
-    above-CP efforts register:
 
-        f_AWC(t) = max(0, P(t) − CP) / P(t)        [above MAP]
-        f_LTP(t) = min(P(t), LTP) / P(t)            [at or below LTP]
-        f_THR(t) = 1 − f_AWC(t) − f_LTP(t)          [LTP → MAP]
+    When AWC_val/Pmax_val/tau2_val are provided, zone fractions use the PDC
+    model's time-dependent aerobic ramp-up so that sprint-level powers
+    attribute only a small fraction to base/threshold (matching the sigmoidal
+    shape of the PDC chart).
 
     The final values are scaled so that tss_ltp + tss_map + tss_awc = tss_total
     exactly (tss_map is the *total* aerobic component, unchanged from before;
@@ -90,16 +92,39 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
 
-    # Split fractions from instantaneous power
-    with np.errstate(invalid="ignore", divide="ignore"):
-        f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
-    f_map = 1.0 - f_awc
+    # Split fractions from instantaneous power using PDC model when available
+    use_pdc = (AWC_val is not None and Pmax_val is not None and tau2_val is not None
+               and AWC_val > 0 and Pmax_val > 0 and tau2_val > 0
+               and CP > 0 and ltp is not None and ltp > 0)
 
-    # Sub-split of aerobic fraction at LTP (proportional: LTP/MAP of aerobic)
-    if ltp is not None and ltp > 0 and CP > 0:
-        f_ltp = f_map * (ltp / CP)
+    if use_pdc:
+        t_grid = np.logspace(-1, np.log10(7200), 2000)
+        p_total_grid = _power_model(t_grid, AWC_val, Pmax_val, CP, tau2_val)
+        p_aer_grid   = CP * (1.0 - np.exp(-t_grid / tau2_val))
+        p_total_rev  = p_total_grid[::-1]
+        p_aer_rev    = p_aer_grid[::-1]
+        ltp_frac_r   = ltp / CP
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            above_map = p > CP
+            p_aer_at_p = np.where(
+                above_map,
+                np.interp(p, p_total_rev, p_aer_rev, left=CP, right=0.0),
+                p,
+            )
+            p_base   = np.where(above_map, p_aer_at_p * ltp_frac_r, np.minimum(p, ltp))
+            p_thresh = np.where(above_map, p_aer_at_p - p_base,
+                                np.maximum(np.minimum(p, CP) - ltp, 0.0))
+            f_awc = np.where(p > 0, np.maximum(p - p_base - p_thresh, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, p_base / p, 0.0)
+    elif ltp is not None and ltp > 0 and CP > 0:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
     else:
-        f_ltp = f_map                       # no LTP → all aerobic is "base"
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+        f_ltp = 1.0 - f_awc
 
     # p_30s² weights — same basis as NP; used as split ratio only
     weights = (p_30s ** 2) * dt if ftp > 0 else np.zeros_like(p_30s)
@@ -520,7 +545,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
         tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
         tss_ltp, tss_map, tss_awc = _tss_components(
-            elapsed, power, ftp, float(MAP), tss, hz, ltp=float(ltp))
+            elapsed, power, ftp, float(MAP), tss, hz, ltp=float(ltp),
+            AWC_val=float(AWC), Pmax_val=float(Pmax), tau2_val=float(tau2))
         ap  = float(rec["power"].fillna(0).mean())
         vi  = round(np_val / ap, 3) if ap > 0 else None
         aedec = _aerobic_decoupling(rec)

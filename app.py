@@ -1682,11 +1682,15 @@ def update_ride_charts(ride_id, _ver):
         _d_cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
         _d_ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _d_cp
         _d_ltp = float(stored["ltp"]) if pd.notna(stored.get("ltp")) else None
+        _d_awc  = float(stored["AWC"])  if pd.notna(stored.get("AWC"))  else None
+        _d_pmax = float(stored["Pmax"]) if pd.notna(stored.get("Pmax")) else None
+        _d_tau2 = float(stored["tau2"]) if pd.notna(stored.get("tau2")) else None
         if _d_cp is not None and _d_ftp and _d_ftp > 0:
             _el = records["elapsed_s"].to_numpy(dtype=float)
             _pw = records["power"].to_numpy(dtype=float)
             (_t, cum_ltp_s, cum_thresh_s, cum_awc_s,
-             *_) = _tss_rate_series(_el, _pw, float(_d_ftp), float(_d_cp), ltp=_d_ltp)
+             *_) = _tss_rate_series(_el, _pw, float(_d_ftp), float(_d_cp), ltp=_d_ltp,
+                                    AWC=_d_awc, Pmax=_d_pmax, tau2=_d_tau2)
             zone_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
 
     return (
@@ -1792,6 +1796,9 @@ def _workout_summary_row(name: str, rows: list[dict],
     map_w = pdc["MAP"] if pdc else 300.0
     ftp_w = pdc["ftp"] if pdc else map_w
     ltp_w = pdc.get("ltp", 0.0) if pdc else 0.0
+    awc_w  = pdc.get("AWC")  if pdc else None
+    pmax_w = pdc.get("Pmax") if pdc else None
+    tau2_w = pdc.get("tau2") if pdc else None
 
     records = _build_workout_records(rows, map_w, pdc)
     total_s = len(records)
@@ -1813,6 +1820,7 @@ def _workout_summary_row(name: str, rows: list[dict],
     # Zone TSS breakdown
     (_, cum_ltp, cum_thresh, cum_awc, *_rest) = _tss_rate_series(
         elapsed, power, ftp_w, map_w, ltp=ltp_w,
+        AWC=awc_w, Pmax=pmax_w, tau2=tau2_w,
     )
 
     mins = total_s // 60
@@ -2019,6 +2027,8 @@ def update_workout_charts(cell_changed, row_data, _ver):
     power   = records["power"].to_numpy(dtype=float)
     (_, cum_ltp, cum_thresh, cum_awc, *_rest) = _tss_rate_series(
         elapsed, power, ftp_w, map_w, ltp=ltp_w,
+        AWC=latest_pdc.get("AWC"), Pmax=latest_pdc.get("Pmax"),
+        tau2=latest_pdc.get("tau2"),
     )
     wk_fig_zones = fig_zone_bars(
         zone_data,

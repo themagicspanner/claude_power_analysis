@@ -722,7 +722,10 @@ def fig_zone_bars(zone_data: dict[int, float],
 
 def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
                      ftp: float, CP: float,
-                     ltp: float | None = None) -> tuple:
+                     ltp: float | None = None,
+                     AWC: float | None = None,
+                     Pmax: float | None = None,
+                     tau2: float | None = None) -> tuple:
     """Return TSS rate and cumulative LTP / Threshold / AWC series over the ride.
 
     Uses the recalculated-from-start method:
@@ -730,8 +733,12 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     where NP(0..t) is the Normalized Power computed over all samples from
     the start up to time t.
 
-    Zone fractions are derived from instantaneous power (split at CP / LTP)
-    and applied proportionally to the cumulative TSS at each point.
+    Zone fractions are derived from instantaneous power using the PDC model's
+    time-dependent aerobic ramp-up when AWC/Pmax/tau2 are provided.  For power
+    above MAP, the PDC is inverted to find the corresponding duration, and the
+    aerobic contribution at that duration (which is small for sprint-level
+    powers) determines the base/threshold split.  For power at or below MAP
+    the static waterfall (LTP / MAP thresholds) is used.
 
     Returns (t_min, cum_ltp, cum_thresh, cum_awc,
              rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
@@ -766,17 +773,64 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         cum_total[1:] = (t_s_arr / 3600.0) * (np_at_t / ftp) ** 2 * 100.0
 
     # --- Zone fractions from instantaneous power ---
-    with np.errstate(invalid="ignore", divide="ignore"):
-        f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
-    f_map = 1.0 - f_awc
+    # When full PDC model parameters are available, use the model's
+    # time-dependent aerobic ramp-up so that at sprint-level powers the
+    # base/threshold contributions are appropriately small (matching the
+    # sigmoidal shape visible on the PDC chart).
+    use_pdc_model = (AWC is not None and Pmax is not None and tau2 is not None
+                     and AWC > 0 and Pmax > 0 and tau2 > 0
+                     and CP > 0 and ltp is not None and ltp > 0)
 
-    if ltp is not None and ltp > 0 and CP > 0:
+    if use_pdc_model:
+        # Build a lookup table: for a fine grid of durations, compute
+        # total power P(t) and aerobic power p_aer(t) from the PDC model.
+        # P(t) is monotonically decreasing from ~Pmax to MAP, so we can
+        # interpolate from power → aerobic contribution.
+        tau = AWC / Pmax
+        t_grid = np.logspace(-1, np.log10(7200), 2000)
+        p_total_grid = _power_model(t_grid, AWC, Pmax, CP, tau2)
+        p_aer_grid   = CP * (1.0 - np.exp(-t_grid / tau2))
+
+        # np.interp needs increasing x, but P(t) is decreasing → reverse
+        p_total_rev = p_total_grid[::-1]
+        p_aer_rev   = p_aer_grid[::-1]
+
+        ltp_frac = ltp / CP if CP > 0 else 0.0
+
         with np.errstate(invalid="ignore", divide="ignore"):
-            # Below LTP: all base. Between LTP and CP: base up to LTP, rest threshold.
+            # For p > MAP: look up the aerobic contribution from the PDC
+            # For p <= MAP: aerobic system is fully ramped → static waterfall
+            above_map = p > CP
+            p_aer_at_p = np.where(
+                above_map,
+                np.interp(p, p_total_rev, p_aer_rev, left=CP, right=0.0),
+                p,  # placeholder, overwritten below
+            )
+            # Base and threshold from the aerobic contribution
+            p_base_at_p = np.where(above_map, p_aer_at_p * ltp_frac, 0.0)
+            p_thresh_at_p = np.where(above_map, p_aer_at_p - p_base_at_p, 0.0)
+
+            # Below MAP: static waterfall (aerobic fully engaged)
+            p_base_at_p   = np.where(~above_map, np.minimum(p, ltp), p_base_at_p)
+            p_thresh_at_p = np.where(
+                ~above_map,
+                np.maximum(np.minimum(p, CP) - ltp, 0.0),
+                p_thresh_at_p,
+            )
+
+            f_ltp    = np.where(p > 0, p_base_at_p / p, 0.0)
+            f_thresh = np.where(p > 0, p_thresh_at_p / p, 0.0)
+            f_awc    = np.where(p > 0, np.maximum(p - p_base_at_p - p_thresh_at_p, 0.0) / p, 0.0)
+    elif ltp is not None and ltp > 0 and CP > 0:
+        # Fallback: static waterfall when PDC model params unavailable
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc    = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
             f_ltp    = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
             f_thresh = np.where(p > 0, np.maximum(np.minimum(p, CP) - ltp, 0.0) / p, 0.0)
     else:
-        f_ltp = f_map
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+        f_ltp = 1.0 - f_awc
         f_thresh = np.zeros(n)
 
     # Weighted cumulative zone fractions (proportion of TSS rate at each point)
@@ -843,11 +897,15 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
         CP  = live_pdc["MAP"]
         ftp = live_pdc["ftp"]
         ltp = live_pdc.get("ltp")
+        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
     elif not params_row.empty:
         r   = params_row.iloc[0]
         CP  = float(r["MAP"])
         ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
         ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
+        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
+        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
+        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
     else:
         return go.Figure()
 
@@ -855,7 +913,8 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
     power   = records["power"].to_numpy(dtype=float)
     (t_min, cum_ltp, cum_thresh, cum_awc,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp)
+        elapsed, power, ftp, CP, ltp=ltp,
+        AWC=_awc, Pmax=_pmax, tau2=_tau2)
 
     rate_total = rate_ltp + rate_thresh + rate_awc
 
@@ -901,11 +960,15 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         CP  = live_pdc["MAP"]
         ftp = live_pdc["ftp"]
         ltp = live_pdc.get("ltp")
+        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
     elif not params_row.empty:
         r   = params_row.iloc[0]
         CP  = float(r["MAP"])
         ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
         ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
+        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
+        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
+        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
     else:
         return go.Figure()
 
@@ -913,7 +976,8 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
     power   = records["power"].to_numpy(dtype=float)
     (t_min, cum_ltp, cum_thresh, cum_awc,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp)
+        elapsed, power, ftp, CP, ltp=ltp,
+        AWC=_awc, Pmax=_pmax, tau2=_tau2)
 
     final_ltp    = cum_ltp[-1]
     final_thresh = cum_thresh[-1]
