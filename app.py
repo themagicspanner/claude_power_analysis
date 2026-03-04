@@ -26,6 +26,7 @@ Pages / sections
 import argparse
 import base64
 import datetime
+import json
 import os
 import sqlite3
 import threading
@@ -57,8 +58,9 @@ from graphs import (
     _tss_rate_series, _compute_pmc,
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
+BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
+DB_PATH        = os.path.join(BASE_DIR, "cycling.db")
+WORKOUTS_PATH  = os.path.join(BASE_DIR, "saved_workouts.json")
 
 STRAVA_SYNC_INTERVAL = 15 * 60  # seconds between background Strava syncs
 STRAVA_SYNC_LOOKBACK = 90       # default days to look back when syncing
@@ -481,6 +483,22 @@ def _get_latest_pdc(pdc_params: pd.DataFrame,
         "ftp":  float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
         "ltp":  float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
     }
+
+
+# ── Saved workouts persistence ────────────────────────────────────────────────
+
+def _load_workouts() -> dict[str, list[dict]]:
+    """Load saved workouts from JSON file. Returns {name: rowData}."""
+    if os.path.exists(WORKOUTS_PATH):
+        with open(WORKOUTS_PATH, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_workouts(workouts: dict[str, list[dict]]) -> None:
+    """Persist workouts dict to JSON file."""
+    with open(WORKOUTS_PATH, "w") as f:
+        json.dump(workouts, f, indent=2)
 
 
 def _build_workout_records(row_data: list[dict],
@@ -1157,6 +1175,57 @@ app.layout = html.Div(
                            "marginBottom": "20px", "maxWidth": "660px"},
                 ),
 
+                # ── Saved workouts bar ──
+                html.Div(style={
+                    "display": "flex", "gap": "10px", "alignItems": "center",
+                    "marginBottom": "16px", "flexWrap": "wrap",
+                }, children=[
+                    dcc.Dropdown(
+                        id="workout-library",
+                        placeholder="Load a saved workout…",
+                        options=[],
+                        style={"width": "240px", "color": "#222"},
+                        clearable=True,
+                    ),
+                    dcc.Input(
+                        id="workout-name-input",
+                        placeholder="Workout name",
+                        type="text",
+                        debounce=True,
+                        style={
+                            "width": "200px", "padding": "6px 10px",
+                            "borderRadius": "4px",
+                            "border": "1px solid #555",
+                            "background": "#1e2a3a", "color": "#e8edf5",
+                            "fontSize": "13px",
+                        },
+                    ),
+                    html.Button(
+                        "Save", id="workout-save-btn", n_clicks=0,
+                        style={
+                            "padding": "6px 16px", "cursor": "pointer",
+                            "borderRadius": "4px",
+                            "border": "1px solid #4a9eff",
+                            "background": "#4a9eff", "color": "#fff",
+                            "fontSize": "13px", "fontWeight": "600",
+                        },
+                    ),
+                    html.Button(
+                        "Delete", id="workout-delete-btn", n_clicks=0,
+                        style={
+                            "padding": "6px 16px", "cursor": "pointer",
+                            "borderRadius": "4px",
+                            "border": "1px solid #ff6b6b",
+                            "background": "transparent", "color": "#ff6b6b",
+                            "fontSize": "13px",
+                        },
+                    ),
+                    html.Span(id="workout-lib-status", style={
+                        "color": "#7a8fbb", "fontSize": "12px",
+                        "marginLeft": "4px",
+                    }),
+                ]),
+
                 html.Div(id="workout-pdc-cards",
                          style={"display": "flex", "gap": "12px",
                                 "marginBottom": "16px", "flexWrap": "wrap"}),
@@ -1612,23 +1681,85 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
 
 @app.callback(
     Output("workout-table", "rowData"),
+    Output("workout-name-input", "value"),
     Input("workout-add-row",    "n_clicks"),
     Input("workout-remove-row", "n_clicks"),
+    Input("workout-library",    "value"),
     State("workout-table",      "rowData"),
+    State("workout-name-input", "value"),
     prevent_initial_call=True,
 )
-def manage_workout_rows(add_clicks, remove_clicks, current_rows):
-    if ctx.triggered_id == "workout-add-row":
+def manage_workout_rows(add_clicks, remove_clicks, selected_name,
+                        current_rows, current_name):
+    trigger = ctx.triggered_id
+    if trigger == "workout-add-row":
         current_rows.append({
             "work_duration_min": 5, "work_intensity_pct": 100,
             "rest_duration_min": 5, "rest_intensity_pct": 40,
             "repetitions": 3,
         })
-    elif ctx.triggered_id == "workout-remove-row" and len(current_rows) > 1:
+        return current_rows, dash.no_update
+    elif trigger == "workout-remove-row" and len(current_rows) > 1:
         current_rows.pop()
-    else:
+        return current_rows, dash.no_update
+    elif trigger == "workout-library" and selected_name:
+        workouts = _load_workouts()
+        if selected_name in workouts:
+            return workouts[selected_name], selected_name
         raise dash.exceptions.PreventUpdate
-    return current_rows
+    raise dash.exceptions.PreventUpdate
+
+
+@app.callback(
+    Output("workout-library",   "options"),
+    Output("workout-library",   "value", allow_duplicate=True),
+    Output("workout-lib-status", "children"),
+    Input("workout-save-btn",   "n_clicks"),
+    Input("workout-delete-btn", "n_clicks"),
+    State("workout-name-input", "value"),
+    State("workout-table",      "rowData"),
+    State("workout-library",    "value"),
+    prevent_initial_call=True,
+)
+def save_or_delete_workout(save_clicks, del_clicks, name, row_data,
+                           selected):
+    trigger = ctx.triggered_id
+    workouts = _load_workouts()
+
+    if trigger == "workout-save-btn":
+        if not name or not name.strip():
+            opts = [{"label": k, "value": k} for k in sorted(workouts)]
+            return opts, dash.no_update, "Enter a name first"
+        name = name.strip()
+        workouts[name] = row_data
+        _save_workouts(workouts)
+        opts = [{"label": k, "value": k} for k in sorted(workouts)]
+        return opts, name, f"Saved '{name}'"
+
+    elif trigger == "workout-delete-btn":
+        target = selected or (name.strip() if name else None)
+        if not target or target not in workouts:
+            opts = [{"label": k, "value": k} for k in sorted(workouts)]
+            return opts, dash.no_update, "Select a workout to delete"
+        del workouts[target]
+        _save_workouts(workouts)
+        opts = [{"label": k, "value": k} for k in sorted(workouts)]
+        return opts, None, f"Deleted '{target}'"
+
+    raise dash.exceptions.PreventUpdate
+
+
+@app.callback(
+    Output("workout-library", "options", allow_duplicate=True),
+    Input("page-workout",     "style"),
+    prevent_initial_call=True,
+)
+def _populate_workout_library(style):
+    """Populate the workout dropdown when the page becomes visible."""
+    if style and style.get("display") == "none":
+        raise dash.exceptions.PreventUpdate
+    workouts = _load_workouts()
+    return [{"label": k, "value": k} for k in sorted(workouts)]
 
 
 @app.callback(

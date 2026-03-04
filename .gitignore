@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 cycling.db
 strava_config.json
+saved_workouts.json
