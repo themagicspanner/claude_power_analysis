@@ -1216,6 +1216,9 @@ app.layout = html.Div(
                         {"headerName": "Base",      "field": "Base TSS",   "sortable": True, "width": 70},
                         {"headerName": "Thresh",    "field": "Thresh TSS", "sortable": True, "width": 70},
                         {"headerName": "AWC",       "field": "AWC TSS",    "sortable": True, "width": 70},
+                        {"headerName": "PDC Base",   "field": "PDC Base",   "sortable": False, "width": 90},
+                        {"headerName": "PDC Thresh", "field": "PDC Thresh", "sortable": False, "width": 90},
+                        {"headerName": "PDC AWC",    "field": "PDC AWC",    "sortable": False, "width": 90},
                     ],
                     rowData=[],
                     defaultColDef={"resizable": True},
@@ -1790,6 +1793,69 @@ def _make_power_trace_svg(power: np.ndarray, width: int = 120, height: int = 40)
     )
 
 
+def _pdc_duration_for_zone_pcts(base_pct: float, thresh_pct: float, awc_pct: float,
+                                 pdc: dict | None) -> tuple[str, str, str]:
+    """Find the PDC duration where each zone's fraction matches the given percentage.
+
+    Returns formatted duration strings (e.g. "5:00", "1:30:00") for base,
+    threshold, and AWC zones, or "—" if no match.
+    """
+    if (pdc is None or not pdc.get("AWC") or not pdc.get("Pmax")
+            or not pdc.get("tau2") or not pdc.get("MAP") or not pdc.get("ltp")):
+        return ("—", "—", "—")
+
+    AWC  = pdc["AWC"]
+    Pmax = pdc["Pmax"]
+    MAP  = pdc["MAP"]
+    tau2 = pdc["tau2"]
+    ltp  = pdc["ltp"]
+    if MAP <= 0 or ltp <= 0:
+        return ("—", "—", "—")
+
+    ltp_r = ltp / MAP
+
+    # Compute zone fractions across the PDC at a fine grid of durations
+    t_grid = np.logspace(np.log10(0.5), np.log10(7200), 2000)
+    p_total = _power_model(t_grid, AWC, Pmax, MAP, tau2)
+    p_aer   = MAP * (1.0 - np.exp(-t_grid / tau2))
+
+    f_base_grid   = (p_aer * ltp_r) / p_total * 100.0
+    f_thresh_grid = (p_aer * (1.0 - ltp_r)) / p_total * 100.0
+    f_awc_grid    = (p_total - p_aer) / p_total * 100.0
+
+    def _fmt_duration(seconds: float) -> str:
+        s = int(round(seconds))
+        if s >= 3600:
+            h, rem = divmod(s, 3600)
+            m, sec = divmod(rem, 60)
+            return f"{h}:{m:02d}:{sec:02d}"
+        m, sec = divmod(s, 60)
+        return f"{m}:{sec:02d}"
+
+    def _lookup(frac_grid: np.ndarray, target_pct: float) -> str:
+        """Interpolate to find the duration where frac_grid == target_pct."""
+        if target_pct <= 0:
+            return "—"
+        # base and threshold fractions increase with duration; AWC decreases.
+        if frac_grid[-1] > frac_grid[0]:
+            # Increasing
+            if target_pct < frac_grid[0] or target_pct > frac_grid[-1]:
+                return "—"
+            t = float(np.interp(target_pct, frac_grid, t_grid))
+        else:
+            # Decreasing — reverse for np.interp
+            if target_pct < frac_grid[-1] or target_pct > frac_grid[0]:
+                return "—"
+            t = float(np.interp(target_pct, frac_grid[::-1], t_grid[::-1]))
+        return _fmt_duration(t)
+
+    return (
+        _lookup(f_base_grid,   base_pct),
+        _lookup(f_thresh_grid, thresh_pct),
+        _lookup(f_awc_grid,    awc_pct),
+    )
+
+
 def _workout_summary_row(name: str, rows: list[dict],
                          pdc: dict | None) -> dict:
     """Build a summary dict for the workout list table with full metrics."""
@@ -1807,7 +1873,8 @@ def _workout_summary_row(name: str, rows: list[dict],
         return {"Name": name, "Power": "", "Type": "—", "Duration": "0m",
                 "Avg Power": "—", "NP": "—", "IF": "—",
                 "TSS": "—", "Base TSS": "—", "Thresh TSS": "—",
-                "AWC TSS": "—"}
+                "AWC TSS": "—",
+                "PDC Base": "—", "PDC Thresh": "—", "PDC AWC": "—"}
 
     power = records["power"].to_numpy(dtype=float)
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
@@ -1836,6 +1903,7 @@ def _workout_summary_row(name: str, rows: list[dict],
     base_tss   = cum_ltp[-1]
     thresh_tss = cum_thresh[-1]
     awc_tss    = cum_awc[-1]
+    total_zone = base_tss + thresh_tss + awc_tss
 
     if awc_tss >= 1:
         zone_type = "Anaerobic"
@@ -1843,6 +1911,16 @@ def _workout_summary_row(name: str, rows: list[dict],
         zone_type = "Threshold"
     else:
         zone_type = "Base"
+
+    # PDC equivalent durations for each zone's TSS percentage
+    if total_zone > 0:
+        base_pct   = base_tss / total_zone * 100.0
+        thresh_pct = thresh_tss / total_zone * 100.0
+        awc_pct    = awc_tss / total_zone * 100.0
+        pdc_base, pdc_thresh, pdc_awc = _pdc_duration_for_zone_pcts(
+            base_pct, thresh_pct, awc_pct, pdc)
+    else:
+        pdc_base = pdc_thresh = pdc_awc = "—"
 
     return {
         "Name":       name,
@@ -1856,6 +1934,9 @@ def _workout_summary_row(name: str, rows: list[dict],
         "Base TSS":   f"{base_tss:.0f}",
         "Thresh TSS": f"{thresh_tss:.0f}",
         "AWC TSS":    f"{awc_tss:.0f}",
+        "PDC Base":   pdc_base,
+        "PDC Thresh": pdc_thresh,
+        "PDC AWC":    pdc_awc,
     }
 
 
