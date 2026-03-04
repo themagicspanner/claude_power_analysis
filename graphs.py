@@ -1376,8 +1376,7 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     Row 2 — Threshold (LTP→MAP) TSS: CTL (42d), ATL (7d), TSB
     Row 3 — Anaerobic (> MAP) TSS:   CTL (42d), ATL (7d), TSB
 
-    TSB = CTL − ATL from the previous day.
-    Green fill → positive TSB (fresh); red fill → negative TSB (tired).
+    TSB = CTL − ATL from the previous day (dotted line per panel).
     """
     required = {"tss", "tss_map", "tss_awc"}
     if pdc_params.empty or not required.issubset(pdc_params.columns):
@@ -1436,8 +1435,6 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     for row, pmc, bar_vals, bar_col, ctl_col, atl_col, label in panels:
         show  = row == 1   # show in legend only for the top panel
         dates = pmc["date"].dt.strftime("%Y-%m-%d")
-        tsb_pos = np.where(pmc["tsb"] >= 0, pmc["tsb"], 0.0)
-        tsb_neg = np.where(pmc["tsb"] <  0, pmc["tsb"], 0.0)
 
         # TSS bars on LEFT axis (background context)
         fig.add_trace(go.Bar(
@@ -1447,22 +1444,12 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             hovertemplate=f"TSS {label}: %{{y:.0f}}<extra></extra>",
         ), row=row, col=1, secondary_y=False)
 
-        # TSB shading on RIGHT axis
+        # TSB dotted line on RIGHT axis
         fig.add_trace(go.Scatter(
-            x=dates, y=tsb_pos.round(1),
-            mode="lines", fill="tozeroy",
-            fillcolor=_zc(_RGB_BASE, 0.22),
-            line=dict(color="rgba(0,0,0,0)", width=0),
-            name="TSB (fresh)", showlegend=show,
-            hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
-        ), row=row, col=1, secondary_y=True)
-
-        fig.add_trace(go.Scatter(
-            x=dates, y=tsb_neg.round(1),
-            mode="lines", fill="tozeroy",
-            fillcolor=_zc(_RGB_AWC, 0.22),
-            line=dict(color="rgba(0,0,0,0)", width=0),
-            name="TSB (tired)", showlegend=show,
+            x=dates, y=pmc["tsb"].round(1),
+            mode="lines", name=f"TSB ({label})",
+            line=dict(color=ctl_col, width=1.5, dash="dot"),
+            showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
         ), row=row, col=1, secondary_y=True)
 
@@ -1546,8 +1533,8 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
 
     TSS bars (left axis) are stacked by zone: Base (≤ LTP), Threshold
     (LTP→MAP), Anaerobic (> MAP).  CTL (right axis) is shown as stacked
-    areas for the same three zones.  TSB_AWC (red) and aTSB_MAP (green)
-    are plotted as lines on the right axis.
+    areas for the same three zones.  TSB lines for Base (green),
+    Threshold (amber), and AWC (red) are plotted on the right axis.
     """
     required = {"tss", "tss_map", "tss_awc"}
     if pdc_params.empty or not required.issubset(pdc_params.columns):
@@ -1635,17 +1622,24 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
 
     # ── TSB lines on RIGHT axis ────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_awc["tsb"].round(1),
-        mode="lines", name="TSB AWC",
-        line=dict(color=Z_AWC, width=2),
-        hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_ltp["tsb"].round(1),
+        mode="lines", name="TSB Base",
+        line=dict(color=Z_BASE, width=2),
+        hovertemplate="TSB Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
         x=dates, y=pmc_thresh["tsb"].round(1),
-        mode="lines", name="aTSB MAP",
+        mode="lines", name="TSB Threshold",
         line=dict(color=Z_THRESH, width=2),
-        hovertemplate="aTSB MAP: %{y:.1f}<extra></extra>",
+        hovertemplate="TSB Thresh: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=pmc_awc["tsb"].round(1),
+        mode="lines", name="TSB AWC",
+        line=dict(color=Z_AWC, width=2),
+        hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
@@ -1653,9 +1647,10 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
 
     # ── Align zero across both axes ────────────────────────────────────
     total_ctl = pmc_ltp["ctl"] + pmc_thresh["ctl"] + pmc_awc["ctl"]
-    r_min = float(min(pmc_awc["tsb"].min(), pmc_thresh["tsb"].min(), 0))
-    r_max = float(max(total_ctl.max(), pmc_thresh["tsb"].max(),
-                      pmc_awc["tsb"].max(), 1))
+    r_min = float(min(pmc_ltp["tsb"].min(), pmc_thresh["tsb"].min(),
+                      pmc_awc["tsb"].min(), 0))
+    r_max = float(max(total_ctl.max(), pmc_ltp["tsb"].max(),
+                      pmc_thresh["tsb"].max(), pmc_awc["tsb"].max(), 1))
     l_max = float(max(
         np.max(_tss_ltp_bars + _tss_thresh_bars + _tss_awc_bars), 1))
     pad   = 0.05
