@@ -1830,9 +1830,9 @@ def _workout_summary_row(name: str, rows: list[dict],
     awc_tss    = cum_awc[-1]
 
     if awc_tss >= 1:
-        zone_type = "All Zones"
+        zone_type = "Anaerobic"
     elif thresh_tss >= 1:
-        zone_type = "Base + Threshold"
+        zone_type = "Threshold"
     else:
         zone_type = "Base"
 
