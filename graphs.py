@@ -86,7 +86,6 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
             fig.add_trace(go.Scatter(
                 x=x, y=y,
                 mode="lines", name=z_name,
-                fill="tozeroy", fillcolor=_zc(z_rgb, z_alpha),
                 line=dict(color=z_line, width=1),
                 yaxis="y1",
                 showlegend=first_trace,
