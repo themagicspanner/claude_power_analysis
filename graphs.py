@@ -673,8 +673,13 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
                      ltp: float | None = None) -> tuple:
     """Return TSS rate and cumulative LTP / Threshold / AWC series over the ride.
 
-    Uses a 30-second rolling average (same-length via 'same' convolution),
-    splits at CP and LTP proportionally, and integrates second-by-second.
+    Uses the recalculated-from-start method:
+      TSS(t) = (t / 3600) * (NP(0..t) / FTP)^2 * 100
+    where NP(0..t) is the Normalized Power computed over all samples from
+    the start up to time t.
+
+    Zone fractions are derived from instantaneous power (split at CP / LTP)
+    and applied proportionally to the cumulative TSS at each point.
 
     Returns (t_min, cum_ltp, cum_thresh, cum_awc,
              rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
@@ -682,6 +687,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     rate_1h_avg is the 1-hour time-weighted rolling average of total TSS rate.
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
+    n = len(p)
 
     dt = np.empty_like(elapsed_s)
     dt[0]  = 0.0
@@ -695,53 +701,71 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     kernel = np.ones(window) / window
     p_30s  = np.convolve(p, kernel, mode="same")
 
-    # Split fractions from instantaneous power so that brief above-CP efforts register
+    # --- Cumulative TSS via recalculated-from-start NP method ---
+    # At each time t: NP(0..t) = (mean(p_30s[0..t]^4))^0.25
+    #                 TSS(t) = (t_s / 3600) * (NP(0..t) / FTP)^2 * 100
+    cum_total = np.zeros(n)
+    if ftp > 0:
+        p_30s_4th  = p_30s ** 4
+        cumsum_4th = np.cumsum(p_30s_4th)
+        idx_arr    = np.arange(1, n, dtype=float)
+        t_s_arr    = elapsed_s[1:] - elapsed_s[0]
+        np_at_t    = (cumsum_4th[1:] / (idx_arr + 1)) ** 0.25
+        cum_total[1:] = (t_s_arr / 3600.0) * (np_at_t / ftp) ** 2 * 100.0
+
+    # --- Zone fractions from instantaneous power ---
     with np.errstate(invalid="ignore", divide="ignore"):
         f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
     f_map = 1.0 - f_awc
 
-    # Sub-split aerobic fraction at LTP (proportional: LTP/MAP of aerobic)
     if ltp is not None and ltp > 0 and CP > 0:
         f_ltp = f_map * (ltp / CP)
     else:
         f_ltp = f_map
     f_thresh = f_map - f_ltp
 
-    if ftp > 0:
-        tss_rate_ph = (p_30s / ftp) ** 2 * 100.0        # TSS per hour at each point
-        tss_rate    = tss_rate_ph * dt / 3600.0          # TSS increment per sample
-    else:
-        tss_rate_ph = np.zeros_like(p_30s)
-        tss_rate    = np.zeros_like(p_30s)
+    # Weighted cumulative zone fractions (proportion of TSS rate at each point)
+    tss_rate_local = (p_30s / ftp) ** 2 * 100.0 if ftp > 0 else np.zeros(n)
+    rate_ltp_local    = tss_rate_local * f_ltp
+    rate_thresh_local = tss_rate_local * f_thresh
+    rate_awc_local    = tss_rate_local * f_awc
+    rate_total_local  = rate_ltp_local + rate_thresh_local + rate_awc_local
 
-    # Scale so cumulative values match the NP-based TSS (same basis as stat cards).
-    # Uses _normalized_power — the exact same function that produced the stored TSS —
-    # so tss_np == stored TSS and the chart endpoints match the stat cards precisely.
-    dur_s   = float(elapsed_s[-1] - elapsed_s[0]) if len(elapsed_s) > 1 else 0.0
-    np_val  = _normalized_power(power, hz) if ftp > 0 else 0.0
-    tss_np  = (dur_s / 3600.0) * (np_val / ftp) ** 2 * 100.0 if ftp > 0 else 0.0
-    tss_p30 = float(np.sum(tss_rate))
-    scale   = (tss_np / tss_p30) if tss_p30 > 0 else 1.0
+    # Cumulative zone proportions (running weighted average of fraction)
+    cum_rate_total = np.cumsum(rate_total_local * dt)
+    cum_rate_ltp   = np.cumsum(rate_ltp_local * dt)
+    cum_rate_thresh = np.cumsum(rate_thresh_local * dt)
+    cum_rate_awc   = np.cumsum(rate_awc_local * dt)
 
-    cum_ltp      = np.cumsum(tss_rate * f_ltp)    * scale
-    cum_thresh   = np.cumsum(tss_rate * f_thresh)  * scale
-    cum_awc      = np.cumsum(tss_rate * f_awc)     * scale
-    rate_ltp_ph    = tss_rate_ph * f_ltp    * scale
-    rate_thresh_ph = tss_rate_ph * f_thresh * scale
-    rate_awc_ph    = tss_rate_ph * f_awc    * scale
+    with np.errstate(invalid="ignore", divide="ignore"):
+        frac_ltp    = np.where(cum_rate_total > 0, cum_rate_ltp / cum_rate_total, 0.0)
+        frac_thresh = np.where(cum_rate_total > 0, cum_rate_thresh / cum_rate_total, 0.0)
+        frac_awc    = np.where(cum_rate_total > 0, cum_rate_awc / cum_rate_total, 0.0)
+
+    cum_ltp    = cum_total * frac_ltp
+    cum_thresh = cum_total * frac_thresh
+    cum_awc    = cum_total * frac_awc
+
+    # --- Instantaneous rates (TSS/h) derived from cumulative derivative ---
+    d_total = np.zeros(n)
+    d_total[1:] = np.diff(cum_total)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate_total_ph = np.where(dt > 0, d_total / dt * 3600.0, 0.0)
+
+    rate_ltp_ph    = rate_total_ph * f_ltp
+    rate_thresh_ph = rate_total_ph * f_thresh
+    rate_awc_ph    = rate_total_ph * f_awc
     t_min          = elapsed_s / 60.0
 
     # 1-hour time-weighted rolling average of total TSS rate.
-    # Uses prefix sums for O(n log n) efficiency; dt-weighted so that
-    # pauses and irregular sampling are handled correctly.
-    cum_dt_ext      = np.empty(len(dt) + 1)
+    cum_dt_ext      = np.empty(n + 1)
     cum_dt_ext[0]   = 0.0
     cum_dt_ext[1:]  = np.cumsum(dt)
-    cum_rdt_ext     = np.empty(len(dt) + 1)
+    cum_rdt_ext     = np.empty(n + 1)
     cum_rdt_ext[0]  = 0.0
-    cum_rdt_ext[1:] = np.cumsum(tss_rate_ph * dt * scale)
+    cum_rdt_ext[1:] = np.cumsum(rate_total_ph * dt)
     left            = np.searchsorted(elapsed_s, elapsed_s - 3600.0, side="left")
-    idx             = np.arange(len(dt))
+    idx             = np.arange(n)
     window_dt       = cum_dt_ext[idx + 1] - cum_dt_ext[left]
     window_rdt      = cum_rdt_ext[idx + 1] - cum_rdt_ext[left]
     with np.errstate(invalid="ignore", divide="ignore"):

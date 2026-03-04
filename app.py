@@ -1216,8 +1216,6 @@ app.layout = html.Div(
 
                 dcc.Graph(id="graph-workout-power"),
                 html.Hr(),
-                dcc.Graph(id="graph-workout-tss-compare"),
-                html.Hr(),
                 dcc.Graph(id="graph-workout-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-workout-zone-bars"),
@@ -1635,7 +1633,6 @@ def manage_workout_rows(add_clicks, remove_clicks, current_rows):
 
 @app.callback(
     Output("graph-workout-power",          "figure"),
-    Output("graph-workout-tss-compare",    "figure"),
     Output("graph-workout-tss-components", "figure"),
     Output("graph-workout-zone-bars",      "figure"),
     Output("graph-workout-mmp-pdc",        "figure"),
@@ -1659,7 +1656,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
             showarrow=False, font=dict(size=14, color="grey"),
         )
         empty.update_layout(height=200, template="plotly_white")
-        return empty, empty, empty, empty, empty, [], []
+        return empty, empty, empty, empty, [], []
 
     map_w = latest_pdc["MAP"]
     ltp_w = latest_pdc["ltp"]
@@ -1693,45 +1690,6 @@ def update_workout_charts(cell_changed, row_data, _ver):
         zone_data,
         cum_ltp[-1], cum_thresh[-1], cum_awc[-1],
         ltp_w, map_w,
-    )
-
-    # TSS comparison: incremental (30s rolling) vs recalculated-from-start
-    t_min = elapsed / 60.0
-    # Method 1: Incremental (running integral of 30s-smoothed TSS rate, scaled)
-    cum_total_incremental = cum_ltp + cum_thresh + cum_awc
-
-    # Method 2: Recalculate TSS(t) = (t/3600) * (NP(0..t)/FTP)^2 * 100
-    #   at each second, compute NP from the start up to that point
-    p = np.where(np.isnan(power), 0.0, power.astype(float))
-    window_30 = 30
-    cum_recalc = np.zeros(len(p))
-    if ftp_w > 0:
-        # Build 30s rolling average, then compute running NP at each point
-        p_30s_full = np.convolve(p, np.ones(window_30) / window_30, mode="same")
-        p_30s_4th = p_30s_full ** 4
-        cumsum_4th = np.cumsum(p_30s_4th)
-        for i in range(1, len(p)):
-            t_s = float(i)
-            mean_4th = cumsum_4th[i] / (i + 1)
-            np_at_t = mean_4th ** 0.25
-            cum_recalc[i] = (t_s / 3600.0) * (np_at_t / ftp_w) ** 2 * 100.0
-
-    wk_fig_tss_cmp = go.Figure()
-    wk_fig_tss_cmp.add_trace(go.Scatter(
-        x=t_min, y=cum_total_incremental,
-        mode="lines", name="Incremental (30s rate integral)",
-        line=dict(color="#4a9eff", width=2),
-    ))
-    wk_fig_tss_cmp.add_trace(go.Scatter(
-        x=t_min, y=cum_recalc,
-        mode="lines", name="Recalculated from start (NP-based)",
-        line=dict(color="#ff6b6b", width=2, dash="dash"),
-    ))
-    wk_fig_tss_cmp.update_layout(
-        title="TSS Accumulation: Incremental vs Recalculated",
-        xaxis_title="Time (min)", yaxis_title="Cumulative TSS",
-        template="plotly_white", height=350,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
     # MMP / PDC overlay
@@ -1772,8 +1730,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
         _make_card("FTP", f"{int(ftp_w)}", "W", _cs, _ls, _vs, _us),
     ]
 
-    return (wk_fig_power, wk_fig_tss_cmp, wk_fig_tss, wk_fig_zones,
-            wk_fig_mmp, stats, pdc_cards)
+    return wk_fig_power, wk_fig_tss, wk_fig_zones, wk_fig_mmp, stats, pdc_cards
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
