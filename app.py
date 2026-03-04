@@ -1673,7 +1673,7 @@ def update_ride_charts(ride_id, _ver):
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
     has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
-    mmh_style = {"flex": "1", "minWidth": "0"} if has_hr else {"flex": "1", "minWidth": "0", "display": "none"}
+    mmh_style = {"display": "none"}
 
     has_gps   = "latitude" in records.columns and records["latitude"].notna().any()
     map_style = {"display": "block"} if has_gps else {"display": "none"}
