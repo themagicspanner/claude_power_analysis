@@ -1177,6 +1177,8 @@ app.layout = html.Div(
                         dcc.Graph(id="graph-mmh"),
                     ]),
                 ]),
+                html.Hr(),
+                html.Div(id="mmp-table-container"),
 
                 html.Div(style={"height": "40px"}),
             ]),
@@ -1546,6 +1548,67 @@ app.clientside_callback(
 )
 
 
+def _fmt_mmp_duration(seconds: int) -> str:
+    """Format a duration in seconds to a human-readable label for the MMP table."""
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{m}min" if s == 0 else f"{m}:{s:02d}"
+    h, rem = divmod(seconds, 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}" if m else f"{h}h"
+
+
+def _build_mmp_table(this_mmp: pd.DataFrame) -> html.Div:
+    """Build a compact horizontal MMP table from a ride's MMP data."""
+    if this_mmp.empty:
+        return html.Div()
+
+    cell_style = {
+        "padding": "6px 12px", "textAlign": "center",
+        "borderBottom": "1px solid #dee2e6",
+        "borderRight": "1px solid #eee",
+        "fontSize": "13px",
+    }
+    hdr_style = {
+        **cell_style,
+        "background": "#f1f3f5", "fontWeight": "600",
+        "color": "#555", "fontSize": "11px",
+        "textTransform": "uppercase", "letterSpacing": "0.03em",
+    }
+    val_style = {
+        **cell_style,
+        "fontWeight": "bold", "color": "#222", "fontSize": "15px",
+    }
+
+    durations = this_mmp["duration_s"].tolist()
+    powers = this_mmp["power"].tolist()
+
+    header_cells = [html.Td(_fmt_mmp_duration(int(d)), style=hdr_style) for d in durations]
+    value_cells = [html.Td(f"{p:.0f}", style=val_style) for p in powers]
+
+    table = html.Table(
+        style={
+            "borderCollapse": "collapse", "width": "100%",
+            "background": "white", "borderRadius": "8px",
+            "overflow": "hidden", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+        },
+        children=[
+            html.Thead(html.Tr(header_cells)),
+            html.Tbody(html.Tr(value_cells)),
+        ],
+    )
+
+    return html.Div(style={"overflowX": "auto"}, children=[
+        html.H4("Mean Maximal Power", style={
+            "color": "#e8edf5", "fontSize": "14px", "fontWeight": "600",
+            "marginBottom": "8px",
+        }),
+        table,
+    ])
+
+
 @app.callback(
     Output("graph-power-hr",              "figure"),
     Output("graph-hr",                   "figure"),
@@ -1561,6 +1624,7 @@ app.clientside_callback(
     Output("pdc-stats",                  "children"),
     Output("power-stats",                "children"),
     Output("hr-stats",                   "children"),
+    Output("mmp-table-container",        "children"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1697,6 +1761,10 @@ def update_ride_charts(ride_id, _ver):
                                     AWC=_d_awc, Pmax=_d_pmax, tau2=_d_tau2)
             zone_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
 
+    # ── MMP table ──────────────────────────────────────────────────────────
+    this_mmp = mmp_all[mmp_all["ride_id"] == ride["id"]].sort_values("duration_s")
+    mmp_table = _build_mmp_table(this_mmp)
+
     return (
         fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
         fig_hr(records),
@@ -1716,6 +1784,7 @@ def update_ride_charts(ride_id, _ver):
         pdc_stats,
         power_stats,
         hr_stats,
+        mmp_table,
     )
 
 
