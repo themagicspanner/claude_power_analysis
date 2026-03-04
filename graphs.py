@@ -1579,11 +1579,12 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             l_min = 0.0
 
         fig.update_yaxes(title_text="Daily TSS", showgrid=False,
-                         zeroline=False, range=[l_min, l_max],
+                         zeroline=False, autorange=False,
+                         range=[l_min, l_max],
                          row=row, col=1, secondary_y=False)
         fig.update_yaxes(title_text="CTL / ATL / TSB", showgrid=True,
                          gridcolor="lightgrey", zeroline=False,
-                         range=[r_min, r_max],
+                         autorange=False, range=[r_min, r_max],
                          row=row, col=1, secondary_y=True)
 
     # Default visible window: last 90 days + 7-day projection
@@ -1595,10 +1596,11 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                      range=[x_start, x_end])
     fig.update_xaxes(title_text="Date", row=3, col=1)
     fig.update_layout(
-        title=dict(text="Performance Management Chart", font=dict(size=14)),
+        title=dict(text="Performance Management Chart", font=dict(size=14),
+                   y=0.98, yanchor="top"),
         barmode="stack",
         height=780,
-        margin=dict(t=70, b=50, l=70, r=20),
+        margin=dict(t=90, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
@@ -1734,11 +1736,12 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         l_min = 0.0
 
     fig.update_yaxes(title_text="Daily TSS", showgrid=False,
-                     zeroline=False, range=[l_min, l_max],
+                     zeroline=False, autorange=False,
+                     range=[l_min, l_max],
                      secondary_y=False)
     fig.update_yaxes(title_text="CTL / TSB", showgrid=True,
                      gridcolor="lightgrey", zeroline=False,
-                     range=[r_min, r_max],
+                     autorange=False, range=[r_min, r_max],
                      secondary_y=True)
 
     today   = pd.Timestamp.today().normalize()
@@ -1748,10 +1751,11 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
                      range=[x_start, x_end], title_text="Date")
     fig.update_layout(
-        title=dict(text="Performance Management Chart — Combined", font=dict(size=14)),
+        title=dict(text="Performance Management Chart — Combined",
+                   font=dict(size=14), y=0.98, yanchor="top"),
         barmode="stack",
         height=380,
-        margin=dict(t=50, b=50, l=70, r=20),
+        margin=dict(t=80, b=50, l=70, r=20),
         template="plotly_white",
         hovermode="x unified",
         showlegend=True,
