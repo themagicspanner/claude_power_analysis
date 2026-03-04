@@ -350,12 +350,22 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
             p_total   = _power_model(t_smooth, *popt)
-            # Aerobic component — fills from zero
+            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+            ltp = max(ltp, 0.0)
+            # Base component (0 → LTP fraction of aerobic)
+            p_base = np.minimum(p_aerobic, ltp)
             fig.add_trace(go.Scatter(
-                x=t_smooth, y=p_aerobic,
-                mode="lines", name="aerobic (MAP)",
+                x=t_smooth, y=p_base,
+                mode="lines", name="base (≤LTP)",
                 fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
                 line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
+            ))
+            # Threshold component (LTP → aerobic curve)
+            fig.add_trace(go.Scatter(
+                x=t_smooth, y=p_aerobic,
+                mode="lines", name="threshold (LTP→MAP)",
+                fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.20),
+                line=dict(color=_zc(_RGB_THRESH, 0.7), width=1.2),
             ))
             # Total model — fills from aerobic line, so the shaded band = anaerobic
             fig.add_trace(go.Scatter(
