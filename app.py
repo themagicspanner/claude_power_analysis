@@ -1163,47 +1163,79 @@ app.layout = html.Div(
                 html.Div(style={"height": "40px"}),
             ]),
 
-            # ── Workout Builder page ──────────────────────────────────
+            # ── Workout list page ─────────────────────────────────────
+            html.Div(id="page-workout-list", style={"display": "none"}, children=[
+                html.Div(style={
+                    "display": "flex", "justifyContent": "space-between",
+                    "alignItems": "center", "marginBottom": "20px",
+                }, children=[
+                    html.H2("Workouts",
+                            style={"color": "#e8edf5", "margin": "0",
+                                   "fontWeight": "600", "fontSize": "22px"}),
+                    html.Button("+ New Workout", id="workout-new-btn", n_clicks=0,
+                                style={
+                                    "padding": "8px 20px", "cursor": "pointer",
+                                    "borderRadius": "4px",
+                                    "border": "1px solid #4a9eff",
+                                    "background": "#4a9eff", "color": "#fff",
+                                    "fontSize": "13px", "fontWeight": "600",
+                                }),
+                ]),
+                dag.AgGrid(
+                    id="workout-list-table",
+                    columnDefs=[
+                        {"headerName": "Name",     "field": "Name",     "sortable": True, "flex": 2},
+                        {"headerName": "Steps",    "field": "Steps",    "sortable": True, "width": 80},
+                        {"headerName": "Duration", "field": "Duration", "sortable": True, "width": 110},
+                        {"headerName": "Summary",  "field": "Summary",  "sortable": False, "flex": 3},
+                    ],
+                    rowData=[],
+                    defaultColDef={"resizable": True},
+                    getRowId="params.data.Name",
+                    dashGridOptions={
+                        "domLayout": "autoHeight",
+                        "rowHeight": 44,
+                        "headerHeight": 36,
+                    },
+                    style={"width": "100%", "borderRadius": "8px", "overflow": "hidden"},
+                    className="ag-theme-alpine",
+                ),
+            ]),
+
+            # ── Workout editor page ──────────────────────────────────
             html.Div(id="page-workout", style={"display": "none"}, children=[
-                html.H2("Workout Builder",
-                        style={"color": "#e8edf5", "marginBottom": "8px",
-                               "fontWeight": "600", "fontSize": "22px"}),
-                html.P(
-                    "Define intervals below. Charts update as you edit. "
-                    "Intensities are expressed as % of your current MAP.",
-                    style={"color": "#7a8fbb", "fontSize": "13px",
-                           "marginBottom": "20px", "maxWidth": "660px"},
+                html.Button(
+                    "\u2190 Back to Workouts",
+                    id="btn-back-to-workout-list",
+                    style={
+                        "background": "transparent", "border": "none",
+                        "color": "#6e9ac7", "cursor": "pointer",
+                        "fontSize": "14px", "padding": "0 0 16px 0",
+                    },
                 ),
 
-                # ── Saved workouts bar ──
+                # Name + Save / Delete bar
                 html.Div(style={
                     "display": "flex", "gap": "10px", "alignItems": "center",
                     "marginBottom": "16px", "flexWrap": "wrap",
                 }, children=[
-                    dcc.Dropdown(
-                        id="workout-library",
-                        placeholder="Load a saved workout…",
-                        options=[],
-                        style={"width": "240px", "color": "#222"},
-                        clearable=True,
-                    ),
                     dcc.Input(
                         id="workout-name-input",
                         placeholder="Workout name",
                         type="text",
                         debounce=True,
                         style={
-                            "width": "200px", "padding": "6px 10px",
+                            "width": "260px", "padding": "8px 12px",
                             "borderRadius": "4px",
                             "border": "1px solid #555",
                             "background": "#1e2a3a", "color": "#e8edf5",
-                            "fontSize": "13px",
+                            "fontSize": "15px", "fontWeight": "600",
                         },
                     ),
                     html.Button(
                         "Save", id="workout-save-btn", n_clicks=0,
                         style={
-                            "padding": "6px 16px", "cursor": "pointer",
+                            "padding": "8px 20px", "cursor": "pointer",
                             "borderRadius": "4px",
                             "border": "1px solid #4a9eff",
                             "background": "#4a9eff", "color": "#fff",
@@ -1213,7 +1245,7 @@ app.layout = html.Div(
                     html.Button(
                         "Delete", id="workout-delete-btn", n_clicks=0,
                         style={
-                            "padding": "6px 16px", "cursor": "pointer",
+                            "padding": "8px 20px", "cursor": "pointer",
                             "borderRadius": "4px",
                             "border": "1px solid #ff6b6b",
                             "background": "transparent", "color": "#ff6b6b",
@@ -1225,6 +1257,13 @@ app.layout = html.Div(
                         "marginLeft": "4px",
                     }),
                 ]),
+
+                html.P(
+                    "Define intervals below. Charts update as you edit. "
+                    "Intensities are expressed as % of your current MAP.",
+                    style={"color": "#7a8fbb", "fontSize": "13px",
+                           "marginBottom": "16px", "maxWidth": "660px"},
+                ),
 
                 html.Div(id="workout-pdc-cards",
                          style={"display": "flex", "gap": "12px",
@@ -1260,8 +1299,9 @@ app.layout = html.Div(
                         "stopEditingWhenCellsLoseFocus": True,
                         "rowDragManaged": True,
                         "animateRows": True,
+                        "domLayout": "autoHeight",
                     },
-                    style={"height": "200px", "marginBottom": "12px"},
+                    style={"width": "100%", "marginBottom": "12px"},
                 ),
 
                 html.Div(style={"display": "flex", "gap": "10px",
@@ -1305,6 +1345,7 @@ app.layout = html.Div(
     Output("page-pdc-model",        "style"),
     Output("page-activities-list",  "style"),
     Output("page-activities",       "style"),
+    Output("page-workout-list",     "style"),
     Output("page-workout",          "style"),
     Output("nav-fitness",           "style"),
     Output("nav-pdc-model",         "style"),
@@ -1319,15 +1360,15 @@ def switch_page(_, __, ___, ____):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return (hide, hide, show, hide, hide,
+        return (hide, hide, show, hide, hide, hide,
                 _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
     if ctx.triggered_id == "nav-pdc-model":
-        return (hide, show, hide, hide, hide,
+        return (hide, show, hide, hide, hide, hide,
                 _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE)
     if ctx.triggered_id == "nav-workout":
-        return (hide, hide, hide, hide, show,
+        return (hide, hide, hide, hide, show, hide,
                 _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE)
-    return (show, hide, hide, hide, hide,
+    return (show, hide, hide, hide, hide, hide,
             _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
 
 
@@ -1679,87 +1720,133 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
 
 # ── Workout builder callbacks ─────────────────────────────────────────────────
 
+def _workout_summary_row(name: str, rows: list[dict]) -> dict:
+    """Build a summary dict for the workout list table."""
+    total_s = 0
+    parts = []
+    for r in rows:
+        work_s = int(float(r.get("work_duration_min") or 0) * 60)
+        rest_s = int(float(r.get("rest_duration_min") or 0) * 60)
+        reps   = int(r.get("repetitions") or 1)
+        total_s += (work_s + rest_s) * reps
+        pct = int(r.get("work_intensity_pct") or 0)
+        w_min = r.get("work_duration_min") or 0
+        parts.append(f"{reps}x{w_min}min @{pct}%")
+    mins = total_s // 60
+    return {
+        "Name": name,
+        "Steps": len(rows),
+        "Duration": f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m",
+        "Summary": " / ".join(parts),
+    }
+
+
 @app.callback(
-    Output("workout-table", "rowData"),
-    Output("workout-name-input", "value"),
-    Input("workout-add-row",    "n_clicks"),
-    Input("workout-remove-row", "n_clicks"),
-    Input("workout-library",    "value"),
-    State("workout-table",      "rowData"),
-    State("workout-name-input", "value"),
+    Output("workout-list-table", "rowData"),
+    Input("page-workout-list",   "style"),
     prevent_initial_call=True,
 )
-def manage_workout_rows(add_clicks, remove_clicks, selected_name,
-                        current_rows, current_name):
-    trigger = ctx.triggered_id
-    if trigger == "workout-add-row":
+def populate_workout_list(style):
+    """Refresh the workout list table when the page becomes visible."""
+    if style and style.get("display") == "none":
+        raise dash.exceptions.PreventUpdate
+    workouts = _load_workouts()
+    return [_workout_summary_row(k, v) for k, v in sorted(workouts.items())]
+
+
+@app.callback(
+    Output("workout-table",          "rowData"),
+    Output("workout-name-input",     "value"),
+    Output("page-workout-list",      "style", allow_duplicate=True),
+    Output("page-workout",           "style", allow_duplicate=True),
+    Input("workout-list-table",      "cellClicked"),
+    Input("workout-new-btn",         "n_clicks"),
+    prevent_initial_call=True,
+)
+def open_workout(cell_clicked, new_clicks):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    if ctx.triggered_id == "workout-new-btn":
+        default_rows = [{
+            "work_duration_min": 5, "work_intensity_pct": 100,
+            "rest_duration_min": 5, "rest_intensity_pct": 40,
+            "repetitions": 5,
+        }]
+        return default_rows, "", hide, show
+    if ctx.triggered_id == "workout-list-table" and cell_clicked:
+        name = cell_clicked["rowId"]
+        workouts = _load_workouts()
+        if name in workouts:
+            return workouts[name], name, hide, show
+    raise dash.exceptions.PreventUpdate
+
+
+@app.callback(
+    Output("page-workout-list",  "style", allow_duplicate=True),
+    Output("page-workout",       "style", allow_duplicate=True),
+    Input("btn-back-to-workout-list", "n_clicks"),
+    prevent_initial_call=True,
+)
+def go_back_to_workout_list(n_clicks):
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    return {"display": "block"}, {"display": "none"}
+
+
+@app.callback(
+    Output("workout-table", "rowData", allow_duplicate=True),
+    Input("workout-add-row",    "n_clicks"),
+    Input("workout-remove-row", "n_clicks"),
+    State("workout-table",      "rowData"),
+    prevent_initial_call=True,
+)
+def manage_workout_rows(add_clicks, remove_clicks, current_rows):
+    if ctx.triggered_id == "workout-add-row":
         current_rows.append({
             "work_duration_min": 5, "work_intensity_pct": 100,
             "rest_duration_min": 5, "rest_intensity_pct": 40,
             "repetitions": 3,
         })
-        return current_rows, dash.no_update
-    elif trigger == "workout-remove-row" and len(current_rows) > 1:
+        return current_rows
+    elif ctx.triggered_id == "workout-remove-row" and len(current_rows) > 1:
         current_rows.pop()
-        return current_rows, dash.no_update
-    elif trigger == "workout-library" and selected_name:
-        workouts = _load_workouts()
-        if selected_name in workouts:
-            return workouts[selected_name], selected_name
-        raise dash.exceptions.PreventUpdate
+        return current_rows
     raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
-    Output("workout-library",   "options"),
-    Output("workout-library",   "value", allow_duplicate=True),
     Output("workout-lib-status", "children"),
-    Input("workout-save-btn",   "n_clicks"),
-    Input("workout-delete-btn", "n_clicks"),
-    State("workout-name-input", "value"),
-    State("workout-table",      "rowData"),
-    State("workout-library",    "value"),
+    Output("workout-name-input", "value", allow_duplicate=True),
+    Output("page-workout-list",  "style", allow_duplicate=True),
+    Output("page-workout",       "style", allow_duplicate=True),
+    Input("workout-save-btn",    "n_clicks"),
+    Input("workout-delete-btn",  "n_clicks"),
+    State("workout-name-input",  "value"),
+    State("workout-table",       "rowData"),
     prevent_initial_call=True,
 )
-def save_or_delete_workout(save_clicks, del_clicks, name, row_data,
-                           selected):
+def save_or_delete_workout(save_clicks, del_clicks, name, row_data):
     trigger = ctx.triggered_id
     workouts = _load_workouts()
 
     if trigger == "workout-save-btn":
         if not name or not name.strip():
-            opts = [{"label": k, "value": k} for k in sorted(workouts)]
-            return opts, dash.no_update, "Enter a name first"
+            return "Enter a name first", dash.no_update, dash.no_update, dash.no_update
         name = name.strip()
         workouts[name] = row_data
         _save_workouts(workouts)
-        opts = [{"label": k, "value": k} for k in sorted(workouts)]
-        return opts, name, f"Saved '{name}'"
+        return f"Saved '{name}'", name, dash.no_update, dash.no_update
 
     elif trigger == "workout-delete-btn":
-        target = selected or (name.strip() if name else None)
+        target = name.strip() if name else None
         if not target or target not in workouts:
-            opts = [{"label": k, "value": k} for k in sorted(workouts)]
-            return opts, dash.no_update, "Select a workout to delete"
+            return "Enter the name of a saved workout to delete", dash.no_update, dash.no_update, dash.no_update
         del workouts[target]
         _save_workouts(workouts)
-        opts = [{"label": k, "value": k} for k in sorted(workouts)]
-        return opts, None, f"Deleted '{target}'"
+        # Go back to list after deleting
+        return dash.no_update, "", {"display": "block"}, {"display": "none"}
 
     raise dash.exceptions.PreventUpdate
-
-
-@app.callback(
-    Output("workout-library", "options", allow_duplicate=True),
-    Input("page-workout",     "style"),
-    prevent_initial_call=True,
-)
-def _populate_workout_library(style):
-    """Populate the workout dropdown when the page becomes visible."""
-    if style and style.get("display") == "none":
-        raise dash.exceptions.PreventUpdate
-    workouts = _load_workouts()
-    return [{"label": k, "value": k} for k in sorted(workouts)]
 
 
 @app.callback(
