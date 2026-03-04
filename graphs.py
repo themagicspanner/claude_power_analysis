@@ -1522,6 +1522,10 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
                      range=[x_start, x_end])
     fig.update_xaxes(title_text="Date", row=3, col=1)
+
+    today_str = today.strftime("%Y-%m-%d")
+    fig.add_vline(x=today_str, line=dict(color="grey", width=1.5))
+
     fig.update_layout(
         title=dict(text="Performance Management Chart", font=dict(size=14),
                    y=0.98, yanchor="top"),
@@ -1531,7 +1535,9 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         template="plotly_white",
         hovermode="x unified",
         showlegend=False,
+        dragmode="zoom",
     )
+    fig.update_yaxes(fixedrange=True)
     return fig
 
 
@@ -1675,6 +1681,9 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     x_start = (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
     x_end   = (today + pd.Timedelta(days=FUTURE_DAYS)).strftime("%Y-%m-%d")
 
+    today_str = today.strftime("%Y-%m-%d")
+    fig.add_vline(x=today_str, line=dict(color="grey", width=1.5))
+
     fig.update_xaxes(showgrid=True, gridcolor="lightgrey",
                      range=[x_start, x_end], title_text="Date")
     fig.update_layout(
@@ -1687,5 +1696,7 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         hovermode="x unified",
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        dragmode="zoom",
     )
+    fig.update_yaxes(fixedrange=True)
     return fig
