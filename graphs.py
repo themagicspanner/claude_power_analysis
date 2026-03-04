@@ -1501,6 +1501,31 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                          autorange=False, range=[r_min, r_max],
                          row=row, col=1, secondary_y=True)
 
+    # Training cutoff on Threshold panel: -0.3 × CTL
+    thresh_dates = pmc_thresh["date"].dt.strftime("%Y-%m-%d")
+    cutoff = (-0.3 * pmc_thresh["ctl"]).round(1)
+    fig.add_trace(go.Scatter(
+        x=thresh_dates, y=cutoff,
+        mode="lines", name="Training cutoff (−0.3 CTL)",
+        line=dict(color="grey", width=1.5, dash="dashdot"),
+        hovertemplate="Cutoff: %{y:.1f}<extra></extra>",
+    ), row=2, col=1, secondary_y=True)
+
+    # Widen row-2 right axis if cutoff extends below current range
+    cutoff_min = float(cutoff.min())
+    if cutoff_min < 0:
+        cur_range = fig.layout.yaxis4.range  # row 2 secondary_y
+        if cur_range is not None and cutoff_min < cur_range[0]:
+            r_min2 = cutoff_min * 1.05
+            r_max2 = cur_range[1]
+            l_range = fig.layout.yaxis3.range  # row 2 primary_y
+            l_max2 = l_range[1] if l_range else 1.0
+            r_span2 = r_max2 - r_min2
+            zero_frac2 = -r_min2 / r_span2 if r_span2 > 0 else 0
+            l_min2 = -l_max2 * zero_frac2 / (1 - zero_frac2) if zero_frac2 < 1 else 0
+            fig.update_yaxes(range=[l_min2, l_max2], row=2, col=1, secondary_y=False)
+            fig.update_yaxes(range=[r_min2, r_max2], row=2, col=1, secondary_y=True)
+
     # Default visible window: last 90 days + 7-day projection
     today = pd.Timestamp.today().normalize()
     x_start = (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
