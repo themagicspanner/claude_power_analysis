@@ -740,6 +740,81 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
     return fig
 
 
+def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
+                       pdc_params: pd.DataFrame,
+                       live_pdc: dict | None = None) -> go.Figure:
+    """TSS Rate (TSS/h) split into Base / Threshold / AWC stacked areas."""
+    if records["power"].isna().all():
+        return go.Figure()
+
+    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
+
+    if live_pdc is not None:
+        CP  = live_pdc["MAP"]
+        ftp = live_pdc["ftp"]
+        ltp = live_pdc.get("ltp")
+    elif not params_row.empty:
+        r   = params_row.iloc[0]
+        CP  = float(r["MAP"])
+        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
+        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
+    else:
+        return go.Figure()
+
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+    power   = records["power"].to_numpy(dtype=float)
+    (t_min, cum_ltp, cum_thresh, cum_awc,
+     rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
+        elapsed, power, ftp, CP, ltp=ltp)
+
+    final_ltp    = cum_ltp[-1]
+    final_thresh = cum_thresh[-1]
+    final_awc    = cum_awc[-1]
+    rate_ltp_top    = rate_ltp
+    rate_thresh_top = rate_ltp + rate_thresh
+    rate_total      = rate_thresh_top + rate_awc
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_ltp_top,
+        mode="lines", name=f"Base ≤LTP ({final_ltp:.0f})",
+        fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
+        line=dict(color=Z_BASE, width=1),
+    ))
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_thresh_top,
+        mode="lines", name=f"Threshold ({final_thresh:.0f})",
+        fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
+        line=dict(color=Z_THRESH, width=1),
+    ))
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_total,
+        mode="lines", name=f"AWC ({final_awc:.0f})",
+        fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
+        line=dict(color=Z_AWC, width=1),
+    ))
+    fig.add_trace(go.Scatter(
+        x=t_min, y=rate_1h_avg,
+        mode="lines", name="Difficulty",
+        line=dict(color="midnightblue", width=1),
+    ))
+
+    fig.update_xaxes(title_text="Elapsed Time (min)",
+                     showgrid=True, gridcolor="lightgrey")
+    fig.update_yaxes(title_text="TSS Rate (TSS/h)",
+                     showgrid=True, gridcolor="lightgrey",
+                     fixedrange=True)
+    fig.update_layout(
+        title=dict(text="TSS Rate by Zone", font=dict(size=14)),
+        height=250,
+        margin=dict(t=55, b=40, l=60, r=20),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
+
+
 def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     """TSS per ride as stacked bars — Base (≤LTP) + Threshold (LTP→MAP) + AWC."""
     if pdc_params.empty or "tss_map" not in pdc_params.columns:
