@@ -1408,15 +1408,32 @@ def update_ride_charts(ride_id, _ver):
     map_for_zones = (float(live_pdc["MAP"]) if live_pdc and live_pdc.get("MAP")
                      else (float(stored["MAP"]) if stored is not None and pd.notna(stored.get("MAP")) else 0.0))
 
+    # Compute TSS per zone from the power stream (same method as cumulative TSS chart)
+    donut_tss = (0.0, 0.0, 0.0)
+    if not records["power"].isna().all():
+        if live_pdc is not None:
+            _d_cp, _d_ftp = live_pdc["MAP"], live_pdc["ftp"]
+            _d_ltp = live_pdc.get("ltp")
+        elif stored is not None:
+            _d_cp  = float(stored["MAP"]) if pd.notna(stored.get("MAP")) else None
+            _d_ftp = float(stored["ftp"]) if pd.notna(stored.get("ftp")) else _d_cp
+            _d_ltp = float(stored["ltp"]) if pd.notna(stored.get("ltp")) else None
+        else:
+            _d_cp = _d_ftp = _d_ltp = None
+        if _d_cp is not None and _d_ftp and _d_ftp > 0:
+            _el = records["elapsed_s"].to_numpy(dtype=float)
+            _pw = records["power"].to_numpy(dtype=float)
+            (_t, cum_ltp_s, cum_thresh_s, cum_awc_s,
+             *_) = _tss_rate_series(_el, _pw, float(_d_ftp), float(_d_cp), ltp=_d_ltp)
+            donut_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
+
     return (
         fig_power_hr(records, ride["name"]),
         fig_tss_components(records, ride, pdc_params, live_pdc),
         fig_zone_distribution(zone_data, ltp_for_zones, map_for_zones),
         fig_zone_donuts(
             zone_data,
-            stored.get("tss_ltp") if stored is not None else None,
-            stored.get("tss_map") if stored is not None else None,
-            stored.get("tss_awc") if stored is not None else None,
+            donut_tss[0], donut_tss[1], donut_tss[2],
             ltp_for_zones, map_for_zones,
         ),
         fig_mmp_pdc(ride, mmp_all, live_pdc),
