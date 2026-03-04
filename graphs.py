@@ -682,10 +682,10 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
             rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
 
 
-def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
-                       pdc_params: pd.DataFrame,
-                       live_pdc: dict | None = None) -> go.Figure:
-    """TSS Rate (TSS/h) and cumulative TSS split into Base / Threshold / AWC."""
+def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
+                 pdc_params: pd.DataFrame,
+                 live_pdc: dict | None = None) -> go.Figure:
+    """Total TSS rate (TSS/h) over the ride with 1-hour rolling average."""
     if records["power"].isna().all():
         return go.Figure()
 
@@ -709,37 +709,18 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
         elapsed, power, ftp, CP, ltp=ltp)
 
-    final_ltp    = cum_ltp[-1]
-    final_thresh = cum_thresh[-1]
-    final_awc    = cum_awc[-1]
-    rate_ltp_top    = rate_ltp
-    rate_thresh_top = rate_ltp + rate_thresh
-    rate_total      = rate_thresh_top + rate_awc
+    rate_total = rate_ltp + rate_thresh + rate_awc
 
     fig = go.Figure()
-
-    # ── Instantaneous TSS rate ─────────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_ltp_top,
-        mode="lines", name=f"Base ≤LTP ({final_ltp:.0f})",
-        fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
-        line=dict(color=Z_BASE, width=1),
-    ))
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_thresh_top,
-        mode="lines", name=f"Threshold ({final_thresh:.0f})",
-        fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
-        line=dict(color=Z_THRESH, width=1),
-    ))
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_total,
-        mode="lines", name=f"AWC ({final_awc:.0f})",
-        fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
-        line=dict(color=Z_AWC, width=1),
+        mode="lines", name="TSS Rate",
+        fill="tozeroy", fillcolor="rgba(100, 149, 237, 0.15)",
+        line=dict(color="cornflowerblue", width=1),
     ))
     fig.add_trace(go.Scatter(
         x=t_min, y=rate_1h_avg,
-        mode="lines", name="Difficulty",
+        mode="lines", name="1h Rolling Avg",
         line=dict(color="midnightblue", width=1),
     ))
 

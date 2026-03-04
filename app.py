@@ -49,7 +49,7 @@ from strava_import import get_client, fetch_and_import, CONFIG_PATH
 from graphs import (
     fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
-    fig_pdc_params_history, fig_tss_components,
+    fig_pdc_params_history, fig_tss_rate,
     fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_bars,
     fig_pdc_investigation, fig_sigmoid_decay, fig_pdc_testing_summary,
     _tss_rate_series, _compute_pmc,
@@ -1060,7 +1060,7 @@ app.layout = html.Div(
                 ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
-                dcc.Graph(id="graph-tss-components"),
+                dcc.Graph(id="graph-tss-rate"),
                 html.Hr(),
                 dcc.Graph(id="graph-zone-bars"),
                 html.Hr(),
@@ -1246,7 +1246,7 @@ app.clientside_callback(
 
 @app.callback(
     Output("graph-power-hr",              "figure"),
-    Output("graph-tss-components",       "figure"),
+    Output("graph-tss-rate",       "figure"),
     Output("graph-zone-bars",            "figure"),
     Output("graph-mmp-pdc",              "figure"),
     Output("graph-mmh",                  "figure"),
@@ -1392,7 +1392,7 @@ def update_ride_charts(ride_id, _ver):
 
     return (
         fig_power_hr(records, ride["name"]),
-        fig_tss_components(records, ride, pdc_params),
+        fig_tss_rate(records, ride, pdc_params),
         fig_zone_bars(
             zone_data,
             zone_tss[0], zone_tss[1], zone_tss[2],
@@ -1415,10 +1415,10 @@ def update_ride_charts(ride_id, _ver):
 
 @app.callback(
     Output("graph-power-hr",       "figure", allow_duplicate=True),
-    Output("graph-tss-components", "figure", allow_duplicate=True),
+    Output("graph-tss-rate", "figure", allow_duplicate=True),
     Output("graph-elevation",      "figure", allow_duplicate=True),
     Input("graph-power-hr",        "relayoutData"),
-    Input("graph-tss-components",  "relayoutData"),
+    Input("graph-tss-rate",  "relayoutData"),
     Input("graph-elevation",       "relayoutData"),
     prevent_initial_call=True,
 )
@@ -1428,7 +1428,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_tss, rld_elev):
 
     rld = {
         "graph-power-hr":       rld_phr,
-        "graph-tss-components": rld_tss,
+        "graph-tss-rate": rld_tss,
         "graph-elevation":      rld_elev,
     }[ctx.triggered_id]
 
