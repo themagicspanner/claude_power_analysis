@@ -771,10 +771,13 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     f_map = 1.0 - f_awc
 
     if ltp is not None and ltp > 0 and CP > 0:
-        f_ltp = f_map * (ltp / CP)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # Below LTP: all base. Between LTP and CP: base up to LTP, rest threshold.
+            f_ltp    = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
+            f_thresh = np.where(p > 0, np.maximum(np.minimum(p, CP) - ltp, 0.0) / p, 0.0)
     else:
         f_ltp = f_map
-    f_thresh = f_map - f_ltp
+        f_thresh = np.zeros(n)
 
     # Weighted cumulative zone fractions (proportion of TSS rate at each point)
     tss_rate_local = (p_30s / ftp) ** 2 * 100.0 if ftp > 0 else np.zeros(n)
