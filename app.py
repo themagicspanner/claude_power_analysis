@@ -1164,7 +1164,7 @@ app.layout = html.Div(
                 dag.AgGrid(
                     id="workout-table",
                     columnDefs=[
-                        {"field": "work_duration_min",
+                        {"field": "work_duration_min", "rowDrag": True,
                          "headerName": "Work (min)", "editable": True,
                          "type": "numericColumn", "cellDataType": "number"},
                         {"field": "work_intensity_pct",
@@ -1189,6 +1189,8 @@ app.layout = html.Div(
                     dashGridOptions={
                         "singleClickEdit": True,
                         "stopEditingWhenCellsLoseFocus": True,
+                        "rowDragManaged": True,
+                        "animateRows": True,
                     },
                     style={"height": "200px", "marginBottom": "12px"},
                 ),
