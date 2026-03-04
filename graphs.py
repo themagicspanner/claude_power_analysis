@@ -51,12 +51,17 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
 
     fig = go.Figure()
 
+    _SMOOTH = 6  # rolling-average window in seconds (1 Hz data)
+
     zone_fill = (has_power and ltp is not None and map_power is not None
                  and ltp > 0 and map_power > 0)
 
     if has_power and zone_fill:
         x = records["elapsed_min"]
         power = records["power"].fillna(0).to_numpy(dtype=float)
+        if len(power) >= _SMOOTH:
+            kernel = np.ones(_SMOOTH) / _SMOOTH
+            power = np.convolve(power, kernel, mode="same")
         base_y    = np.minimum(power, ltp)
         thresh_y  = np.minimum(power, map_power)
 
@@ -82,16 +87,18 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
             yaxis="y1",
         ))
     elif has_power:
+        power_s = records["power"].fillna(0).rolling(_SMOOTH, min_periods=1, center=True).mean()
         fig.add_trace(go.Scatter(
-            x=records["elapsed_min"], y=records["power"],
+            x=records["elapsed_min"], y=power_s,
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
             yaxis="y1",
         ))
 
     if has_hr:
+        hr_s = records["heart_rate"].rolling(_SMOOTH, min_periods=1, center=True).mean()
         fig.add_trace(go.Scatter(
-            x=records["elapsed_min"], y=records["heart_rate"],
+            x=records["elapsed_min"], y=hr_s,
             mode="lines", name="Heart Rate",
             line=dict(color="crimson", width=1),
             yaxis="y2",
