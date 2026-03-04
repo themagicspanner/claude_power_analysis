@@ -41,6 +41,11 @@ Z_AWC    = _zc(_RGB_AWC)
 _SMOOTH = 6  # rolling-average window in seconds (1 Hz data)
 
 
+def _elapsed_td(records: pd.DataFrame) -> pd.Series:
+    """Convert elapsed_s to timedelta Series for Plotly time-axis formatting."""
+    return pd.to_timedelta(records["elapsed_s"], unit="s")
+
+
 def fig_power_hr(records: pd.DataFrame, ride_name: str,
                  ltp: float | None = None,
                  map_power: float | None = None) -> go.Figure:
@@ -55,8 +60,9 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
     zone_fill = (has_power and ltp is not None and map_power is not None
                  and ltp > 0 and map_power > 0)
 
+    x_td = _elapsed_td(records)
+
     if has_power and zone_fill:
-        x = records["elapsed_min"].to_numpy(dtype=float)
         power = records["power"].fillna(0).to_numpy(dtype=float)
         if len(power) >= _SMOOTH:
             kernel = np.ones(_SMOOTH) / _SMOOTH
@@ -70,7 +76,6 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
             (1, "Threshold",    _RGB_THRESH, 0.25, Z_THRESH),
             (2, "AWC",          _RGB_AWC,    0.22, Z_AWC),
         ]
-        first_trace = True
         for z_id, z_name, z_rgb, z_alpha, z_line in zone_cfg:
             mask = zones == z_id
             extended = mask.copy()
@@ -80,19 +85,28 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
             if np.all(np.isnan(y)):
                 continue
             fig.add_trace(go.Scatter(
-                x=x, y=y,
+                x=x_td, y=y,
                 mode="lines", name=z_name,
                 line=dict(color=z_line, width=1),
-                showlegend=first_trace,
+                showlegend=False,
                 legendgroup="power",
+                hoverinfo="skip",
             ))
-            first_trace = False
+        # Invisible trace for a single unified hover readout
+        fig.add_trace(go.Scatter(
+            x=x_td, y=power,
+            mode="lines", name="Power",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            showlegend=False,
+            hovertemplate="%{y:.0f} W<extra></extra>",
+        ))
     elif has_power:
         power_s = records["power"].fillna(0).rolling(_SMOOTH, min_periods=1, center=True).mean()
         fig.add_trace(go.Scatter(
-            x=records["elapsed_min"], y=power_s,
+            x=x_td, y=power_s,
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
+            hovertemplate="%{y:.0f} W<extra></extra>",
         ))
 
     power_color = "#444" if zone_fill else "darkorange"
@@ -102,7 +116,8 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
         template="plotly_white",
         showlegend=False,
         hovermode="x unified",
-        xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
+        xaxis=dict(title_text="Elapsed Time",
+                   showgrid=True, gridcolor="lightgrey"),
         yaxis=dict(title=dict(text="Power (W)", font=dict(color=power_color)),
                    showgrid=True, gridcolor="lightgrey",
                    tickfont=dict(color=power_color),
@@ -116,12 +131,14 @@ def fig_hr(records: pd.DataFrame) -> go.Figure:
     has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
     fig = go.Figure()
 
+    x_td = _elapsed_td(records)
     if has_hr:
         hr_s = records["heart_rate"].rolling(_SMOOTH, min_periods=1, center=True).mean()
         fig.add_trace(go.Scatter(
-            x=records["elapsed_min"], y=hr_s,
+            x=x_td, y=hr_s,
             mode="lines", name="Heart Rate",
             line=dict(color="crimson", width=1),
+            hovertemplate="%{y:.0f} bpm<extra></extra>",
         ))
 
     fig.update_layout(
@@ -130,7 +147,8 @@ def fig_hr(records: pd.DataFrame) -> go.Figure:
         template="plotly_white",
         showlegend=False,
         hovermode="x unified",
-        xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
+        xaxis=dict(title_text="Elapsed Time",
+                   showgrid=True, gridcolor="lightgrey"),
         yaxis=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
                    showgrid=True, gridcolor="lightgrey",
                    tickfont=dict(color="crimson"),
