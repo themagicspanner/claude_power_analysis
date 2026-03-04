@@ -1184,17 +1184,28 @@ app.layout = html.Div(
                 dag.AgGrid(
                     id="workout-list-table",
                     columnDefs=[
-                        {"headerName": "Name",     "field": "Name",     "sortable": True, "flex": 2},
-                        {"headerName": "Steps",    "field": "Steps",    "sortable": True, "width": 80},
-                        {"headerName": "Duration", "field": "Duration", "sortable": True, "width": 110},
-                        {"headerName": "Summary",  "field": "Summary",  "sortable": False, "flex": 3},
+                        {"headerName": "",          "field": "Power",
+                         "cellRenderer": "markdown", "autoHeight": True,
+                         "width": 130, "minWidth": 130, "maxWidth": 130,
+                         "sortable": False,
+                         "cellStyle": {"textAlign": "center", "padding": "6px 10px"}},
+                        {"headerName": "Name",      "field": "Name",       "sortable": True, "flex": 2},
+                        {"headerName": "Duration",  "field": "Duration",   "sortable": True, "width": 90},
+                        {"headerName": "Avg Power", "field": "Avg Power",  "sortable": True, "width": 90},
+                        {"headerName": "NP",        "field": "NP",         "sortable": True, "width": 70},
+                        {"headerName": "IF",        "field": "IF",         "sortable": True, "width": 70},
+                        {"headerName": "TSS",       "field": "TSS",        "sortable": True, "width": 70},
+                        {"headerName": "Base",      "field": "Base TSS",   "sortable": True, "width": 70},
+                        {"headerName": "Thresh",    "field": "Thresh TSS", "sortable": True, "width": 70},
+                        {"headerName": "AWC",       "field": "AWC TSS",    "sortable": True, "width": 70},
                     ],
                     rowData=[],
                     defaultColDef={"resizable": True},
+                    dangerously_allow_code=True,
                     getRowId="params.data.Name",
                     dashGridOptions={
                         "domLayout": "autoHeight",
-                        "rowHeight": 44,
+                        "rowHeight": 48,
                         "headerHeight": 36,
                     },
                     style={"width": "100%", "borderRadius": "8px", "overflow": "hidden"},
@@ -1720,24 +1731,81 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
 
 # ── Workout builder callbacks ─────────────────────────────────────────────────
 
-def _workout_summary_row(name: str, rows: list[dict]) -> dict:
-    """Build a summary dict for the workout list table."""
-    total_s = 0
-    parts = []
-    for r in rows:
-        work_s = int(float(r.get("work_duration_min") or 0) * 60)
-        rest_s = int(float(r.get("rest_duration_min") or 0) * 60)
-        reps   = int(r.get("repetitions") or 1)
-        total_s += (work_s + rest_s) * reps
-        pct = int(r.get("work_intensity_pct") or 0)
-        w_min = r.get("work_duration_min") or 0
-        parts.append(f"{reps}x{w_min}min @{pct}%")
+def _make_power_trace_svg(power: np.ndarray, width: int = 120, height: int = 40) -> str:
+    """Return a mini SVG sparkline of the power trace for the workout list."""
+    if len(power) < 2:
+        return ""
+    # Downsample to ~width points for a compact SVG
+    step = max(1, len(power) // width)
+    p = power[::step]
+    n = len(p)
+    p_min, p_max = float(np.nanmin(p)), float(np.nanmax(p))
+    p_range = p_max - p_min or 1.0
+    pad = 2
+    x_scale = (width - 2 * pad) / max(n - 1, 1)
+    y_scale = (height - 2 * pad) / p_range
+    pts = " ".join(
+        f"{i * x_scale + pad:.1f},{height - ((p[i] - p_min) * y_scale + pad):.1f}"
+        for i in range(n)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
+        f'<polyline points="{pts}" fill="none" stroke="#4a9eff" stroke-width="1.2"'
+        f' stroke-linejoin="round" stroke-linecap="round"/>'
+        f'</svg>'
+    )
+
+
+def _workout_summary_row(name: str, rows: list[dict],
+                         pdc: dict | None) -> dict:
+    """Build a summary dict for the workout list table with full metrics."""
+    map_w = pdc["MAP"] if pdc else 300.0
+    ftp_w = pdc["ftp"] if pdc else map_w
+    ltp_w = pdc.get("ltp", 0.0) if pdc else 0.0
+
+    records = _build_workout_records(rows, map_w)
+    total_s = len(records)
+
+    if records.empty or total_s < 2:
+        return {"Name": name, "Power": "", "Duration": "0m",
+                "Avg Power": "—", "NP": "—", "IF": "—",
+                "TSS": "—", "Base TSS": "—", "Thresh TSS": "—",
+                "AWC TSS": "—"}
+
+    power = records["power"].to_numpy(dtype=float)
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+
+    avg_w  = float(np.nanmean(power))
+    np_val = _normalized_power(power)
+    if_val = np_val / ftp_w if ftp_w > 0 else 0.0
+    tss    = (total_s / 3600.0) * (np_val / ftp_w) ** 2 * 100.0 if ftp_w > 0 else 0.0
+
+    # Zone TSS breakdown
+    (_, cum_ltp, cum_thresh, cum_awc, *_rest) = _tss_rate_series(
+        elapsed, power, ftp_w, map_w, ltp=ltp_w,
+    )
+
     mins = total_s // 60
+    dur_str = f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m"
+
+    # Power trace SVG
+    svg = _make_power_trace_svg(power)
+    thumb = ""
+    if svg:
+        b64 = base64.b64encode(svg.encode()).decode()
+        thumb = f'<img src="data:image/svg+xml;base64,{b64}" style="display:block"/>'
+
     return {
-        "Name": name,
-        "Steps": len(rows),
-        "Duration": f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m",
-        "Summary": " / ".join(parts),
+        "Name":       name,
+        "Power":      thumb,
+        "Duration":   dur_str,
+        "Avg Power":  f"{avg_w:.0f}",
+        "NP":         f"{np_val:.0f}",
+        "IF":         f"{if_val:.2f}",
+        "TSS":        f"{tss:.0f}",
+        "Base TSS":   f"{cum_ltp[-1]:.0f}",
+        "Thresh TSS": f"{cum_thresh[-1]:.0f}",
+        "AWC TSS":    f"{cum_awc[-1]:.0f}",
     }
 
 
@@ -1751,7 +1819,9 @@ def populate_workout_list(style):
     if style and style.get("display") == "none":
         raise dash.exceptions.PreventUpdate
     workouts = _load_workouts()
-    return [_workout_summary_row(k, v) for k, v in sorted(workouts.items())]
+    _, rides, _, _, pdc_params, _, _ = get_data()
+    pdc = _get_latest_pdc(pdc_params, rides)
+    return [_workout_summary_row(k, v, pdc) for k, v in sorted(workouts.items())]
 
 
 @app.callback(
