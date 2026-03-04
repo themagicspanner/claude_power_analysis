@@ -466,8 +466,9 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
     return fig
 
 
-def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
-    today     = datetime.date.today()
+def fig_90day_mmp(mmp_all: pd.DataFrame,
+                  reference_date: datetime.date | None = None) -> go.Figure:
+    today     = reference_date or datetime.date.today()
     cutoff    = (today - datetime.timedelta(days=PDC_WINDOW)).isoformat()
     today_str = today.isoformat()
 

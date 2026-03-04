@@ -1070,6 +1070,14 @@ app.layout = html.Div(
                     style={"color": "#7a8fbb", "fontSize": "13px",
                            "marginBottom": "20px", "maxWidth": "860px"},
                 ),
+                dcc.Store(id="pdc-slider-dates"),
+                dcc.Graph(id="graph-pdc-historical"),
+                dcc.Slider(
+                    id="pdc-date-slider",
+                    min=0, max=0, value=0, step=1,
+                    marks={},
+                ),
+                html.Hr(),
                 dcc.Graph(id="graph-pdc-investigation"),
                 html.Hr(),
                 dcc.Graph(id="graph-pdc-summary"),
@@ -1453,6 +1461,10 @@ def go_back_to_list(n_clicks):
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
     Output("activities-table",         "rowData"),
+    Output("pdc-slider-dates",         "data"),
+    Output("pdc-date-slider",          "max"),
+    Output("pdc-date-slider",          "value"),
+    Output("pdc-date-slider",          "marks"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("known-ride-ids",   "data"),
@@ -1494,6 +1506,20 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     ride_count = len(rides)
     status = f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
 
+    # Build slider dates from daily_pdc
+    slider_dates = sorted(daily_pdc["date"].dropna().unique().tolist())
+    slider_max = max(len(slider_dates) - 1, 0)
+    slider_value = slider_max  # default to today
+    # ~5 evenly-spaced marks
+    if len(slider_dates) > 1:
+        step = max(1, len(slider_dates) // 5)
+        mark_indices = list(range(0, len(slider_dates), step))
+        if mark_indices[-1] != slider_max:
+            mark_indices.append(slider_max)
+        slider_marks = {i: slider_dates[i] for i in mark_indices}
+    else:
+        slider_marks = {0: slider_dates[0]} if slider_dates else {}
+
     return (
         ver,
         current_ids,
@@ -1510,6 +1536,10 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         status,
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
+        slider_dates,
+        slider_max,
+        slider_value,
+        slider_marks,
     )
 
 
@@ -1536,6 +1566,22 @@ app.clientside_callback(
     Output("toast-text", "children"),
     Input("toast-message", "data"),
 )
+
+
+# ── Historical PDC slider callback ────────────────────────────────────────────
+
+@app.callback(
+    Output("graph-pdc-historical", "figure"),
+    Input("pdc-date-slider",  "value"),
+    State("pdc-slider-dates", "data"),
+)
+def update_pdc_historical(slider_idx, dates):
+    if not dates or slider_idx is None:
+        raise dash.exceptions.PreventUpdate
+    ref_str = dates[int(slider_idx)]
+    ref_date = datetime.date.fromisoformat(ref_str)
+    _, _rides, mmp_all, *_ = get_data()
+    return fig_90day_mmp(mmp_all, reference_date=ref_date)
 
 
 def _fmt_mmp_duration(seconds: int) -> str:
