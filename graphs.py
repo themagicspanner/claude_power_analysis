@@ -818,14 +818,14 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
                 p_thresh_at_p,
             )
 
-            f_ltp    = np.where(p > 0, p_base_at_p / p, 0.0)
+            f_ltp    = np.where(p > 0, p_base_at_p / p, 1.0)
             f_thresh = np.where(p > 0, p_thresh_at_p / p, 0.0)
             f_awc    = np.where(p > 0, np.maximum(p - p_base_at_p - p_thresh_at_p, 0.0) / p, 0.0)
     elif ltp is not None and ltp > 0 and CP > 0:
         # Fallback: static waterfall when PDC model params unavailable
         with np.errstate(invalid="ignore", divide="ignore"):
             f_awc    = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
-            f_ltp    = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
+            f_ltp    = np.where(p > 0, np.minimum(p, ltp) / p, 1.0)
             f_thresh = np.where(p > 0, np.maximum(np.minimum(p, CP) - ltp, 0.0) / p, 0.0)
     else:
         with np.errstate(invalid="ignore", divide="ignore"):

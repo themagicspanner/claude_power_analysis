@@ -116,11 +116,11 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
             p_thresh = np.where(above_map, p_aer_at_p - p_base,
                                 np.maximum(np.minimum(p, CP) - ltp, 0.0))
             f_awc = np.where(p > 0, np.maximum(p - p_base - p_thresh, 0.0) / p, 0.0)
-            f_ltp = np.where(p > 0, p_base / p, 0.0)
+            f_ltp = np.where(p > 0, p_base / p, 1.0)
     elif ltp is not None and ltp > 0 and CP > 0:
         with np.errstate(invalid="ignore", divide="ignore"):
             f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
-            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 1.0)
     else:
         with np.errstate(invalid="ignore", divide="ignore"):
             f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
