@@ -606,13 +606,6 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
 
-    def _tss(v):
-        """Show 1 decimal for values < 10 so e.g. 0.4 isn't displayed as 0."""
-        if not pd.notna(v):
-            return "—"
-        f = float(v)
-        return f"{f:.1f}" if f < 10 else f"{int(round(f))}"
-
     def _f2(v):
         return f"{float(v):.2f}" if pd.notna(v) else "—"
 
@@ -639,9 +632,6 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
     if_v      = _f2(stored.get("intensity_factor")) if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))              if stored is not None else "—"
-    tss_map_v = _tss(stored.get("tss_map"))         if stored is not None else "—"
-    tss_ltp_v = _tss(stored.get("tss_ltp"))         if stored is not None else "—"
-    tss_awc_v = _tss(stored.get("tss_awc"))         if stored is not None else "—"
 
     ride_title = ride["name"].replace("_", " ")
     ride_date  = ride["ride_date"]
@@ -665,9 +655,6 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
                 card("NP",      np_v,      "W"),
                 card("IF",      if_v,      ""),
                 card("TSS",     tss_v,     ""),
-                card("TSS LTP", tss_ltp_v, ""),
-                card("TSS MAP", tss_map_v, ""),
-                card("TSS AWC", tss_awc_v, ""),
             ]),
             # Right — PDC fitness parameters
             html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}, children=[
@@ -1293,13 +1280,6 @@ def update_ride_charts(ride_id, _ver):
     def _i(v):
         return f"{int(round(float(v)))}" if pd.notna(v) else "—"
 
-    def _tss(v):
-        """Show 1 decimal for values < 10 so e.g. 0.4 isn't displayed as 0."""
-        if not pd.notna(v):
-            return "—"
-        f = float(v)
-        return f"{f:.1f}" if f < 10 else f"{int(round(f))}"
-
     def _f2(v):
         return f"{float(v):.2f}" if pd.notna(v) else "—"
 
@@ -1326,14 +1306,8 @@ def update_ride_charts(ride_id, _ver):
     np_v      = _i(stored.get("normalized_power"))    if stored is not None else "—"
     if_v      = _f2(stored.get("intensity_factor"))   if stored is not None else "—"
     tss_v     = _i(stored.get("tss"))                 if stored is not None else "—"
-    tss_map_v = _tss(stored.get("tss_map"))            if stored is not None else "—"
-    tss_ltp_v = _tss(stored.get("tss_ltp"))            if stored is not None else "—"
-    tss_awc_v = _tss(stored.get("tss_awc"))            if stored is not None else "—"
     vi_v      = (f"{float(stored['variability_index']):.2f}"
                  if stored is not None and pd.notna(stored.get("variability_index")) else "—")
-    aedec_v   = (f"{float(stored['aerobic_decoupling_pct']):.1f}"
-                 if stored is not None and pd.notna(stored.get("aerobic_decoupling_pct")) else "—")
-
     # Ride header: name + date
     ride_header = [
         html.Span(ride["name"].replace("_", " "),
@@ -1382,13 +1356,8 @@ def update_ride_charts(ride_id, _ver):
     power_stats = _graph_stat_row([
         ("NP",         np_v,                         "W"),
         ("IF",         if_v,                         ""),
-        ("TSS",        tss_v,                        ""),
-        ("TSS LTP",    tss_ltp_v,                    ""),
-        ("TSS MAP",    tss_map_v,                    ""),
-        ("TSS AWC",    tss_awc_v,                    ""),
         ("Difficulty", difficulty_v,                 "TSS/h"),
         ("VI",         vi_v,                         ""),
-        ("AeDec",      aedec_v,                      "%"),
         ("Avg Power",  _i(ride.get("avg_power")),    "W"),
         ("Max Power",  _i(ride.get("max_power")),    "W"),
     ])
