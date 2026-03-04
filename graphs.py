@@ -352,8 +352,9 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
             p_total   = _power_model(t_smooth, *popt)
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
-            # Base component (0 → LTP fraction of aerobic)
-            p_base = np.minimum(p_aerobic, ltp)
+            # Base component (0 → LTP/MAP proportion of aerobic curve)
+            ltp_frac = ltp / MAP if MAP > 0 else 0.0
+            p_base = p_aerobic * ltp_frac
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_base,
                 mode="lines", name="base (≤LTP)",
