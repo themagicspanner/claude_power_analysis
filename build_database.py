@@ -95,11 +95,9 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
         f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
     f_map = 1.0 - f_awc
 
-    # Sub-split of aerobic fraction at LTP
-    if ltp is not None and ltp > 0:
-        with np.errstate(invalid="ignore", divide="ignore"):
-            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 0.0)
-        f_ltp = np.minimum(f_ltp, f_map)   # clamp: LTP fraction can't exceed MAP fraction
+    # Sub-split of aerobic fraction at LTP (proportional: LTP/MAP of aerobic)
+    if ltp is not None and ltp > 0 and CP > 0:
+        f_ltp = f_map * (ltp / CP)
     else:
         f_ltp = f_map                       # no LTP → all aerobic is "base"
 
