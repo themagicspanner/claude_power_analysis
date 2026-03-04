@@ -882,14 +882,14 @@ def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Recomputed PDC params for {len(rows)} ride(s).")
 
 
-def backfill_extended_mmp(conn: sqlite3.Connection) -> None:
-    """Backfill MMP (and MMH) for durations >1h that are missing.
+def backfill_missing_mmp(conn: sqlite3.Connection) -> None:
+    """Backfill any MMP (and MMH) durations missing from the current resolution.
 
-    Rides longer than 1 hour get additional 30-minute-interval MMP entries.
-    Only computes durations not already present in the mmp table.
+    Compares each ride's stored durations against the full set from
+    mmp_durations_for_ride() and computes any that are absent.
     """
     rows = conn.execute(
-        "SELECT id, name, total_records FROM rides WHERE total_records > 3600 ORDER BY id"
+        "SELECT id, name, total_records FROM rides ORDER BY id"
     ).fetchall()
     if not rows:
         return
@@ -897,15 +897,12 @@ def backfill_extended_mmp(conn: sqlite3.Connection) -> None:
     backfilled = 0
     for ride_id, name, n_records in rows:
         durations = mmp_durations_for_ride(n_records)
-        extended = [d for d in durations if d > 3600]
-        if not extended:
-            continue
 
         existing = {r[0] for r in conn.execute(
-            "SELECT duration_s FROM mmp WHERE ride_id = ? AND duration_s > 3600",
+            "SELECT duration_s FROM mmp WHERE ride_id = ?",
             (ride_id,),
         ).fetchall()}
-        missing = [d for d in extended if d not in existing]
+        missing = [d for d in durations if d not in existing]
         if not missing:
             continue
 
@@ -935,7 +932,7 @@ def backfill_extended_mmp(conn: sqlite3.Connection) -> None:
 
     conn.commit()
     if backfilled:
-        print(f"[mmp] Backfilled extended MMP (>1h) for {backfilled} ride(s).")
+        print(f"[mmp] Backfilled missing MMP durations for {backfilled} ride(s).")
 
 
 # ── Per-ride processing ───────────────────────────────────────────────────────

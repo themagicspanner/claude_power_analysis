@@ -41,7 +41,7 @@ import dash_ag_grid as dag
 from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
 from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
-    backfill_vi_aedec, backfill_zones, backfill_extended_mmp,
+    backfill_vi_aedec, backfill_zones, backfill_missing_mmp,
     recompute_all_pdc_params, ensure_daily_pdc_current,
     _power_model, _fit_power_curve, _normalized_power,
     calculate_mmp, calculate_zones, MMP_DURATIONS,
@@ -949,7 +949,7 @@ _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
 backfill_pdc_params(_boot_conn)
-backfill_extended_mmp(_boot_conn)
+backfill_missing_mmp(_boot_conn)
 backfill_vi_aedec(_boot_conn)
 backfill_zones(_boot_conn)
 backfill_mmh(_boot_conn)
