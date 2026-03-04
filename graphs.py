@@ -1501,13 +1501,27 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                          autorange=False, range=[r_min, r_max],
                          row=row, col=1, secondary_y=True)
 
-    # Training cutoff on Threshold panel: -0.3 × CTL
+    # Training cutoff on Threshold panel: shaded area below -0.3 × CTL
     thresh_dates = pmc_thresh["date"].dt.strftime("%Y-%m-%d")
     cutoff = (-0.3 * pmc_thresh["ctl"]).round(1)
+
+    # Upper bound of shaded region (zero line)
+    fig.add_trace(go.Scatter(
+        x=thresh_dates,
+        y=np.zeros(len(thresh_dates)),
+        mode="lines",
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo="skip",
+    ), row=2, col=1, secondary_y=True)
+
+    # Lower bound (cutoff) with fill back to zero
     fig.add_trace(go.Scatter(
         x=thresh_dates, y=cutoff,
         mode="lines", name="Training cutoff (−0.3 CTL)",
-        line=dict(color="grey", width=1.5, dash="dashdot"),
+        line=dict(color="grey", width=1, dash="dashdot"),
+        fill="tonexty",
+        fillcolor="rgba(180,180,180,0.18)",
         hovertemplate="Cutoff: %{y:.1f}<extra></extra>",
     ), row=2, col=1, secondary_y=True)
 
