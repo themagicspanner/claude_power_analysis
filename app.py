@@ -1028,14 +1028,7 @@ app.layout = html.Div(
                 # Current fitness metric boxes (moved here from global header)
                 html.Div(id="metric-boxes", style={"marginBottom": "16px"}),
 
-                html.Div(style={"display": "flex", "gap": "16px"}, children=[
-                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
-                        dcc.Graph(id="graph-90day-mmp"),
-                    ]),
-                    html.Div(style={"flex": "1", "minWidth": "0"}, children=[
-                        dcc.Graph(id="graph-90day-mmh"),
-                    ]),
-                ]),
+                dcc.Graph(id="graph-90day-mmp"),
 
                 html.Hr(),
 
@@ -1451,7 +1444,6 @@ def go_back_to_list(n_clicks):
     Output("ride-dropdown",   "options"),
     Output("ride-dropdown",   "value"),
     Output("graph-90day-mmp",          "figure"),
-    Output("graph-90day-mmh",          "figure"),
     Output("graph-pmc-combined",       "figure"),
     Output("graph-pmc",                "figure"),
     Output("graph-pdc-params-history", "figure"),
@@ -1509,7 +1501,6 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         options,
         selected,
         fig_90day_mmp(mmp_all),
-        fig_90day_mmh(mmh_all),
         fig_pmc_combined(pdc_params, rides),
         fig_pmc(pdc_params, rides),
         fig_pdc_params_history(daily_pdc, rides),
