@@ -407,8 +407,8 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
                 line=dict(color="steelblue", width=1.5, dash="dot"),
             ))
 
-    # This ride's MMP on top — black line, markers only where it beats
-    # the prior decayed MMP from other rides (improvements).
+    # This ride's MMP on top — black line, with a green overlay where
+    # this ride beats the prior decayed MMP from other rides.
     if not this_ride.empty:
         tr_dur = this_ride["duration_s"].to_numpy()
         tr_pwr = this_ride["power"].to_numpy()
@@ -419,18 +419,32 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         else:
             prior_lookup = {}
 
-        # Marker sizes: visible (7) where this ride beats prior, hidden (0) otherwise
-        sizes = []
-        for d, p in zip(tr_dur, tr_pwr):
-            prior = prior_lookup.get(d)
-            sizes.append(7 if prior is not None and p > prior else 0)
-
+        # Black line for the full ride MMP
         fig.add_trace(go.Scatter(
             x=tr_dur, y=tr_pwr,
-            mode="lines+markers", name=f"this ride ({ride_date})",
-            marker=dict(size=sizes, color="#00e676", line=dict(width=1, color="white")),
+            mode="lines", name=f"this ride ({ride_date})",
             line=dict(color="black", width=2.2),
         ))
+
+        # Green line segments where this ride improved on prior best
+        imp_dur = []
+        imp_pwr = []
+        for d, p in zip(tr_dur, tr_pwr):
+            prior = prior_lookup.get(d)
+            if prior is not None and p > prior:
+                imp_dur.append(d)
+                imp_pwr.append(p)
+            else:
+                # Insert None to break the line at non-improved points
+                imp_dur.append(d)
+                imp_pwr.append(None)
+        if any(v is not None for v in imp_pwr):
+            fig.add_trace(go.Scatter(
+                x=imp_dur, y=imp_pwr,
+                mode="lines", name="improved",
+                line=dict(color="#00e676", width=3),
+                connectgaps=False,
+            ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
@@ -475,9 +489,8 @@ def fig_90day_mmp(mmp_all: pd.DataFrame) -> go.Figure:
         # Sigmoid-aged curve
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_power"],
-            mode="lines+markers", name="aged MMP",
-            marker=dict(size=4),
-            line=dict(color="steelblue", width=2.5),
+            mode="lines", name="aged MMP",
+            line=dict(color="black", width=2.5),
         ))
 
         # ── Model fit with aerobic / anaerobic contributions ──────────────
