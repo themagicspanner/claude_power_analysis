@@ -1391,7 +1391,7 @@ def update_ride_charts(ride_id, _ver):
             zone_tss = (cum_ltp_s[-1], cum_thresh_s[-1], cum_awc_s[-1])
 
     return (
-        fig_power_hr(records, ride["name"]),
+        fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
         fig_tss_components(records, ride, pdc_params),
         fig_zone_bars(
             zone_data,

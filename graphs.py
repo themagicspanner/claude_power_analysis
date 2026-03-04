@@ -38,20 +38,57 @@ Z_AWC    = _zc(_RGB_AWC)
 
 # ── Figure builders ───────────────────────────────────────────────────────────
 
-def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
-    """Power and heart rate on a shared time axis with dual y-axes."""
+def fig_power_hr(records: pd.DataFrame, ride_name: str,
+                 ltp: float | None = None,
+                 map_power: float | None = None) -> go.Figure:
+    """Power and heart rate on a shared time axis with dual y-axes.
+
+    When *ltp* and *map_power* are provided the power area is filled with
+    zone colours (green ≤ LTP, amber LTP→MAP, red > MAP).
+    """
     has_power = records["power"].notna().any()
     has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
 
     fig = go.Figure()
 
-    if has_power:
+    zone_fill = (has_power and ltp is not None and map_power is not None
+                 and ltp > 0 and map_power > 0)
+
+    if has_power and zone_fill:
+        x = records["elapsed_min"]
+        power = records["power"].fillna(0).to_numpy(dtype=float)
+        base_y    = np.minimum(power, ltp)
+        thresh_y  = np.minimum(power, map_power)
+
+        fig.add_trace(go.Scatter(
+            x=x, y=base_y,
+            mode="lines", name="Base ≤LTP",
+            fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.25),
+            line=dict(color=Z_BASE, width=1),
+            yaxis="y1",
+        ))
+        fig.add_trace(go.Scatter(
+            x=x, y=thresh_y,
+            mode="lines", name="Threshold",
+            fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.25),
+            line=dict(color=Z_THRESH, width=1),
+            yaxis="y1",
+        ))
+        fig.add_trace(go.Scatter(
+            x=x, y=power,
+            mode="lines", name="AWC",
+            fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.22),
+            line=dict(color=Z_AWC, width=1),
+            yaxis="y1",
+        ))
+    elif has_power:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["power"],
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
             yaxis="y1",
         ))
+
     if has_hr:
         fig.add_trace(go.Scatter(
             x=records["elapsed_min"], y=records["heart_rate"],
@@ -60,6 +97,7 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
             yaxis="y2",
         ))
 
+    power_color = "#444" if zone_fill else "darkorange"
     fig.update_layout(
         title=dict(text="Power & Heart Rate", font=dict(size=15)),
         height=300, margin=dict(t=55, b=40, l=60, r=60),
@@ -67,9 +105,9 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str) -> go.Figure:
         showlegend=False,
         hovermode="x unified",
         xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
-        yaxis=dict(title=dict(text="Power (W)", font=dict(color="darkorange")),
+        yaxis=dict(title=dict(text="Power (W)", font=dict(color=power_color)),
                    showgrid=True, gridcolor="lightgrey",
-                   tickfont=dict(color="darkorange"),
+                   tickfont=dict(color=power_color),
                    fixedrange=True),
         yaxis2=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
                     overlaying="y", side="right", showgrid=False,
