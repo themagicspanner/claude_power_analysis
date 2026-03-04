@@ -448,9 +448,8 @@ def _daily_pdc_params(mmp_all: pd.DataFrame, rides: pd.DataFrame) -> pd.DataFram
     if mmp_all.empty or rides.empty:
         return pd.DataFrame()
 
-    mmp = mmp_all.merge(
-        rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left"
-    ).dropna(subset=["ride_date"])
+    # mmp_all already contains ride_date (joined in _load_mmp_all)
+    mmp = mmp_all.dropna(subset=["ride_date"]).copy()
     mmp["date_obj"] = pd.to_datetime(mmp["ride_date"]).dt.date
 
     first_date  = mmp["date_obj"].min()
