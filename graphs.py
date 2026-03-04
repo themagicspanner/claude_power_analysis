@@ -38,20 +38,19 @@ Z_AWC    = _zc(_RGB_AWC)
 
 # ── Figure builders ───────────────────────────────────────────────────────────
 
+_SMOOTH = 6  # rolling-average window in seconds (1 Hz data)
+
+
 def fig_power_hr(records: pd.DataFrame, ride_name: str,
                  ltp: float | None = None,
                  map_power: float | None = None) -> go.Figure:
-    """Power and heart rate on a shared time axis with dual y-axes.
+    """Power chart with zone-coloured line.
 
-    When *ltp* and *map_power* are provided the power area is filled with
-    zone colours (green ≤ LTP, amber LTP→MAP, red > MAP).
+    When *ltp* and *map_power* are provided the line is coloured by zone
+    (green ≤ LTP, amber LTP→MAP, red > MAP).
     """
     has_power = records["power"].notna().any()
-    has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
-
     fig = go.Figure()
-
-    _SMOOTH = 6  # rolling-average window in seconds (1 Hz data)
 
     zone_fill = (has_power and ltp is not None and map_power is not None
                  and ltp > 0 and map_power > 0)
@@ -73,10 +72,7 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
         ]
         first_trace = True
         for z_id, z_name, z_rgb, z_alpha, z_line in zone_cfg:
-            # Mask power to NaN outside this zone; overlap by one sample
-            # at boundaries so segments join seamlessly.
             mask = zones == z_id
-            # Extend mask one sample into neighbours for seamless joins
             extended = mask.copy()
             extended[:-1] |= mask[1:]
             extended[1:]  |= mask[:-1]
@@ -87,7 +83,6 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
                 x=x, y=y,
                 mode="lines", name=z_name,
                 line=dict(color=z_line, width=1),
-                yaxis="y1",
                 showlegend=first_trace,
                 legendgroup="power",
             ))
@@ -98,22 +93,12 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
             x=records["elapsed_min"], y=power_s,
             mode="lines", name="Power",
             line=dict(color="darkorange", width=1),
-            yaxis="y1",
-        ))
-
-    if has_hr:
-        hr_s = records["heart_rate"].rolling(_SMOOTH, min_periods=1, center=True).mean()
-        fig.add_trace(go.Scatter(
-            x=records["elapsed_min"], y=hr_s,
-            mode="lines", name="Heart Rate",
-            line=dict(color="crimson", width=1),
-            yaxis="y2",
         ))
 
     power_color = "#444" if zone_fill else "darkorange"
     fig.update_layout(
-        title=dict(text="Power & Heart Rate", font=dict(size=15)),
-        height=300, margin=dict(t=55, b=40, l=60, r=60),
+        title=dict(text="Power", font=dict(size=15)),
+        height=250, margin=dict(t=55, b=40, l=60, r=20),
         template="plotly_white",
         showlegend=False,
         hovermode="x unified",
@@ -122,10 +107,34 @@ def fig_power_hr(records: pd.DataFrame, ride_name: str,
                    showgrid=True, gridcolor="lightgrey",
                    tickfont=dict(color=power_color),
                    fixedrange=True),
-        yaxis2=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
-                    overlaying="y", side="right", showgrid=False,
-                    tickfont=dict(color="crimson"),
-                    fixedrange=True),
+    )
+    return fig
+
+
+def fig_hr(records: pd.DataFrame) -> go.Figure:
+    """Heart rate chart."""
+    has_hr = "heart_rate" in records.columns and records["heart_rate"].notna().any()
+    fig = go.Figure()
+
+    if has_hr:
+        hr_s = records["heart_rate"].rolling(_SMOOTH, min_periods=1, center=True).mean()
+        fig.add_trace(go.Scatter(
+            x=records["elapsed_min"], y=hr_s,
+            mode="lines", name="Heart Rate",
+            line=dict(color="crimson", width=1),
+        ))
+
+    fig.update_layout(
+        title=dict(text="Heart Rate", font=dict(size=14)),
+        height=200, margin=dict(t=55, b=40, l=60, r=20),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+        xaxis=dict(title_text="Elapsed Time (min)", showgrid=True, gridcolor="lightgrey"),
+        yaxis=dict(title=dict(text="Heart Rate (bpm)", font=dict(color="crimson")),
+                   showgrid=True, gridcolor="lightgrey",
+                   tickfont=dict(color="crimson"),
+                   fixedrange=True),
     )
     return fig
 

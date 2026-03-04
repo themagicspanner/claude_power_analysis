@@ -47,7 +47,7 @@ from build_database import (
 from strava_import import get_client, fetch_and_import, CONFIG_PATH
 
 from graphs import (
-    fig_power_hr, fig_mmh, fig_route_map, fig_elevation,
+    fig_power_hr, fig_hr, fig_mmh, fig_route_map, fig_elevation,
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_tss_components,
     fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_bars,
@@ -1060,6 +1060,8 @@ app.layout = html.Div(
                 ]),
                 dcc.Graph(id="graph-power-hr"),
                 html.Hr(),
+                dcc.Graph(id="graph-hr"),
+                html.Hr(),
                 dcc.Graph(id="graph-tss-components"),
                 html.Hr(),
                 dcc.Graph(id="graph-zone-bars"),
@@ -1246,6 +1248,7 @@ app.clientside_callback(
 
 @app.callback(
     Output("graph-power-hr",              "figure"),
+    Output("graph-hr",                   "figure"),
     Output("graph-tss-components",       "figure"),
     Output("graph-zone-bars",            "figure"),
     Output("graph-mmp-pdc",              "figure"),
@@ -1392,6 +1395,7 @@ def update_ride_charts(ride_id, _ver):
 
     return (
         fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
+        fig_hr(records),
         fig_tss_components(records, ride, pdc_params),
         fig_zone_bars(
             zone_data,
@@ -1415,19 +1419,22 @@ def update_ride_charts(ride_id, _ver):
 
 @app.callback(
     Output("graph-power-hr",         "figure", allow_duplicate=True),
+    Output("graph-hr",              "figure", allow_duplicate=True),
     Output("graph-tss-components",   "figure", allow_duplicate=True),
     Output("graph-elevation",        "figure", allow_duplicate=True),
     Input("graph-power-hr",          "relayoutData"),
+    Input("graph-hr",               "relayoutData"),
     Input("graph-tss-components",    "relayoutData"),
     Input("graph-elevation",         "relayoutData"),
     prevent_initial_call=True,
 )
-def _sync_ride_chart_xaxes(rld_phr, rld_tss_z, rld_elev):
+def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
     if not ctx.triggered_id:
         raise dash.exceptions.PreventUpdate
 
     rld = {
         "graph-power-hr":       rld_phr,
+        "graph-hr":             rld_hr,
         "graph-tss-components": rld_tss_z,
         "graph-elevation":      rld_elev,
     }[ctx.triggered_id]
@@ -1453,7 +1460,7 @@ def _sync_ride_chart_xaxes(rld_phr, rld_tss_z, rld_elev):
             p["layout"]["xaxis"]["autorange"] = False
         return p
 
-    return make_patch(), make_patch(), make_patch()
+    return make_patch(), make_patch(), make_patch(), make_patch()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
