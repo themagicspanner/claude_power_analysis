@@ -2191,7 +2191,7 @@ def go_back_to_workout_list(n_clicks):
     Input("workout-add-row",    "n_clicks"),
     Input("workout-dup-row",    "n_clicks"),
     Input("workout-remove-row", "n_clicks"),
-    State("workout-table",      "rowData"),
+    State("workout-table",      "virtualRowData"),
     prevent_initial_call=True,
 )
 def manage_workout_rows(add_clicks, dup_clicks, remove_clicks, current_rows):
@@ -2221,7 +2221,7 @@ def manage_workout_rows(add_clicks, dup_clicks, remove_clicks, current_rows):
     Input("workout-save-btn",    "n_clicks"),
     Input("workout-delete-btn",  "n_clicks"),
     State("workout-name-input",  "value"),
-    State("workout-table",       "rowData"),
+    State("workout-table",       "virtualRowData"),
     prevent_initial_call=True,
 )
 def save_or_delete_workout(save_clicks, del_clicks, name, row_data):
@@ -2256,7 +2256,7 @@ def save_or_delete_workout(save_clicks, del_clicks, name, row_data):
     Output("workout-stats",                "children"),
     Output("workout-pdc-cards",            "children"),
     Input("workout-table",                 "cellValueChanged"),
-    Input("workout-table",                 "rowData"),
+    Input("workout-table",                 "virtualRowData"),
     State("known-version",                 "data"),
 )
 def update_workout_charts(cell_changed, row_data, _ver):
