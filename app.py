@@ -54,7 +54,7 @@ from graphs import (
     fig_mmp_pdc, fig_90day_mmp, fig_90day_mmh,
     fig_pdc_params_history, fig_tss_components,
     fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_bars,
-    fig_pdc_investigation, fig_sigmoid_decay, fig_pdc_testing_summary,
+    fig_pdc_investigation, fig_sigmoid_decay,
     _tss_rate_series, _compute_pmc,
 )
 
@@ -1083,8 +1083,6 @@ app.layout = html.Div(
                 html.Hr(),
                 dcc.Graph(id="graph-pdc-investigation"),
                 html.Hr(),
-                dcc.Graph(id="graph-pdc-summary"),
-                html.Hr(),
                 dcc.Graph(id="graph-sigmoid-decay"),
                 html.Div(style={"height": "40px"}),
             ]),
@@ -1467,7 +1465,6 @@ def go_back_to_list(n_clicks):
     Output("graph-pdc-params-history", "figure"),
     Output("graph-pdc-investigation",  "figure"),
     Output("graph-sigmoid-decay",      "figure"),
-    Output("graph-pdc-summary",        "figure"),
     Output("status-bar",               "children"),
     Output("metric-boxes",             "children"),
     Output("activities-table",         "rowData"),
@@ -1550,7 +1547,6 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         fig_pdc_params_history(daily_pdc, rides),
         fig_pdc_investigation(mmp_all),
         fig_sigmoid_decay(),
-        fig_pdc_testing_summary(mmp_all),
         status,
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
