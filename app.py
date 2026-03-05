@@ -1049,10 +1049,6 @@ app.layout = html.Div(
                     ],
                 ),
 
-                html.Hr(),
-
-                dcc.Graph(id="graph-pdc-params-history"),
-
                 html.Div(style={"height": "40px"}),
             ]),
 
@@ -1070,6 +1066,8 @@ app.layout = html.Div(
                     style={"color": "#7a8fbb", "fontSize": "13px",
                            "marginBottom": "20px", "maxWidth": "860px"},
                 ),
+                dcc.Graph(id="graph-pdc-params-history"),
+                html.Hr(),
                 dcc.Store(id="pdc-slider-dates"),
                 html.Div(id="pdc-historical-cards",
                          style={"display": "flex", "gap": "12px",
@@ -1585,10 +1583,12 @@ app.clientside_callback(
 # ── Historical PDC slider callback ────────────────────────────────────────────
 
 @app.callback(
-    Output("graph-pdc-historical",  "figure"),
-    Output("pdc-historical-cards",  "children"),
+    Output("graph-pdc-historical",      "figure"),
+    Output("pdc-historical-cards",      "children"),
+    Output("graph-pdc-params-history",  "figure", allow_duplicate=True),
     Input("pdc-date-slider",  "value"),
     State("pdc-slider-dates", "data"),
+    prevent_initial_call=True,
 )
 def update_pdc_historical(slider_idx, dates):
     if not dates or slider_idx is None:
@@ -1628,7 +1628,8 @@ def update_pdc_historical(slider_idx, dates):
     else:
         cards = []
 
-    return fig, cards
+    fig_history = fig_pdc_params_history(daily_pdc, _rides, reference_date=ref_date)
+    return fig, cards, fig_history
 
 
 def _fmt_mmp_duration(seconds: int) -> str:

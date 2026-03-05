@@ -599,7 +599,8 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
 
 
 def fig_pdc_params_history(daily_pdc: pd.DataFrame,
-                           rides: pd.DataFrame) -> go.Figure:
+                           rides: pd.DataFrame,
+                           reference_date: datetime.date | None = None) -> go.Figure:
     """History of the fitted two-component PDC parameters for every calendar day.
 
     *daily_pdc* is pre-computed and stored in the database by
@@ -657,6 +658,15 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
                      rangemode="tozero", secondary_y=False)
     fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
                      rangemode="tozero", secondary_y=True)
+    if reference_date is not None:
+        fig.add_vline(
+            x=reference_date.isoformat(),
+            line=dict(color="#ff6b6b", width=2, dash="dash"),
+            annotation_text=reference_date.isoformat(),
+            annotation_position="top",
+            annotation_font=dict(size=10, color="#ff6b6b"),
+        )
+
     fig.update_layout(
         title=dict(text="PDC Parameter History", font=dict(size=14)),
         height=380,
