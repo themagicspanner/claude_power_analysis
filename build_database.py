@@ -38,11 +38,23 @@ PDC_INFLECTION = 97     # days to midpoint (weight = 0.5)
 PDC_WINDOW     = 150    # days of history to include
 
 # Standard MMP durations in seconds
-MMP_DURATIONS = [
-    1, 2, 3, 5, 8, 10, 12, 15, 20, 30,
-    60, 90, 120, 180, 240, 300, 420, 600,
-    900, 1200, 1800, 2400, 3600,
-]
+MMP_DURATIONS = sorted(set(
+    list(range(1, 61))                        # 1–60 s, every 1 s
+    + list(range(60, 121, 5))                 # 60–120 s, every 5 s
+    + list(range(120, 301, 10))               # 120–300 s, every 10 s
+    + list(range(300, 601, 30))               # 300–600 s, every 30 s
+    + list(range(600, 3601, 60))              # 600–3600 s, every 60 s
+))
+
+
+def mmp_durations_for_ride(n_samples: int) -> list[int]:
+    """Return MMP durations list extended in 5-min intervals to the ride length."""
+    durations = list(MMP_DURATIONS)
+    t = 3600 + 300
+    while t <= n_samples:
+        durations.append(t)
+        t += 300
+    return durations
 
 
 # ── Power-duration model ──────────────────────────────────────────────────────
@@ -61,21 +73,26 @@ def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
 
 def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
                     ftp: float, CP: float, tss_total: float,
-                    sample_hz: float = 1.0) -> tuple[float, float]:
-    """Split the NP-based TSS into aerobic (MAP) and anaerobic (AWC) parts.
+                    sample_hz: float = 1.0,
+                    ltp: float | None = None,
+                    AWC_val: float | None = None,
+                    Pmax_val: float | None = None,
+                    tau2_val: float | None = None) -> tuple[float, float, float]:
+    """Split the NP-based TSS into base (LTP), threshold, and anaerobic parts.
 
     Uses p_30s² as a time-weighting kernel (same as NP methodology) to decide
-    how much of each second's training stress should be credited to MAP vs AWC.
-    The per-sample AWC fraction comes from instantaneous power so that even
-    brief above-CP efforts register:
+    how much of each second's training stress should be credited to each zone.
 
-        f_AWC(t) = max(0, P(t) − CP) / P(t)   [instantaneous]
-        f_MAP(t) = 1 − f_AWC(t)
+    When AWC_val/Pmax_val/tau2_val are provided, zone fractions use the PDC
+    model's time-dependent aerobic ramp-up so that sprint-level powers
+    attribute only a small fraction to base/threshold (matching the sigmoidal
+    shape of the PDC chart).
 
-    The final values are scaled so that TSS_MAP + TSS_AWC = tss_total exactly
-    (the NP-based TSS).
+    The final values are scaled so that tss_ltp + tss_map + tss_awc = tss_total
+    exactly (tss_map is the *total* aerobic component, unchanged from before;
+    tss_ltp is the sub-component at or below LTP).
 
-    Returns (tss_map, tss_awc).
+    Returns (tss_ltp, tss_map, tss_awc).
     """
     p = np.where(np.isnan(power), 0.0, power.astype(float))
     window = max(1, int(30 * sample_hz))
@@ -87,22 +104,54 @@ def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
     dt[1:] = np.diff(elapsed_s)
     dt     = np.clip(dt, 0.0, None)
 
-    # Split fractions from instantaneous power
-    with np.errstate(invalid="ignore", divide="ignore"):
-        f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
-    f_map = 1.0 - f_awc
+    # Split fractions from instantaneous power using PDC model when available
+    use_pdc = (AWC_val is not None and Pmax_val is not None and tau2_val is not None
+               and AWC_val > 0 and Pmax_val > 0 and tau2_val > 0
+               and CP > 0 and ltp is not None and ltp > 0)
+
+    if use_pdc:
+        t_grid = np.logspace(-1, np.log10(7200), 2000)
+        p_total_grid = _power_model(t_grid, AWC_val, Pmax_val, CP, tau2_val)
+        p_aer_grid   = CP * (1.0 - np.exp(-t_grid / tau2_val))
+        p_total_rev  = p_total_grid[::-1]
+        p_aer_rev    = p_aer_grid[::-1]
+        ltp_frac_r   = ltp / CP
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            above_map = p > CP
+            p_aer_at_p = np.where(
+                above_map,
+                np.interp(p, p_total_rev, p_aer_rev, left=CP, right=0.0),
+                p,
+            )
+            p_base   = np.where(above_map, p_aer_at_p * ltp_frac_r, np.minimum(p, ltp))
+            p_thresh = np.where(above_map, p_aer_at_p - p_base,
+                                np.maximum(np.minimum(p, CP) - ltp, 0.0))
+            f_awc = np.where(p > 0, np.maximum(p - p_base - p_thresh, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, p_base / p, 1.0)
+    elif ltp is not None and ltp > 0 and CP > 0:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 1.0)
+    else:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+        f_ltp = 1.0 - f_awc
 
     # p_30s² weights — same basis as NP; used as split ratio only
     weights = (p_30s ** 2) * dt if ftp > 0 else np.zeros_like(p_30s)
     w_total = float(np.sum(weights))
     if w_total > 0 and tss_total > 0:
         awc_frac = float(np.sum(weights * f_awc)) / w_total
+        ltp_frac = float(np.sum(weights * f_ltp)) / w_total
         tss_awc  = tss_total * awc_frac
         tss_map  = tss_total - tss_awc
+        tss_ltp  = min(tss_total * ltp_frac, tss_map)  # clamp for float safety
     else:
         tss_awc = 0.0
         tss_map = float(tss_total)
-    return tss_map, tss_awc
+        tss_ltp = float(tss_total)
+    return tss_ltp, tss_map, tss_awc
 
 
 def _aerobic_decoupling(df: pd.DataFrame) -> float | None:
@@ -143,7 +192,8 @@ def _power_model(t, AWC, Pmax, MAP, tau2):
 
 
 def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
-                     n_iter: int = 8, asymmetry: float = 10.0):
+                     n_iter: int = 8, asymmetry: float = 10.0,
+                     p0_init: list | None = None):
     """Skimming fit via iteratively reweighted least squares (IRLS).
 
     Points above the model (hard efforts) receive weight `asymmetry`; points
@@ -151,17 +201,26 @@ def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
 
     Returns (popt, True) on success or (None, False) on failure.
     popt = [AWC, Pmax, MAP, tau2]
+
+    Pass p0_init (a previous popt) to warm-start the solver; it is treated as
+    the result of iteration 0, skipping the cold-start phase.  Only used when
+    it lies within bounds.
     """
-    p0      = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    p0_default = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
     bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
     weights = np.ones(len(dur))
-    popt    = None
+    # Warm-start: validate p0_init against bounds before using it
+    popt: list | None = None
+    if p0_init is not None:
+        lo, hi = bounds
+        if all(lo[j] <= p0_init[j] <= hi[j] for j in range(4)):
+            popt = list(p0_init)
 
     for i in range(n_iter):
         try:
             popt, _ = curve_fit(
                 _power_model, dur, pwr,
-                p0=p0 if popt is None else popt,
+                p0=p0_default if popt is None else popt,
                 bounds=bounds,
                 sigma=1.0 / weights,
                 absolute_sigma=False,
@@ -227,6 +286,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             tss                   REAL,
             tss_map               REAL,
             tss_awc               REAL,
+            tss_ltp               REAL,
             ltp                   REAL,
             variability_index     REAL,
             aerobic_decoupling_pct REAL
@@ -237,6 +297,15 @@ def init_db(conn: sqlite3.Connection) -> None:
             zone     INTEGER NOT NULL,
             seconds  REAL    NOT NULL,
             PRIMARY KEY (ride_id, zone)
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_pdc_params (
+            date  TEXT PRIMARY KEY,
+            MAP   REAL NOT NULL,
+            Pmax  REAL NOT NULL,
+            AWC   REAL NOT NULL,
+            tau2  REAL NOT NULL,
+            ltp   REAL NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -270,6 +339,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "tss                    REAL",
         "tss_map                REAL",
         "tss_awc                REAL",
+        "tss_ltp                REAL",
         "ltp                    REAL",
         "variability_index      REAL",
         "aerobic_decoupling_pct REAL",
@@ -301,6 +371,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         DELETE FROM pdc_params
         WHERE ltp IS NULL
            OR tss_awc IS NULL
+           OR tss_ltp IS NULL
            OR ABS(tss - (tss_map + tss_awc)) > 0.01
     """)
     # Remove zone rows whose PDC params were just purged (zones depend on LTP/MAP)
@@ -474,7 +545,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
         conn, params=(ride_id,),
     )
-    np_val = if_val = tss = tss_map = tss_awc = 0.0
+    np_val = if_val = tss = tss_ltp = tss_map = tss_awc = 0.0
     vi = aedec = None
     if not rec.empty and rec["power"].notna().any():
         elapsed = rec["elapsed_s"].to_numpy(dtype=float)
@@ -485,7 +556,9 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         if_val  = np_val / ftp if ftp > 0 else 0.0
         dur_s   = float(elapsed[-1] - elapsed[0]) if len(elapsed) > 1 else 0.0
         tss     = (dur_s / 3600.0) * (if_val ** 2) * 100.0
-        tss_map, tss_awc = _tss_components(elapsed, power, ftp, float(MAP), tss, hz)
+        tss_ltp, tss_map, tss_awc = _tss_components(
+            elapsed, power, ftp, float(MAP), tss, hz, ltp=float(ltp),
+            AWC_val=float(AWC), Pmax_val=float(Pmax), tau2_val=float(tau2))
         ap  = float(rec["power"].fillna(0).mean())
         vi  = round(np_val / ap, 3) if ap > 0 else None
         aedec = _aerobic_decoupling(rec)
@@ -494,8 +567,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc, ltp, variability_index, aerobic_decoupling_pct)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, tss_ltp, ltp, variability_index, aerobic_decoupling_pct)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -509,6 +582,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             tss,                      # full precision — tss_map + tss_awc == tss exactly
             tss_map,
             tss_awc,
+            tss_ltp,
             round(ltp,     1),
             vi,
             aedec,
@@ -530,6 +604,119 @@ def backfill_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Computed PDC params for {len(rows)} ride(s).")
 
 
+def recompute_daily_pdc_params(conn: sqlite3.Connection,
+                               from_date: str | None = None) -> None:
+    """(Re)compute daily PDC parameters and store in daily_pdc_params.
+
+    If *from_date* (ISO ``YYYY-MM-DD``) is given, recompute from that date to
+    today.  Otherwise, recompute from the earliest ride date.  Uses warm-
+    starting from the previous day's stored popt when available.
+    """
+    today = datetime.date.today()
+
+    if from_date is None:
+        row = conn.execute("SELECT MIN(ride_date) FROM rides").fetchone()
+        if not row or not row[0]:
+            return
+        start = datetime.date.fromisoformat(row[0])
+        conn.execute("DELETE FROM daily_pdc_params")
+        prev_popt: list | None = None
+    else:
+        start = datetime.date.fromisoformat(from_date)
+        conn.execute("DELETE FROM daily_pdc_params WHERE date >= ?", (from_date,))
+        # Warm-start from the most recent stored day before start
+        prev_row = conn.execute(
+            "SELECT AWC, Pmax, MAP, tau2 FROM daily_pdc_params "
+            "WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (from_date,),
+        ).fetchone()
+        prev_popt = list(prev_row) if prev_row else None
+
+    # Load all MMP data with ride dates
+    mmp = pd.read_sql(
+        "SELECT m.duration_s, m.power, r.ride_date "
+        "FROM mmp m JOIN rides r ON m.ride_id = r.id",
+        conn,
+    )
+    if mmp.empty:
+        conn.commit()
+        return
+
+    mmp["date_obj"] = pd.to_datetime(mmp["ride_date"]).dt.date
+    ride_dates = set(mmp["date_obj"].unique())
+    n_days = (today - start).days + 1
+
+    rows: list[tuple] = []
+    for i in range(n_days):
+        ref    = start + datetime.timedelta(days=i)
+        cutoff = ref - datetime.timedelta(days=PDC_WINDOW)
+
+        w = mmp[(mmp["date_obj"] >= cutoff) & (mmp["date_obj"] <= ref)]
+        if w.empty:
+            prev_popt = None
+            continue
+
+        age        = w["date_obj"].apply(lambda d: (ref - d).days)
+        aged_power = w["power"] * (1.0 / (1.0 + np.exp(PDC_K * (age - PDC_INFLECTION))))
+        aged = (
+            w.assign(aged_power=aged_power)
+            .groupby("duration_s")["aged_power"].max()
+            .reset_index().sort_values("duration_s")
+        )
+        if len(aged) < 4:
+            prev_popt = None
+            continue
+
+        dur = aged["duration_s"].to_numpy(dtype=float)
+        pwr = aged["aged_power"].to_numpy(dtype=float)
+
+        has_new_ride = ref in ride_dates
+        n_iter = 8 if (has_new_ride or prev_popt is None) else 4
+        popt, ok = _fit_power_curve(dur, pwr, n_iter=n_iter, p0_init=prev_popt)
+        if not ok:
+            prev_popt = None
+            continue
+
+        prev_popt = list(popt)
+        AWC, Pmax, MAP, tau2 = popt
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+
+        rows.append((
+            ref.isoformat(),
+            round(float(MAP), 1),
+            round(float(Pmax), 1),
+            round(float(AWC), 1),
+            round(float(tau2), 1),
+            round(ltp, 1),
+        ))
+
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO daily_pdc_params "
+            "(date, MAP, Pmax, AWC, tau2, ltp) VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    conn.commit()
+
+
+def ensure_daily_pdc_current(conn: sqlite3.Connection) -> None:
+    """Ensure daily_pdc_params is populated up to today.
+
+    If the table is empty, does a full recompute.  Otherwise, only fills in
+    days after the last stored date (typically just today on a new calendar
+    day with no new rides).
+    """
+    row = conn.execute("SELECT MAX(date) FROM daily_pdc_params").fetchone()
+    if not row or not row[0]:
+        recompute_daily_pdc_params(conn)
+        return
+    last_date = datetime.date.fromisoformat(row[0])
+    today = datetime.date.today()
+    if last_date < today:
+        next_date = last_date + datetime.timedelta(days=1)
+        recompute_daily_pdc_params(conn, from_date=next_date.isoformat())
+
+
 def backfill_vi_aedec(conn: sqlite3.Connection) -> None:
     """Compute variability_index and aerobic_decoupling_pct for rides missing them.
 
@@ -541,16 +728,15 @@ def backfill_vi_aedec(conn: sqlite3.Connection) -> None:
            FROM pdc_params p
            JOIN rides r ON r.id = p.ride_id
            WHERE p.variability_index IS NULL
+             AND p.normalized_power IS NOT NULL
+             AND r.avg_power > 0
            ORDER BY p.ride_id"""
     ).fetchall()
     if not rows:
         return
     print(f"[vi] Backfilling VI/AeDec for {len(rows)} ride(s) …")
     for ride_id, np_val, avg_pwr in rows:
-        if np_val is not None and avg_pwr is not None and float(avg_pwr) > 0:
-            vi = round(float(np_val) / float(avg_pwr), 3)
-        else:
-            vi = None
+        vi = round(float(np_val) / float(avg_pwr), 3)
         rec = pd.read_sql(
             "SELECT power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
             conn, params=(ride_id,),
@@ -643,7 +829,8 @@ def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
     """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
     rows = conn.execute(
         """SELECT r.id, r.name FROM rides r
-           WHERE NOT EXISTS (
+           WHERE r.name NOT LIKE 'strava_%'
+             AND NOT EXISTS (
                SELECT 1 FROM records rec
                WHERE rec.ride_id = r.id AND rec.latitude IS NOT NULL
            )
@@ -695,16 +882,73 @@ def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
         print(f"[pdc] Recomputed PDC params for {len(rows)} ride(s).")
 
 
+def backfill_missing_mmp(conn: sqlite3.Connection) -> None:
+    """Backfill any MMP (and MMH) durations missing from the current resolution.
+
+    Compares each ride's stored durations against the full set from
+    mmp_durations_for_ride() and computes any that are absent.
+    """
+    rows = conn.execute(
+        "SELECT id, name, total_records FROM rides ORDER BY id"
+    ).fetchall()
+    if not rows:
+        return
+
+    backfilled = 0
+    for ride_id, name, n_records in rows:
+        durations = mmp_durations_for_ride(n_records)
+
+        existing = {r[0] for r in conn.execute(
+            "SELECT duration_s FROM mmp WHERE ride_id = ?",
+            (ride_id,),
+        ).fetchall()}
+        missing = [d for d in durations if d not in existing]
+        if not missing:
+            continue
+
+        df = pd.read_sql(
+            "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+            conn, params=(ride_id,),
+        )
+        if df.empty or df["power"].isna().all():
+            continue
+
+        mmp = calculate_mmp(df, missing)
+        if mmp:
+            conn.executemany(
+                "INSERT OR IGNORE INTO mmp (ride_id, duration_s, power) VALUES (?,?,?)",
+                [(ride_id, d, round(p, 1)) for d, p in mmp.items()],
+            )
+
+        if "heart_rate" in df.columns and df["heart_rate"].notna().any():
+            mmh = calculate_mmh(df, missing)
+            if mmh:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
+                    [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
+                )
+
+        backfilled += 1
+
+    conn.commit()
+    if backfilled:
+        print(f"[mmp] Backfilled missing MMP durations for {backfilled} ride(s).")
+
+
 # ── Per-ride processing ───────────────────────────────────────────────────────
 
-def process_ride(conn: sqlite3.Connection, path: str) -> None:
-    name = os.path.splitext(os.path.basename(path))[0]
+def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
+    """Store a ride DataFrame in the database (records, MMP, MMH, PDC).
 
+    *name* is the unique ride identifier (e.g. FIT filename stem or
+    ``strava_<id>``).  *df* must contain at least ``timestamp`` and
+    ``elapsed_s`` columns; ``power``, ``heart_rate``, ``latitude``,
+    ``longitude``, and ``altitude_m`` are optional.
+    """
     if conn.execute("SELECT 1 FROM rides WHERE name = ?", (name,)).fetchone():
         print(f"  {name}: already in database, skipping.")
         return
 
-    df = read_fit(path)
     if df.empty:
         print(f"  {name}: no record data, skipping.")
         return
@@ -712,7 +956,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
     # Ride metadata
     ride_date = df["timestamp"].iloc[0].date().isoformat()
     duration  = float(df["elapsed_s"].iloc[-1])
-    has_power = df["power"].notna().any()
+    has_power = "power" in df.columns and df["power"].notna().any()
     has_hr    = "heart_rate" in df.columns and df["heart_rate"].notna().any()
 
     cur = conn.execute(
@@ -729,10 +973,14 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         ),
     )
     if cur.rowcount == 0:
-        # Another concurrent call already inserted this ride (race condition).
         print(f"  {name}: already in database, skipping.")
         return
     ride_id = cur.lastrowid
+
+    # Ensure optional columns exist
+    for col in ("power", "heart_rate", "latitude", "longitude", "altitude_m"):
+        if col not in df.columns:
+            df[col] = None
 
     # Raw records
     conn.executemany(
@@ -753,15 +1001,16 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         ),
     )
 
-    # MMP
-    mmp = calculate_mmp(df, MMP_DURATIONS)
+    # MMP — extend durations in 30-min intervals to the ride length
+    ride_durations = mmp_durations_for_ride(len(df))
+    mmp = calculate_mmp(df, ride_durations)
     conn.executemany(
         "INSERT INTO mmp (ride_id, duration_s, power) VALUES (?,?,?)",
         [(ride_id, d, round(p, 1)) for d, p in mmp.items()],
     )
 
     # MMH
-    mmh = calculate_mmh(df, MMP_DURATIONS)
+    mmh = calculate_mmh(df, ride_durations)
     if mmh:
         conn.executemany(
             "INSERT INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
@@ -794,6 +1043,15 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
         (ride_date, end_affected),
     ).fetchall():
         compute_pdc_params(conn, rid)
+
+    # Recompute daily PDC history from this ride's date onward
+    recompute_daily_pdc_params(conn, from_date=ride_date)
+
+
+def process_ride(conn: sqlite3.Connection, path: str) -> None:
+    name = os.path.splitext(os.path.basename(path))[0]
+    df = read_fit(path)
+    ingest_ride(conn, name, df)
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
