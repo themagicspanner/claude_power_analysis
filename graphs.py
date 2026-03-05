@@ -418,6 +418,17 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
                 line=dict(color=Z_AWC, width=2, dash="dash"),
             ))
 
+            # Red dot at TtE_MAP
+            if tte is not None:
+                p_at_tte = float(_power_model_extended(
+                    tte, AWC, Pmax, MAP, tau2, tte, tte_b))
+                fig.add_trace(go.Scatter(
+                    x=[tte], y=[p_at_tte],
+                    mode="markers", name="TtE_MAP",
+                    marker=dict(color="red", size=8),
+                    hovertemplate="TtE_MAP: %{x:.0f}s  %{y:.0f}W<extra></extra>",
+                ))
+
         # Best aged MMP from other rides in the PDC window
         if not other.empty:
             fig.add_trace(go.Scatter(
@@ -560,6 +571,17 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
                 fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.18),
                 line=dict(color=Z_AWC, width=2, dash="dash"),
             ))
+
+            # Red dot at TtE_MAP
+            if tte is not None:
+                p_at_tte = float(_power_model_extended(
+                    tte, AWC, Pmax, MAP, tau2, tte, tte_b))
+                fig.add_trace(go.Scatter(
+                    x=[tte], y=[p_at_tte],
+                    mode="markers", name="TtE_MAP",
+                    marker=dict(color="red", size=8),
+                    hovertemplate="TtE_MAP: %{x:.0f}s  %{y:.0f}W<extra></extra>",
+                ))
 
     fig.update_xaxes(type="log", tickvals=LOG_TICK_S, ticktext=LOG_TICK_LBL,
                      title_text="Duration", showgrid=True, gridcolor="lightgrey")
@@ -1451,6 +1473,17 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             line=dict(color=Z_AWC, width=2.5, dash="dash"),
             hovertemplate="Model: %{y:.0f} W<extra></extra>",
         ), row=1, col=1)
+
+        # Red dot at TtE_MAP
+        if tte is not None:
+            p_at_tte = float(_power_model_extended(
+                tte, AWC, Pmax, MAP, tau2, tte, tte_b))
+            fig.add_trace(go.Scatter(
+                x=[tte], y=[p_at_tte],
+                mode="markers", name="TtE_MAP",
+                marker=dict(color="red", size=8),
+                hovertemplate="TtE_MAP: %{x:.0f}s  %{y:.0f}W<extra></extra>",
+            ), row=1, col=1)
 
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
