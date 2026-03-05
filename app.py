@@ -342,9 +342,10 @@ def _start_strava_timer() -> None:
 def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
     """Fit the PDC on-the-fly for a ride using the same method as fig_pdc_at_date.
 
-    Returns a dict with keys AWC, Pmax, MAP, tau2, ftp (all floats), or None
-    if there is insufficient data for a fit.  Using this for W'bal and TSS
-    component charts guarantees they use the same parameters as the PDC chart.
+    Returns a dict with keys AWC, Pmax, MAP, tau2, ftp (normalizing power),
+    tte, tte_b, ltp (all floats), or None if there is insufficient data for
+    a fit.  Using this for W'bal and TSS component charts guarantees they
+    use the same parameters as the PDC chart.
     """
     ride_date     = ride["ride_date"]
     ride_date_obj = datetime.date.fromisoformat(ride_date)
@@ -382,7 +383,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "tau2": float(tau2),
         "tte":  tte,
         "tte_b": tte_b,
-        "ftp":  float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b)),
+        "ftp":  float(_power_model_extended(tte if tte is not None else 3600.0, AWC, Pmax, MAP, tau2, tte, tte_b)),
         "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
 
@@ -478,13 +479,17 @@ def _get_latest_pdc(pdc_params: pd.DataFrame,
     if merged.empty:
         return None
     r = merged.iloc[0]
+    tte   = float(r["tte"])   if pd.notna(r.get("tte"))   else None
+    tte_b = float(r["tte_b"]) if pd.notna(r.get("tte_b")) else None
     return {
-        "MAP":  float(r["MAP"]),
-        "AWC":  float(r["AWC"]),
-        "Pmax": float(r["Pmax"]),
-        "tau2": float(r["tau2"]) if pd.notna(r.get("tau2")) else 300.0,
-        "ftp":  float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
-        "ltp":  float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
+        "MAP":   float(r["MAP"]),
+        "AWC":   float(r["AWC"]),
+        "Pmax":  float(r["Pmax"]),
+        "tau2":  float(r["tau2"]) if pd.notna(r.get("tau2")) else 300.0,
+        "ftp":   float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
+        "ltp":   float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
+        "tte":   tte,
+        "tte_b": tte_b,
     }
 
 
@@ -509,8 +514,6 @@ def _resolve_ref_watts(ref: str, pdc: dict | None, map_watts: float) -> float:
     if pdc is None:
         return map_watts
     ref = (ref or "MAP").upper()
-    if ref == "FTP":
-        return float(pdc.get("ftp") or map_watts)
     if ref == "LTP":
         return float(pdc.get("ltp") or 0.0) or map_watts * 0.75
     if ref == "PMAX":
@@ -707,19 +710,19 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
 
     # PDC fit params — prefer on-the-fly, fall back to stored
     if live_pdc is not None:
-        ftp_v  = _i(live_pdc.get("ftp"))
         map_v  = _i(live_pdc.get("MAP"))
         awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
         pmax_v = _i(live_pdc.get("Pmax"))
         ltp_v  = _i(live_pdc.get("ltp"))
+        tte_v  = f"{live_pdc['tte']/60:.0f}" if live_pdc.get("tte") else "—"
     elif stored is not None:
-        ftp_v  = _i(stored.get("ftp"))
         map_v  = _i(stored.get("MAP"))
         awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
         pmax_v = _i(stored.get("Pmax"))
         ltp_v  = _i(stored.get("ltp"))
+        tte_v  = f"{stored['tte']/60:.0f}" if pd.notna(stored.get("tte")) else "—"
     else:
-        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
+        map_v = awc_v = pmax_v = ltp_v = tte_v = "—"
 
     # Ride performance metrics from stored pdc_params
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
@@ -751,11 +754,11 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
             ]),
             # Right — PDC fitness parameters
             html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}, children=[
-                card("FTP",  ftp_v,  "W"),
                 card("MAP",  map_v,  "W"),
                 card("LTP",  ltp_v,  "W"),
                 card("AWC",  awc_v,  "kJ"),
                 card("Pmax", pmax_v, "W"),
+                card("TtE",  tte_v,  "min"),
             ]),
         ]),
     ]
@@ -778,8 +781,8 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
 
     # Find the most recent ride that has PDC params
     if pdc_params.empty or rides.empty:
-        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+        return [card("MAP", "—", "W"), card("LTP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min")]
 
     merged = (
         pdc_params
@@ -788,15 +791,15 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         .dropna(subset=["MAP", "AWC", "Pmax"])
     )
     if merged.empty:
-        return [card("FTP", "—", "W"), card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W")]
+        return [card("MAP", "—", "W"), card("LTP", "—", "W"),
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min")]
 
     latest = merged.iloc[0]
-    ftp_v  = f"{int(round(latest['ftp']))}"  if pd.notna(latest.get("ftp"))  else "—"
     map_v  = f"{int(round(latest['MAP']))}"
     ltp_v  = f"{int(round(latest['ltp']))}"  if pd.notna(latest.get("ltp"))  else "—"
     awc_v  = f"{latest['AWC']/1000:.1f}"
     pmax_v = f"{int(round(latest['Pmax']))}"
+    tte_v  = f"{latest['tte']/60:.0f}" if pd.notna(latest.get("tte")) else "—"
     as_of  = latest["ride_date"]
 
     # Training readiness card
@@ -918,11 +921,11 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
                 html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
             ]),
         ]),
-        card("FTP",  ftp_v,  "W"),
         card("MAP",  map_v,  "W"),
         card("LTP",  ltp_v,  "W"),
         card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
+        card("TtE",  tte_v,  "min"),
     ]
     if freshness_card is not None:
         children.append(freshness_card)
@@ -1315,7 +1318,7 @@ app.layout = html.Div(
                         {"field": "work_ref", "rowDrag": True,
                          "headerName": "Work Ref", "editable": True,
                          "cellEditor": "agSelectCellEditor",
-                         "cellEditorParams": {"values": ["MAP", "FTP", "LTP", "Pmax"]},
+                         "cellEditorParams": {"values": ["MAP", "LTP", "Pmax"]},
                          "width": 90},
                         {"field": "work_intensity_pct",
                          "headerName": "Work %", "editable": True,
@@ -1326,7 +1329,7 @@ app.layout = html.Div(
                         {"field": "rest_ref",
                          "headerName": "Rest Ref", "editable": True,
                          "cellEditor": "agSelectCellEditor",
-                         "cellEditorParams": {"values": ["MAP", "FTP", "LTP", "Pmax"]},
+                         "cellEditorParams": {"values": ["MAP", "LTP", "Pmax"]},
                          "width": 90},
                         {"field": "rest_intensity_pct",
                          "headerName": "Rest %", "editable": True,
@@ -1598,18 +1601,16 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
     pmax_v = int(round(r["Pmax"]))
     awc_v  = f"{r['AWC']/1000:.1f}"
     ltp_v  = int(round(r["ltp"]))
-    ftp_v  = int(round(_power_model_extended(
-        3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"],
-        r.get("tte"), r.get("tte_b"))))
+    tte_v  = f"{r['tte']/60:.0f}" if pd.notna(r.get("tte")) else "—"
     return [
         _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
                    {**_ls, "fontSize": "13px", "color": "#222"},
                    {**_vs, "fontSize": "16px", "color": "#7a8fbb"}, _us),
-        _make_card("FTP",  str(ftp_v),  "W", _cs, _ls, _vs, _us),
         _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
         _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
         _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
         _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
+        _make_card("TtE",  tte_v,       "min", _cs, _ls, _vs, _us),
     ]
 
 
@@ -1793,19 +1794,19 @@ def update_ride_charts(ride_id, _ver):
 
     # PDC fit params — prefer on-the-fly, fall back to stored
     if live_pdc is not None:
-        ftp_v  = _i(live_pdc.get("ftp"))
         map_v  = _i(live_pdc.get("MAP"))
         awc_v  = f"{live_pdc['AWC']/1000:.1f}" if live_pdc.get("AWC") else "—"
         pmax_v = _i(live_pdc.get("Pmax"))
         ltp_v  = _i(live_pdc.get("ltp"))
+        tte_v  = f"{live_pdc['tte']/60:.0f}" if live_pdc.get("tte") else "—"
     elif stored is not None:
-        ftp_v  = _i(stored.get("ftp"))
         map_v  = _i(stored.get("MAP"))
         awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
         pmax_v = _i(stored.get("Pmax"))
         ltp_v  = _i(stored.get("ltp"))
+        tte_v  = f"{stored['tte']/60:.0f}" if pd.notna(stored.get("tte")) else "—"
     else:
-        ftp_v = map_v = awc_v = pmax_v = ltp_v = "—"
+        map_v = awc_v = pmax_v = ltp_v = tte_v = "—"
 
     # Ride performance metrics from stored pdc_params
     np_v      = _i(stored.get("normalized_power"))    if stored is not None else "—"
@@ -1834,11 +1835,11 @@ def update_ride_charts(ride_id, _ver):
         return _make_card(lbl, val, unit, _cs, _ls, _vs, _us)
 
     pdc_stats = [
-        _card("FTP",  ftp_v,  "W"),
         _card("MAP",  map_v,  "W"),
         _card("LTP",  ltp_v,  "W"),
         _card("AWC",  awc_v,  "kJ"),
         _card("Pmax", pmax_v, "W"),
+        _card("TtE",  tte_v,  "min"),
     ]
 
     # Difficulty: max 1-hour time-weighted rolling TSS rate over the ride
@@ -2366,7 +2367,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
     pdc_cards = [
         _make_card("MAP", f"{int(map_w)}", "W", _cs, _ls, _vs, _us),
         _make_card("LTP", f"{int(ltp_w)}", "W", _cs, _ls, _vs, _us),
-        _make_card("FTP", f"{int(ftp_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("P(TtE)", f"{int(ftp_w)}", "W", _cs, _ls, _vs, _us),
     ]
 
     return wk_fig_power, wk_fig_tss, wk_fig_zones, wk_fig_mmp, stats, pdc_cards

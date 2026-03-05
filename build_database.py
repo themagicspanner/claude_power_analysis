@@ -679,7 +679,9 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # ── TSS metrics ───────────────────────────────────────────────────────────
-    ftp = float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b))
+    # Normalizing power for TSS: P(TtE) when available, else P(3600)
+    _tte_or_3600 = tte if tte is not None else 3600.0
+    ftp = float(_power_model_extended(_tte_or_3600, AWC, Pmax, MAP, tau2, tte, tte_b))
 
     rec = pd.read_sql(
         "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",

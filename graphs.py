@@ -652,6 +652,25 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
         line=dict(color=Z_BASE, width=2, shape="hv"),
     ), secondary_y=False)
 
+    # P(TtE) — normalizing power computed from the model at TtE (or 3600s fallback)
+    if "tte" in df.columns and "tte_b" in df.columns:
+        p_tte_vals = []
+        tte_min_vals = []
+        for _, row in df.iterrows():
+            _AWC, _Pmax, _MAP, _tau2 = row["AWC"], row["Pmax"], row["MAP"], row["tau2"]
+            _tte = float(row["tte"]) if pd.notna(row.get("tte")) else None
+            _tte_b = float(row["tte_b"]) if pd.notna(row.get("tte_b")) else None
+            _t = _tte if _tte is not None else 3600.0
+            p_tte_vals.append(float(_power_model_extended(_t, _AWC, _Pmax, _MAP, _tau2, _tte, _tte_b)))
+            tte_min_vals.append(_t / 60.0)
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=p_tte_vals,
+            mode="lines", name="P(TtE) (W)",
+            line=dict(color="#e07020", width=2, dash="dashdot", shape="hv"),
+            customdata=np.array(tte_min_vals),
+            hovertemplate="P(TtE): %{y:.0f} W  (TtE=%{customdata:.0f} min)<extra></extra>",
+        ), secondary_y=False)
+
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["AWC"] / 1000,
         mode="lines", name="AWC (kJ)",
@@ -801,7 +820,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
     """Return TSS rate and cumulative LTP / Threshold / AWC series over the ride.
 
     Uses the recalculated-from-start method:
-      TSS(t) = (t / 3600) * (NP(0..t) / FTP)^2 * 100
+      TSS(t) = (t / 3600) * (NP(0..t) / P_norm)^2 * 100
     where NP(0..t) is the Normalized Power computed over all samples from
     the start up to time t.
 
@@ -1155,7 +1174,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             "Base ≤LTP = %{y:.0f}<br>"
             "Threshold = %{customdata[4]:.0f}<br>"
             "AWC = %{customdata[5]:.0f}<br>"
-            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "NP = %{customdata[1]:.0f} W  "
             "IF = %{customdata[2]:.2f}<extra></extra>"
         ),
     ))
@@ -1169,7 +1188,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             "Threshold = %{y:.0f}<br>"
             "Base ≤LTP = %{customdata[3]:.0f}<br>"
             "AWC = %{customdata[5]:.0f}<br>"
-            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "NP = %{customdata[1]:.0f} W  "
             "IF = %{customdata[2]:.2f}<extra></extra>"
         ),
     ))
@@ -1183,7 +1202,7 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             "AWC = %{y:.0f}<br>"
             "Base ≤LTP = %{customdata[3]:.0f}<br>"
             "Threshold = %{customdata[4]:.0f}<br>"
-            "FTP = %{customdata[0]:.0f} W  NP = %{customdata[1]:.0f} W  "
+            "NP = %{customdata[1]:.0f} W  "
             "IF = %{customdata[2]:.2f}<extra></extra>"
         ),
     ))
@@ -1305,7 +1324,8 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         env_df["model_power"]  = model_vals
         env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
         env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
-        ftp = float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b))
+        _tte_or_3600 = tte if tte is not None else 3600.0
+        p_tte = float(_power_model_extended(_tte_or_3600, AWC, Pmax, MAP, tau2, tte, tte_b))
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # ── Figure ────────────────────────────────────────────────────────────────
@@ -1434,7 +1454,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
 
     if ok:
         title_sub = (
-            f"MAP {MAP:.0f} W  ·  FTP {ftp:.0f} W  ·  LTP {ltp:.0f} W  ·  "
+            f"MAP {MAP:.0f} W  ·  P(TtE) {p_tte:.0f} W  ·  LTP {ltp:.0f} W  ·  "
             f"AWC {AWC / 1000:.1f} kJ  ·  Pmax {Pmax:.0f} W  ·  "
             f"window {PDC_WINDOW} d  ·  inflection {PDC_INFLECTION} d  ·  "
             f"K={PDC_K}  ·  ref {today_str}"
