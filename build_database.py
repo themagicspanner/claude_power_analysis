@@ -812,6 +812,8 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
     n_days = (today - start).days + 1
 
     rows: list[tuple] = []
+    if n_days > 7:
+        print(f"[daily_pdc] Recomputing {n_days} days ({start} → {today}) …")
     for i in range(n_days):
         ref    = start + datetime.timedelta(days=i)
         cutoff = ref - datetime.timedelta(days=PDC_WINDOW)
@@ -867,6 +869,7 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
+        print(f"[daily_pdc] Stored {len(rows)} day(s) of PDC parameters.")
     conn.commit()
 
 
