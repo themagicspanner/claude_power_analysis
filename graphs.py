@@ -1604,21 +1604,23 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
         ), row=row, col=1, secondary_y=True)
 
-        # Readiness dots on the TSB line
+        # Readiness dots on the TSB line (red when below threshold)
         if label == "AWC":
             _cutoff_vals = pd.Series(0.0, index=pmc.index)
         elif label == "Threshold":
             _cutoff_vals = -0.30 * pmc["ctl"]
         else:  # Base
             _cutoff_vals = -0.50 * pmc["ctl"]
-        _ok = tsb_vals.values > _cutoff_vals.values
-        _dot_colors = np.where(_ok, "#16a34a", "#dc2626")
-        fig.add_trace(go.Scatter(
-            x=dates, y=tsb_vals,
-            mode="markers", name=f"TSB status ({label})",
-            marker=dict(color=_dot_colors, size=4),
-            showlegend=False, hoverinfo="skip",
-        ), row=row, col=1, secondary_y=True)
+        _below = tsb_vals.values <= _cutoff_vals.values
+        if _below.any():
+            _x_red = dates[_below]
+            _y_red = tsb_vals.values[_below]
+            fig.add_trace(go.Scatter(
+                x=_x_red, y=_y_red,
+                mode="markers", name=f"TSB status ({label})",
+                marker=dict(color="#dc2626", size=5),
+                showlegend=False, hoverinfo="skip",
+            ), row=row, col=1, secondary_y=True)
 
         # ATL on RIGHT axis — short-term fatigue (dashed)
         fig.add_trace(go.Scatter(
@@ -1782,11 +1784,11 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     dates = pmc_ltp["date"].dt.strftime("%Y-%m-%d")
 
-    # ── Stacked TSS bars on LEFT axis ──────────────────────────────────
+    # ── Stacked TSS bars on LEFT axis (Base bottom, AWC top) ───────────
     fig.add_trace(go.Bar(
-        x=dates, y=_tss_awc_bars,
-        name="TSS Anaerobic", marker_color=_zc(_RGB_AWC, 0.45),
-        hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
+        x=dates, y=_tss_ltp_bars,
+        name="TSS Base", marker_color=_zc(_RGB_BASE, 0.45),
+        hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
@@ -1796,19 +1798,19 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
-        x=dates, y=_tss_ltp_bars,
-        name="TSS Base", marker_color=_zc(_RGB_BASE, 0.45),
-        hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
+        x=dates, y=_tss_awc_bars,
+        name="TSS Anaerobic", marker_color=_zc(_RGB_AWC, 0.45),
+        hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
-    # ── Stacked CTL areas on RIGHT axis ────────────────────────────────
+    # ── Stacked CTL areas on RIGHT axis (Base bottom, AWC top) ───────
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_awc["ctl"].round(1),
-        mode="lines", name="CTL Anaerobic",
-        line=dict(color=Z_AWC, width=0.5),
-        fillcolor=_zc(_RGB_AWC, 0.30),
+        x=dates, y=pmc_ltp["ctl"].round(1),
+        mode="lines", name="CTL Base",
+        line=dict(color=Z_BASE, width=0.5),
+        fillcolor=_zc(_RGB_BASE, 0.30),
         stackgroup="ctl",
-        hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
+        hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
@@ -1821,12 +1823,12 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_ltp["ctl"].round(1),
-        mode="lines", name="CTL Base",
-        line=dict(color=Z_BASE, width=0.5),
-        fillcolor=_zc(_RGB_BASE, 0.30),
+        x=dates, y=pmc_awc["ctl"].round(1),
+        mode="lines", name="CTL Anaerobic",
+        line=dict(color=Z_AWC, width=0.5),
+        fillcolor=_zc(_RGB_AWC, 0.30),
         stackgroup="ctl",
-        hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
+        hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     # ── TSB lines on RIGHT axis ────────────────────────────────────────
@@ -1837,13 +1839,14 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         line=dict(color=Z_AWC, width=2),
         hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
-    _ok_awc = _tsb_awc_vals.values > 0
-    fig.add_trace(go.Scatter(
-        x=dates, y=_tsb_awc_vals,
-        mode="markers", name="TSB status AWC",
-        marker=dict(color=np.where(_ok_awc, "#16a34a", "#dc2626"), size=4),
-        showlegend=False, hoverinfo="skip",
-    ), secondary_y=True)
+    _below_awc = _tsb_awc_vals.values <= 0
+    if _below_awc.any():
+        fig.add_trace(go.Scatter(
+            x=dates[_below_awc], y=_tsb_awc_vals.values[_below_awc],
+            mode="markers", name="TSB status AWC",
+            marker=dict(color="#dc2626", size=5),
+            showlegend=False, hoverinfo="skip",
+        ), secondary_y=True)
 
     _tsb_thresh_vals = pmc_thresh["tsb"].round(1)
     fig.add_trace(go.Scatter(
@@ -1852,13 +1855,14 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         line=dict(color=Z_THRESH, width=2),
         hovertemplate="TSB Thresh: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
-    _ok_thresh = _tsb_thresh_vals.values > (-0.30 * pmc_thresh["ctl"]).values
-    fig.add_trace(go.Scatter(
-        x=dates, y=_tsb_thresh_vals,
-        mode="markers", name="TSB status Thresh",
-        marker=dict(color=np.where(_ok_thresh, "#16a34a", "#dc2626"), size=4),
-        showlegend=False, hoverinfo="skip",
-    ), secondary_y=True)
+    _below_thresh = _tsb_thresh_vals.values <= (-0.30 * pmc_thresh["ctl"]).values
+    if _below_thresh.any():
+        fig.add_trace(go.Scatter(
+            x=dates[_below_thresh], y=_tsb_thresh_vals.values[_below_thresh],
+            mode="markers", name="TSB status Thresh",
+            marker=dict(color="#dc2626", size=5),
+            showlegend=False, hoverinfo="skip",
+        ), secondary_y=True)
 
     _tsb_base_vals = pmc_ltp["tsb"].round(1)
     fig.add_trace(go.Scatter(
@@ -1867,13 +1871,14 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
         line=dict(color=Z_BASE, width=2),
         hovertemplate="TSB Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
-    _ok_base = _tsb_base_vals.values > (-0.50 * pmc_ltp["ctl"]).values
-    fig.add_trace(go.Scatter(
-        x=dates, y=_tsb_base_vals,
-        mode="markers", name="TSB status Base",
-        marker=dict(color=np.where(_ok_base, "#16a34a", "#dc2626"), size=4),
-        showlegend=False, hoverinfo="skip",
-    ), secondary_y=True)
+    _below_base = _tsb_base_vals.values <= (-0.50 * pmc_ltp["ctl"]).values
+    if _below_base.any():
+        fig.add_trace(go.Scatter(
+            x=dates[_below_base], y=_tsb_base_vals.values[_below_base],
+            mode="markers", name="TSB status Base",
+            marker=dict(color="#dc2626", size=5),
+            showlegend=False, hoverinfo="skip",
+        ), secondary_y=True)
 
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
                   secondary_y=True)
