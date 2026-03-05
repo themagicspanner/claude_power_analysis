@@ -1611,9 +1611,9 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
 # ── Historical PDC click callback ─────────────────────────────────────────────
 
 @app.callback(
-    Output("graph-pdc-historical",      "figure"),
-    Output("pdc-historical-cards",      "children"),
-    Output("graph-pdc-params-history",  "figure", allow_duplicate=True),
+    Output("graph-pdc-historical",      "figure",   allow_duplicate=True),
+    Output("pdc-historical-cards",      "children", allow_duplicate=True),
+    Output("graph-pdc-params-history",  "figure",   allow_duplicate=True),
     Input("graph-pdc-params-history",     "clickData"),
     State("pdc-slider-dates", "data"),
     prevent_initial_call=True,
