@@ -1274,6 +1274,8 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             "ride_date":  best["ride_date"],
         })
     env_df = pd.DataFrame(env_rows).sort_values("duration_s")
+    # Limit to durations up to 1 hour (the model is only fitted to this range)
+    env_df = env_df[env_df["duration_s"] <= 3600].copy()
 
     dur_arr = env_df["duration_s"].to_numpy(dtype=float)
     pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
