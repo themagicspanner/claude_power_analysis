@@ -774,11 +774,11 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
             ]),
             # Right — PDC fitness parameters
             html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap"}, children=[
-                card("MAP",  map_v,  "W"),
-                card("LTP",  ltp_v,  "W"),
-                card("AWC",  awc_v,  "kJ"),
                 card("Pmax", pmax_v, "W"),
-                card("TtE",  tte_v,  "min"),
+                card("AWC",  awc_v,  "kJ"),
+                card("MAP",  map_v,  "W"),
+                card("TtE\u2098\u2090\u209a", tte_v, "min"),
+                card("LTP",  ltp_v,  "W"),
                 card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
             ]),
         ]),
@@ -802,9 +802,9 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
 
     # Find the most recent ride that has PDC params
     if pdc_params.empty or rides.empty:
-        return [card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min"),
-                card("TtE\u2097\u209c\u209a", "—", "h:mm")]
+        return [card("Pmax", "—", "W"), card("AWC", "—", "kJ"),
+                card("MAP", "—", "W"), card("TtE\u2098\u2090\u209a", "—", "min"),
+                card("LTP", "—", "W"), card("TtE\u2097\u209c\u209a", "—", "h:mm")]
 
     merged = (
         pdc_params
@@ -813,9 +813,9 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         .dropna(subset=["MAP", "AWC", "Pmax"])
     )
     if merged.empty:
-        return [card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min"),
-                card("TtE\u2097\u209c\u209a", "—", "h:mm")]
+        return [card("Pmax", "—", "W"), card("AWC", "—", "kJ"),
+                card("MAP", "—", "W"), card("TtE\u2098\u2090\u209a", "—", "min"),
+                card("LTP", "—", "W"), card("TtE\u2097\u209c\u209a", "—", "h:mm")]
 
     latest = merged.iloc[0]
     map_v  = f"{int(round(latest['MAP']))}"
@@ -931,25 +931,11 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         freshness_card = None
 
     children = [
-        html.Div(style={**card_style, "textAlign": "left", "minWidth": "130px"}, children=[
-            html.Div("Athlete", style=label_style),
-            html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px"}, children=[
-                html.Img(
-                    src="/assets/athlete_profile.jpg",
-                    style={
-                        "width": "40px", "height": "40px",
-                        "borderRadius": "50%", "objectFit": "cover",
-                        "border": "2px solid #dee2e6",
-                    },
-                ),
-                html.Span("Mike Lauder", style={**value_style, "fontSize": "18px"}),
-            ]),
-        ]),
-        card("MAP",  map_v,  "W"),
-        card("LTP",  ltp_v,  "W"),
-        card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
-        card("TtE",  tte_v,  "min"),
+        card("AWC",  awc_v,  "kJ"),
+        card("MAP",  map_v,  "W"),
+        card("TtE\u2098\u2090\u209a", tte_v, "min"),
+        card("LTP",  ltp_v,  "W"),
         card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
     ]
     if freshness_card is not None:
@@ -1036,8 +1022,27 @@ app.layout = html.Div(
         }, children=[
             html.Div("Cycling Power Analysis", style={
                 "color": "white", "fontWeight": "bold", "fontSize": "13px",
-                "padding": "0 20px", "marginBottom": "28px", "lineHeight": "1.4",
+                "padding": "0 20px", "marginBottom": "16px", "lineHeight": "1.4",
             }),
+            # Athlete card
+            html.Div(style={
+                "display": "flex", "alignItems": "center", "gap": "10px",
+                "padding": "10px 20px", "marginBottom": "20px",
+                "borderBottom": "1px solid rgba(255,255,255,0.06)",
+                "borderTop": "1px solid rgba(255,255,255,0.06)",
+            }, children=[
+                html.Img(
+                    src="/assets/athlete_profile.jpg",
+                    style={
+                        "width": "36px", "height": "36px",
+                        "borderRadius": "50%", "objectFit": "cover",
+                        "border": "2px solid #3a4a6a",
+                    },
+                ),
+                html.Span("Mike Lauder", style={
+                    "fontSize": "14px", "fontWeight": "600", "color": "#e8edf5",
+                }),
+            ]),
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
             html.Button("Workouts",   id="nav-workout",     n_clicks=0, style=_NAV_BASE),
@@ -1632,11 +1637,11 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
         _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
                    {**_ls, "fontSize": "13px", "color": "#222"},
                    {**_vs, "fontSize": "16px", "color": "#7a8fbb"}, _us),
-        _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
-        _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
-        _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
         _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
-        _make_card("TtE",  tte_v,       "min", _cs, _ls, _vs, _us),
+        _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
+        _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
+        _make_card("TtE\u2098\u2090\u209a", tte_v, "min", _cs, _ls, _vs, _us),
+        _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
         _make_card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm", _cs, _ls, _vs, _us),
     ]
 
@@ -1864,11 +1869,11 @@ def update_ride_charts(ride_id, _ver):
         return _make_card(lbl, val, unit, _cs, _ls, _vs, _us)
 
     pdc_stats = [
-        _card("MAP",  map_v,  "W"),
-        _card("LTP",  ltp_v,  "W"),
-        _card("AWC",  awc_v,  "kJ"),
         _card("Pmax", pmax_v, "W"),
-        _card("TtE",  tte_v,  "min"),
+        _card("AWC",  awc_v,  "kJ"),
+        _card("MAP",  map_v,  "W"),
+        _card("TtE\u2098\u2090\u209a", tte_v, "min"),
+        _card("LTP",  ltp_v,  "W"),
         _card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
     ]
 
