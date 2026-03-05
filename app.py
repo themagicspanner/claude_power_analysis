@@ -285,7 +285,7 @@ def load_records(ride_id: int) -> pd.DataFrame:
 # ── One-time DB migration ─────────────────────────────────────────────────────
 
 # Bump this when stored PDC params need to be fully recomputed.
-_DB_SCHEMA_VERSION = 5
+_DB_SCHEMA_VERSION = 6
 
 
 def _maybe_migrate(conn: sqlite3.Connection) -> None:
