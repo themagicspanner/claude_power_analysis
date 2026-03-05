@@ -628,120 +628,144 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _add_reference_line(fig: go.Figure, reference_date: datetime.date | None) -> None:
+    """Add a vertical reference-date line + annotation to a figure."""
+    if reference_date is None:
+        return
+    ref_iso = reference_date.isoformat()
+    fig.add_shape(
+        type="line", x0=ref_iso, x1=ref_iso, y0=0, y1=1,
+        yref="paper", line=dict(color="#ff6b6b", width=2, dash="dash"),
+    )
+    fig.add_annotation(
+        x=ref_iso, y=1, yref="paper",
+        text=ref_iso, showarrow=False,
+        font=dict(size=10, color="#ff6b6b"),
+        yshift=10,
+    )
+
+
+def _history_layout(title: str) -> dict:
+    return dict(
+        title=dict(text=title, font=dict(size=14)),
+        height=260,
+        margin=dict(t=40, b=40, l=60, r=60),
+        template="plotly_white",
+        showlegend=False,
+        hovermode="x unified",
+    )
+
+
 def fig_pdc_params_history(daily_pdc: pd.DataFrame,
                            rides: pd.DataFrame,
-                           reference_date: datetime.date | None = None) -> go.Figure:
-    """History of the fitted two-component PDC parameters for every calendar day.
+                           reference_date: datetime.date | None = None,
+                           ) -> tuple[go.Figure, go.Figure, go.Figure]:
+    """Three history charts: Power (W), Energy (kJ), Time (min).
 
-    *daily_pdc* is pre-computed and stored in the database by
-    ``recompute_daily_pdc_params()`` in build_database.py, so this function
-    is a cheap read — no curve fitting happens at render time.
-
-    Left y-axis  : MAP, Pmax and LTP (W)
-    Right y-axis : AWC (kJ)
+    Returns (fig_power, fig_energy, fig_time).
     """
     df = daily_pdc
+    empty = go.Figure()
     if df.empty:
-        return go.Figure()
+        return empty, empty, empty
 
     ride_dates = set(rides["ride_date"].dropna().unique())
+    ride_rows = df[df["date"].isin(ride_dates)]
 
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # ── 1. Power chart: Pmax, MAP, LTP, P(TtE) ──────────────────────────────
+    fig_power = go.Figure()
 
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["MAP"],
-        mode="lines", name="MAP (W)",
-        line=dict(color=Z_THRESH, width=2, shape="hv"),
-    ), secondary_y=False)
-
-    fig.add_trace(go.Scatter(
+    fig_power.add_trace(go.Scatter(
         x=df["date"], y=df["Pmax"],
         mode="lines", name="Pmax (W)",
         line=dict(color="mediumpurple", width=1.5, dash="dash", shape="hv"),
-    ), secondary_y=False)
-
-    fig.add_trace(go.Scatter(
+    ))
+    fig_power.add_trace(go.Scatter(
+        x=df["date"], y=df["MAP"],
+        mode="lines", name="MAP (W)",
+        line=dict(color=Z_THRESH, width=2, shape="hv"),
+    ))
+    fig_power.add_trace(go.Scatter(
         x=df["date"], y=df["ltp"],
         mode="lines", name="LTP (W)",
         line=dict(color=Z_BASE, width=2, shape="hv"),
-    ), secondary_y=False)
+    ))
 
-    # P(TtE) — normalizing power computed from the model at TtE (or 3600s fallback)
     if "tte" in df.columns and "tte_b" in df.columns:
         p_tte_vals = []
-        tte_min_vals = []
         for _, row in df.iterrows():
             _AWC, _Pmax, _MAP, _tau2 = row["AWC"], row["Pmax"], row["MAP"], row["tau2"]
             _tte = float(row["tte"]) if pd.notna(row.get("tte")) else None
             _tte_b = float(row["tte_b"]) if pd.notna(row.get("tte_b")) else None
             _t = _tte if _tte is not None else 3600.0
-            p_tte_vals.append(float(_power_model_extended(_t, _AWC, _Pmax, _MAP, _tau2, _tte, _tte_b)))
-            tte_min_vals.append(_t / 60.0)
-        fig.add_trace(go.Scatter(
+            p_tte_vals.append(float(_power_model_extended(
+                _t, _AWC, _Pmax, _MAP, _tau2, _tte, _tte_b)))
+        fig_power.add_trace(go.Scatter(
             x=df["date"], y=p_tte_vals,
             mode="lines", name="P(TtE) (W)",
             line=dict(color="#e07020", width=2, dash="dashdot", shape="hv"),
-            customdata=np.array(tte_min_vals),
-            hovertemplate="P(TtE): %{y:.0f} W  (TtE=%{customdata:.0f} min)<extra></extra>",
-        ), secondary_y=False)
+        ))
 
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["AWC"] / 1000,
-        mode="lines", name="AWC (kJ)",
-        line=dict(color=Z_AWC, width=2, dash="dot", shape="hv"),
-    ), secondary_y=True)
-
-    # TtE_LTP — duration where the PDC drops to LTP (hours on secondary axis)
-    if "tte_ltp" in df.columns:
-        tte_ltp_hours = df["tte_ltp"].apply(
-            lambda v: float(v) / 3600.0 if pd.notna(v) else None
-        )
-        if tte_ltp_hours.notna().any():
-            fig.add_trace(go.Scatter(
-                x=df["date"], y=tte_ltp_hours,
-                mode="lines", name="TtE_LTP (h)",
-                line=dict(color=Z_BASE, width=2, dash="dot", shape="hv"),
-                hovertemplate="TtE_LTP: %{y:.1f} h<extra></extra>",
-            ), secondary_y=True)
-
-    # Ride-date markers on MAP to show when rides were recorded
-    ride_rows = df[df["date"].isin(ride_dates)]
     if not ride_rows.empty:
-        fig.add_trace(go.Scatter(
+        fig_power.add_trace(go.Scatter(
             x=ride_rows["date"], y=ride_rows["MAP"],
             mode="markers", name="Ride",
-            marker=dict(color=Z_THRESH, size=7, symbol="circle-open",
+            marker=dict(color=Z_THRESH, size=6, symbol="circle-open",
                         line=dict(color=Z_THRESH, width=2)),
             hovertemplate="%{x}  MAP: %{y:.0f} W<extra>Ride</extra>",
-        ), secondary_y=False)
+        ))
 
-    fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
-    fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
-                     rangemode="tozero", secondary_y=False)
-    fig.update_yaxes(title_text="AWC (kJ) / TtE (h)", showgrid=False,
-                     rangemode="tozero", secondary_y=True)
-    if reference_date is not None:
-        ref_iso = reference_date.isoformat()
-        fig.add_shape(
-            type="line", x0=ref_iso, x1=ref_iso, y0=0, y1=1,
-            yref="paper", line=dict(color="#ff6b6b", width=2, dash="dash"),
-        )
-        fig.add_annotation(
-            x=ref_iso, y=1, yref="paper",
-            text=ref_iso, showarrow=False,
-            font=dict(size=10, color="#ff6b6b"),
-            yshift=10,
-        )
+    fig_power.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_power.update_yaxes(title_text="Power (W)", showgrid=True,
+                           gridcolor="lightgrey", rangemode="tozero")
+    _add_reference_line(fig_power, reference_date)
+    fig_power.update_layout(**_history_layout("Power"))
 
-    fig.update_layout(
-        title=dict(text="PDC Parameter History", font=dict(size=14)),
-        height=380,
-        margin=dict(t=60, b=50, l=60, r=60),
-        template="plotly_white",
-        showlegend=False,
-        hovermode="x unified",
-    )
-    return fig
+    # ── 2. Energy chart: AWC (kJ) ────────────────────────────────────────────
+    fig_energy = go.Figure()
+
+    fig_energy.add_trace(go.Scatter(
+        x=df["date"], y=df["AWC"] / 1000,
+        mode="lines", name="AWC (kJ)",
+        line=dict(color=Z_AWC, width=2, shape="hv"),
+    ))
+
+    fig_energy.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_energy.update_yaxes(title_text="Energy (kJ)", showgrid=True,
+                            gridcolor="lightgrey", rangemode="tozero")
+    _add_reference_line(fig_energy, reference_date)
+    fig_energy.update_layout(**_history_layout("Energy"))
+
+    # ── 3. Time chart: TtE_MAP (min), TtE_LTP (min) ─────────────────────────
+    fig_time = go.Figure()
+
+    if "tte" in df.columns:
+        tte_min = df["tte"].apply(
+            lambda v: float(v) / 60.0 if pd.notna(v) else None)
+        if tte_min.notna().any():
+            fig_time.add_trace(go.Scatter(
+                x=df["date"], y=tte_min,
+                mode="lines", name="TtE_MAP (min)",
+                line=dict(color=Z_THRESH, width=2, dash="dot", shape="hv"),
+            ))
+
+    if "tte_ltp" in df.columns:
+        tte_ltp_min = df["tte_ltp"].apply(
+            lambda v: float(v) / 60.0 if pd.notna(v) else None)
+        if tte_ltp_min.notna().any():
+            fig_time.add_trace(go.Scatter(
+                x=df["date"], y=tte_ltp_min,
+                mode="lines", name="TtE_LTP (min)",
+                line=dict(color=Z_BASE, width=2, shape="hv"),
+            ))
+
+    fig_time.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_time.update_yaxes(title_text="Time (min)", showgrid=True,
+                          gridcolor="lightgrey", rangemode="tozero")
+    _add_reference_line(fig_time, reference_date)
+    fig_time.update_layout(**_history_layout("Time"))
+
+    return fig_power, fig_energy, fig_time
 
 
 # ── Zone distribution ─────────────────────────────────────────────────────────

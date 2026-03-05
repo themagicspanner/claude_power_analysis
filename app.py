@@ -1094,7 +1094,9 @@ app.layout = html.Div(
                 html.H2("PDC Model",
                         style={"color": "#e8edf5", "marginBottom": "20px",
                                "fontWeight": "600", "fontSize": "22px"}),
-                dcc.Graph(id="graph-pdc-params-history"),
+                dcc.Graph(id="graph-pdc-history-power"),
+                dcc.Graph(id="graph-pdc-history-energy"),
+                dcc.Graph(id="graph-pdc-history-time"),
                 html.Hr(),
                 dcc.Store(id="pdc-slider-dates"),
                 html.Div(id="pdc-historical-cards",
@@ -1505,7 +1507,9 @@ def go_back_to_list(n_clicks):
     Output("graph-90day-mmp",          "figure"),
     Output("graph-pmc-combined",       "figure"),
     Output("graph-pmc",                "figure"),
-    Output("graph-pdc-params-history", "figure"),
+    Output("graph-pdc-history-power",  "figure"),
+    Output("graph-pdc-history-energy", "figure"),
+    Output("graph-pdc-history-time",   "figure"),
     Output("graph-pdc-investigation",  "figure"),
     Output("graph-sigmoid-decay",      "figure"),
     Output("status-bar",               "children"),
@@ -1576,7 +1580,7 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         fig_90day_mmp(mmp_all),
         fig_pmc_combined(pdc_params, rides),
         fig_pmc(pdc_params, rides),
-        fig_pdc_params_history(daily_pdc, rides),
+        *fig_pdc_params_history(daily_pdc, rides),
         fig_pdc_investigation(mmp_all),
         fig_sigmoid_decay(),
         status,
@@ -1651,12 +1655,26 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
 @app.callback(
     Output("graph-pdc-historical",      "figure",   allow_duplicate=True),
     Output("pdc-historical-cards",      "children", allow_duplicate=True),
-    Output("graph-pdc-params-history",  "figure",   allow_duplicate=True),
-    Input("graph-pdc-params-history",     "clickData"),
+    Output("graph-pdc-history-power",   "figure",   allow_duplicate=True),
+    Output("graph-pdc-history-energy",  "figure",   allow_duplicate=True),
+    Output("graph-pdc-history-time",    "figure",   allow_duplicate=True),
+    Input("graph-pdc-history-power",    "clickData"),
+    Input("graph-pdc-history-energy",   "clickData"),
+    Input("graph-pdc-history-time",     "clickData"),
     State("pdc-slider-dates", "data"),
     prevent_initial_call=True,
 )
-def update_pdc_historical(click_data, dates):
+def update_pdc_historical(click_power, click_energy, click_time, dates):
+    # Determine which chart was actually clicked (use triggered input)
+    triggered = dash.ctx.triggered_id
+    if triggered == "graph-pdc-history-power":
+        click_data = click_power
+    elif triggered == "graph-pdc-history-energy":
+        click_data = click_energy
+    elif triggered == "graph-pdc-history-time":
+        click_data = click_time
+    else:
+        click_data = None
     if not dates or not click_data:
         raise dash.exceptions.PreventUpdate
 
@@ -1680,8 +1698,9 @@ def update_pdc_historical(click_data, dates):
     _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
     fig = fig_90day_mmp(mmp_all, reference_date=ref_date)
     cards = _build_pdc_cards(daily_pdc, ref_str)
-    fig_history = fig_pdc_params_history(daily_pdc, _rides, reference_date=ref_date)
-    return fig, cards, fig_history
+    fig_power, fig_energy, fig_time = fig_pdc_params_history(
+        daily_pdc, _rides, reference_date=ref_date)
+    return fig, cards, fig_power, fig_energy, fig_time
 
 
 def _fmt_mmp_duration(seconds: int) -> str:
