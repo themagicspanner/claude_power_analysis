@@ -272,8 +272,8 @@ def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
 
 # ── Endurance tail (TtE + log-linear) ────────────────────────────────────────
 
-# TtE grid: 15 min to 70 min in 5-min steps
-_TTE_GRID = list(range(900, 4201, 300))
+# TtE grid: 35 min to 70 min in 5-min steps
+_TTE_GRID = list(range(2100, 4201, 300))
 _TTE_MIN_LONG_POINTS = 2   # need at least 2 data points beyond TtE
 
 
