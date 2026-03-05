@@ -19,6 +19,7 @@ Usage
 import argparse
 import datetime
 import glob
+import math
 import os
 import sqlite3
 
@@ -208,6 +209,21 @@ def _power_model_extended(t, AWC, Pmax, MAP, tau2, tte=None, tte_b=None):
     p_at_tte = float(_power_model(tte, AWC, Pmax, MAP, tau2))
     tail = p_at_tte - tte_b * np.log(t / tte)
     return np.where(t <= tte, p_base, tail)
+
+
+def _compute_tte_ltp(AWC, Pmax, MAP, tau2, tte, tte_b, ltp):
+    """Duration where the PDC model drops to LTP (seconds), or None.
+
+    Beyond TtE the model is P(t) = P(TtE) - b * ln(t / TtE).
+    Solving P(t) = LTP gives t = TtE * exp((P(TtE) - LTP) / b).
+    Only meaningful when the endurance tail exists and LTP < P(TtE).
+    """
+    if tte is None or tte_b is None or tte_b <= 0 or ltp <= 0:
+        return None
+    p_at_tte = float(_power_model(tte, AWC, Pmax, MAP, tau2))
+    if ltp >= p_at_tte:
+        return None  # LTP is above (or at) P(TtE), no crossing
+    return float(tte * math.exp((p_at_tte - ltp) / tte_b))
 
 
 def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
@@ -416,7 +432,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             variability_index     REAL,
             aerobic_decoupling_pct REAL,
             tte                   REAL,
-            tte_b                 REAL
+            tte_b                 REAL,
+            tte_ltp               REAL
         );
 
         CREATE TABLE IF NOT EXISTS zone_distribution (
@@ -434,7 +451,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             tau2  REAL NOT NULL,
             ltp   REAL NOT NULL,
             tte   REAL,
-            tte_b REAL
+            tte_b REAL,
+            tte_ltp REAL
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -491,7 +509,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass
 
     # TtE + log-linear tail columns
-    for col_def in ["tte REAL", "tte_b REAL"]:
+    for col_def in ["tte REAL", "tte_b REAL", "tte_ltp REAL"]:
         try:
             conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
@@ -677,6 +695,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
 
     # Lower threshold power (first lactate turn point)
     ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+    tte_ltp = _compute_tte_ltp(AWC, Pmax, MAP, tau2, tte, tte_b, ltp)
 
     # ── TSS metrics ───────────────────────────────────────────────────────────
     # Normalizing power for TSS: P(TtE) when available, else P(3600)
@@ -710,8 +729,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
                 tss_map, tss_awc, tss_ltp, ltp, variability_index,
-                aerobic_decoupling_pct, tte, tte_b)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                aerobic_decoupling_pct, tte, tte_b, tte_ltp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -731,6 +750,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             aedec,
             tte,
             tte_b,
+            tte_ltp,
         ),
     )
     conn.commit()
@@ -826,6 +846,7 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
         prev_popt = list(popt)
         AWC, Pmax, MAP, tau2 = popt
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+        tte_ltp = _compute_tte_ltp(AWC, Pmax, MAP, tau2, tte, tte_b, ltp)
 
         rows.append((
             ref.isoformat(),
@@ -836,13 +857,14 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
             round(ltp, 1),
             tte,
             round(tte_b, 2) if tte_b is not None else None,
+            round(tte_ltp, 0) if tte_ltp is not None else None,
         ))
 
     if rows:
         conn.executemany(
             "INSERT OR REPLACE INTO daily_pdc_params "
-            "(date, MAP, Pmax, AWC, tau2, ltp, tte, tte_b) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(date, MAP, Pmax, AWC, tau2, ltp, tte, tte_b, tte_ltp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
     conn.commit()

@@ -691,6 +691,19 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
         line=dict(color=Z_AWC, width=2, dash="dot", shape="hv"),
     ), secondary_y=True)
 
+    # TtE_LTP — duration where the PDC drops to LTP (hours on secondary axis)
+    if "tte_ltp" in df.columns:
+        tte_ltp_hours = df["tte_ltp"].apply(
+            lambda v: float(v) / 3600.0 if pd.notna(v) else None
+        )
+        if tte_ltp_hours.notna().any():
+            fig.add_trace(go.Scatter(
+                x=df["date"], y=tte_ltp_hours,
+                mode="lines", name="TtE_LTP (h)",
+                line=dict(color=Z_BASE, width=2, dash="dot", shape="hv"),
+                hovertemplate="TtE_LTP: %{y:.1f} h<extra></extra>",
+            ), secondary_y=True)
+
     # Ride-date markers on MAP to show when rides were recorded
     ride_rows = df[df["date"].isin(ride_dates)]
     if not ride_rows.empty:
@@ -705,7 +718,7 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgrey")
     fig.update_yaxes(title_text="Power (W)", showgrid=True, gridcolor="lightgrey",
                      rangemode="tozero", secondary_y=False)
-    fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
+    fig.update_yaxes(title_text="AWC (kJ) / TtE (h)", showgrid=False,
                      rangemode="tozero", secondary_y=True)
     if reference_date is not None:
         ref_iso = reference_date.isoformat()

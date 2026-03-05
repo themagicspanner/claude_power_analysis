@@ -44,7 +44,7 @@ from build_database import (
     backfill_vi_aedec, backfill_zones, backfill_missing_mmp,
     recompute_all_pdc_params, ensure_daily_pdc_current,
     _power_model, _power_model_extended, _fit_power_curve,
-    _fit_with_endurance_tail, _normalized_power,
+    _fit_with_endurance_tail, _normalized_power, _compute_tte_ltp,
     calculate_mmp, calculate_zones, MMP_DURATIONS,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
@@ -76,6 +76,18 @@ _mmh_all      = None
 _pdc_params   = None
 _daily_pdc    = None
 _gps_traces   = None  # dict: ride_id → [(lat, lon), ...] (downsampled)
+
+
+def _fmt_tte_ltp(seconds) -> str:
+    """Format TtE_LTP as 'H:MM' or 'MM' depending on length."""
+    if seconds is None or (isinstance(seconds, float) and (seconds != seconds)):
+        return "—"
+    s = int(round(seconds))
+    if s >= 3600:
+        h, rem = divmod(s, 3600)
+        m = rem // 60
+        return f"{h}:{m:02d}"
+    return f"{s // 60}"
 
 
 def _reload():
@@ -239,7 +251,7 @@ def _load_pdc_params() -> pd.DataFrame:
 def _load_daily_pdc() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT date, MAP, Pmax, AWC, ltp, tau2, tte, tte_b FROM daily_pdc_params ORDER BY date",
+        "SELECT date, MAP, Pmax, AWC, ltp, tau2, tte, tte_b, tte_ltp FROM daily_pdc_params ORDER BY date",
         conn,
     )
     conn.close()
@@ -273,7 +285,7 @@ def load_records(ride_id: int) -> pd.DataFrame:
 # ── One-time DB migration ─────────────────────────────────────────────────────
 
 # Bump this when stored PDC params need to be fully recomputed.
-_DB_SCHEMA_VERSION = 4
+_DB_SCHEMA_VERSION = 5
 
 
 def _maybe_migrate(conn: sqlite3.Connection) -> None:
@@ -290,6 +302,9 @@ def _maybe_migrate(conn: sqlite3.Connection) -> None:
     if current < _DB_SCHEMA_VERSION:
         print(f"[migrate] DB schema v{current} → v{_DB_SCHEMA_VERSION}: recomputing PDC params …")
         recompute_all_pdc_params(conn)
+        # Force daily PDC recompute so new columns (e.g. tte_ltp) are populated
+        conn.execute("DELETE FROM daily_pdc_params")
+        conn.commit()
         conn.execute(
             "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schema_version', ?)",
             (str(_DB_SCHEMA_VERSION),),
@@ -376,6 +391,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         return None
 
     AWC, Pmax, MAP, tau2 = popt
+    ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
     return {
         "AWC":  float(AWC),
         "Pmax": float(Pmax),
@@ -383,8 +399,9 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "tau2": float(tau2),
         "tte":  tte,
         "tte_b": tte_b,
+        "tte_ltp": _compute_tte_ltp(AWC, Pmax, MAP, tau2, tte, tte_b, ltp),
         "ftp":  float(_power_model_extended(tte if tte is not None else 3600.0, AWC, Pmax, MAP, tau2, tte, tte_b)),
-        "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
+        "ltp":  ltp,
     }
 
 
@@ -488,8 +505,9 @@ def _get_latest_pdc(pdc_params: pd.DataFrame,
         "tau2":  float(r["tau2"]) if pd.notna(r.get("tau2")) else 300.0,
         "ftp":   float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
         "ltp":   float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
-        "tte":   tte,
-        "tte_b": tte_b,
+        "tte":     tte,
+        "tte_b":   tte_b,
+        "tte_ltp": float(r["tte_ltp"]) if pd.notna(r.get("tte_ltp")) else None,
     }
 
 
@@ -715,14 +733,16 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
         pmax_v = _i(live_pdc.get("Pmax"))
         ltp_v  = _i(live_pdc.get("ltp"))
         tte_v  = f"{live_pdc['tte']/60:.0f}" if live_pdc.get("tte") else "—"
+        tte_ltp_v = _fmt_tte_ltp(live_pdc.get("tte_ltp"))
     elif stored is not None:
         map_v  = _i(stored.get("MAP"))
         awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
         pmax_v = _i(stored.get("Pmax"))
         ltp_v  = _i(stored.get("ltp"))
         tte_v  = f"{stored['tte']/60:.0f}" if pd.notna(stored.get("tte")) else "—"
+        tte_ltp_v = _fmt_tte_ltp(stored.get("tte_ltp") if pd.notna(stored.get("tte_ltp")) else None)
     else:
-        map_v = awc_v = pmax_v = ltp_v = tte_v = "—"
+        map_v = awc_v = pmax_v = ltp_v = tte_v = tte_ltp_v = "—"
 
     # Ride performance metrics from stored pdc_params
     np_v      = _i(stored.get("normalized_power")) if stored is not None else "—"
@@ -759,6 +779,7 @@ def _activity_metric_boxes(ride: pd.Series, pdc_params: pd.DataFrame,
                 card("AWC",  awc_v,  "kJ"),
                 card("Pmax", pmax_v, "W"),
                 card("TtE",  tte_v,  "min"),
+                card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
             ]),
         ]),
     ]
@@ -782,7 +803,8 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     # Find the most recent ride that has PDC params
     if pdc_params.empty or rides.empty:
         return [card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min")]
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min"),
+                card("TtE\u2097\u209c\u209a", "—", "h:mm")]
 
     merged = (
         pdc_params
@@ -792,7 +814,8 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     )
     if merged.empty:
         return [card("MAP", "—", "W"), card("LTP", "—", "W"),
-                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min")]
+                card("AWC", "—", "kJ"), card("Pmax", "—", "W"), card("TtE", "—", "min"),
+                card("TtE\u2097\u209c\u209a", "—", "h:mm")]
 
     latest = merged.iloc[0]
     map_v  = f"{int(round(latest['MAP']))}"
@@ -800,6 +823,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     awc_v  = f"{latest['AWC']/1000:.1f}"
     pmax_v = f"{int(round(latest['Pmax']))}"
     tte_v  = f"{latest['tte']/60:.0f}" if pd.notna(latest.get("tte")) else "—"
+    tte_ltp_v = _fmt_tte_ltp(latest.get("tte_ltp") if pd.notna(latest.get("tte_ltp")) else None)
     as_of  = latest["ride_date"]
 
     # Training readiness card
@@ -926,6 +950,7 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         card("AWC",  awc_v,  "kJ"),
         card("Pmax", pmax_v, "W"),
         card("TtE",  tte_v,  "min"),
+        card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
     ]
     if freshness_card is not None:
         children.append(freshness_card)
@@ -1602,6 +1627,7 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
     awc_v  = f"{r['AWC']/1000:.1f}"
     ltp_v  = int(round(r["ltp"]))
     tte_v  = f"{r['tte']/60:.0f}" if pd.notna(r.get("tte")) else "—"
+    tte_ltp_v = _fmt_tte_ltp(r.get("tte_ltp") if pd.notna(r.get("tte_ltp")) else None)
     return [
         _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
                    {**_ls, "fontSize": "13px", "color": "#222"},
@@ -1611,6 +1637,7 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
         _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
         _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
         _make_card("TtE",  tte_v,       "min", _cs, _ls, _vs, _us),
+        _make_card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm", _cs, _ls, _vs, _us),
     ]
 
 
@@ -1799,14 +1826,16 @@ def update_ride_charts(ride_id, _ver):
         pmax_v = _i(live_pdc.get("Pmax"))
         ltp_v  = _i(live_pdc.get("ltp"))
         tte_v  = f"{live_pdc['tte']/60:.0f}" if live_pdc.get("tte") else "—"
+        tte_ltp_v = _fmt_tte_ltp(live_pdc.get("tte_ltp"))
     elif stored is not None:
         map_v  = _i(stored.get("MAP"))
         awc_v  = f"{stored['AWC']/1000:.1f}" if pd.notna(stored.get("AWC")) else "—"
         pmax_v = _i(stored.get("Pmax"))
         ltp_v  = _i(stored.get("ltp"))
         tte_v  = f"{stored['tte']/60:.0f}" if pd.notna(stored.get("tte")) else "—"
+        tte_ltp_v = _fmt_tte_ltp(stored.get("tte_ltp") if pd.notna(stored.get("tte_ltp")) else None)
     else:
-        map_v = awc_v = pmax_v = ltp_v = tte_v = "—"
+        map_v = awc_v = pmax_v = ltp_v = tte_v = tte_ltp_v = "—"
 
     # Ride performance metrics from stored pdc_params
     np_v      = _i(stored.get("normalized_power"))    if stored is not None else "—"
@@ -1840,6 +1869,7 @@ def update_ride_charts(ride_id, _ver):
         _card("AWC",  awc_v,  "kJ"),
         _card("Pmax", pmax_v, "W"),
         _card("TtE",  tte_v,  "min"),
+        _card("TtE\u2097\u209c\u209a", tte_ltp_v, "h:mm"),
     ]
 
     # Difficulty: max 1-hour time-weighted rolling TSS rate over the ride
