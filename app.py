@@ -830,9 +830,9 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
             ])
 
         zone_rows = [
-            _zone_row("Base",      base_ok,   tsb_base,   base_threshold,   "−0.5 CTL"),
-            _zone_row("Threshold", thresh_ok, tsb_thresh, thresh_threshold, "−0.3 CTL"),
             _zone_row("Anaerobic", awc_ok,    tsb_awc,    0.0,              "0"),
+            _zone_row("Threshold", thresh_ok, tsb_thresh, thresh_threshold, "−0.3 CTL"),
+            _zone_row("Base",      base_ok,   tsb_base,   base_threshold,   "−0.5 CTL"),
         ]
 
         # Summary text and next-zone countdown

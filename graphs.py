@@ -1565,9 +1565,9 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
         subplot_titles=[
-            "Base (≤ LTP) — CTL / ATL / TSB",
-            "Threshold (LTP → MAP) — CTL / ATL / TSB",
             "Anaerobic (> MAP) — CTL / ATL / TSB",
+            "Threshold (LTP → MAP) — CTL / ATL / TSB",
+            "Base (≤ LTP) — CTL / ATL / TSB",
         ],
         vertical_spacing=0.07,
         specs=[[{"secondary_y": True}],
@@ -1577,9 +1577,9 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
     panels = [
         # (row, pmc_df,     bar_data,         bar_color,                   ctl_col,   atl_col,                   label)
-        (1, pmc_ltp,    _tss_ltp_bars,    _zc(_RGB_BASE, 0.45),    Z_BASE,    _zc(_RGB_BASE, 0.6),    "Base"),
+        (1, pmc_awc,    _tss_awc_bars,    _zc(_RGB_AWC, 0.45),     Z_AWC,     _zc(_RGB_AWC, 0.6),     "AWC"),
         (2, pmc_thresh, _tss_thresh_bars, _zc(_RGB_THRESH, 0.45),  Z_THRESH,  _zc(_RGB_THRESH, 0.6),  "Threshold"),
-        (3, pmc_awc,    _tss_awc_bars,    _zc(_RGB_AWC, 0.45),     Z_AWC,     _zc(_RGB_AWC, 0.6),     "AWC"),
+        (3, pmc_ltp,    _tss_ltp_bars,    _zc(_RGB_BASE, 0.45),    Z_BASE,    _zc(_RGB_BASE, 0.6),    "Base"),
     ]
 
     for row, pmc, bar_vals, bar_col, ctl_col, atl_col, label in panels:
@@ -1652,11 +1652,11 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
                          row=row, col=1, secondary_y=True)
 
     # Training cutoff shaded regions
-    # Row 1 (Base):      −0.5 × CTL
     # Row 2 (Threshold): −0.3 × CTL
+    # Row 3 (Base):      −0.5 × CTL
     _cutoff_panels = [
-        (1, pmc_ltp,    -0.50, "Training cutoff (−0.5 CTL)", "yaxis2", "yaxis"),
         (2, pmc_thresh, -0.30, "Training cutoff (−0.3 CTL)", "yaxis4", "yaxis3"),
+        (3, pmc_ltp,    -0.50, "Training cutoff (−0.5 CTL)", "yaxis6", "yaxis5"),
     ]
     for row, pmc, frac, name, sec_ax, pri_ax in _cutoff_panels:
         _dates  = pmc["date"].dt.strftime("%Y-%m-%d")
@@ -1767,9 +1767,9 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
 
     # ── Stacked TSS bars on LEFT axis ──────────────────────────────────
     fig.add_trace(go.Bar(
-        x=dates, y=_tss_ltp_bars,
-        name="TSS Base", marker_color=_zc(_RGB_BASE, 0.45),
-        hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
+        x=dates, y=_tss_awc_bars,
+        name="TSS Anaerobic", marker_color=_zc(_RGB_AWC, 0.45),
+        hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
@@ -1779,19 +1779,19 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=False)
 
     fig.add_trace(go.Bar(
-        x=dates, y=_tss_awc_bars,
-        name="TSS Anaerobic", marker_color=_zc(_RGB_AWC, 0.45),
-        hovertemplate="TSS AWC: %{y:.0f}<extra></extra>",
+        x=dates, y=_tss_ltp_bars,
+        name="TSS Base", marker_color=_zc(_RGB_BASE, 0.45),
+        hovertemplate="TSS Base: %{y:.0f}<extra></extra>",
     ), secondary_y=False)
 
     # ── Stacked CTL areas on RIGHT axis ────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_ltp["ctl"].round(1),
-        mode="lines", name="CTL Base",
-        line=dict(color=Z_BASE, width=0.5),
-        fillcolor=_zc(_RGB_BASE, 0.30),
+        x=dates, y=pmc_awc["ctl"].round(1),
+        mode="lines", name="CTL Anaerobic",
+        line=dict(color=Z_AWC, width=0.5),
+        fillcolor=_zc(_RGB_AWC, 0.30),
         stackgroup="ctl",
-        hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
+        hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
@@ -1804,20 +1804,20 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_awc["ctl"].round(1),
-        mode="lines", name="CTL Anaerobic",
-        line=dict(color=Z_AWC, width=0.5),
-        fillcolor=_zc(_RGB_AWC, 0.30),
+        x=dates, y=pmc_ltp["ctl"].round(1),
+        mode="lines", name="CTL Base",
+        line=dict(color=Z_BASE, width=0.5),
+        fillcolor=_zc(_RGB_BASE, 0.30),
         stackgroup="ctl",
-        hovertemplate="CTL AWC: %{y:.1f}<extra></extra>",
+        hovertemplate="CTL Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     # ── TSB lines on RIGHT axis ────────────────────────────────────────
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_ltp["tsb"].round(1),
-        mode="lines", name="TSB Base",
-        line=dict(color=Z_BASE, width=2),
-        hovertemplate="TSB Base: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_awc["tsb"].round(1),
+        mode="lines", name="TSB AWC",
+        line=dict(color=Z_AWC, width=2),
+        hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
@@ -1828,10 +1828,10 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=True)
 
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_awc["tsb"].round(1),
-        mode="lines", name="TSB AWC",
-        line=dict(color=Z_AWC, width=2),
-        hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
+        x=dates, y=pmc_ltp["tsb"].round(1),
+        mode="lines", name="TSB Base",
+        line=dict(color=Z_BASE, width=2),
+        hovertemplate="TSB Base: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
 
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
