@@ -1011,6 +1011,7 @@ app.layout = html.Div(
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
             html.Button("Workouts",   id="nav-workout",     n_clicks=0, style=_NAV_BASE),
             html.Button("PDC Model",  id="nav-pdc-model",   n_clicks=0, style=_NAV_BASE),
+            html.Button("Testing",   id="nav-testing",     n_clicks=0, style=_NAV_BASE),
             html.Div(id="status-bar", style={
                 "marginTop": "auto", "padding": "12px 20px",
                 "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
@@ -1054,18 +1055,9 @@ app.layout = html.Div(
 
             # ── PDC Model investigation page ────────────────────────────────
             html.Div(id="page-pdc-model", style={"display": "none"}, children=[
-                html.H2("PDC Model Investigation",
-                        style={"color": "#e8edf5", "marginBottom": "8px",
+                html.H2("PDC Model",
+                        style={"color": "#e8edf5", "marginBottom": "20px",
                                "fontWeight": "600", "fontSize": "22px"}),
-                html.P(
-                    "Each MMP data point is coloured by its sigmoid decay weight "
-                    "(bright blue = recent / trustworthy, grey = old / may need retesting). "
-                    "The dashed orange line is the fitted two-component PDC model. "
-                    "Red residual bars show durations where the model overestimates "
-                    "your data — focus testing efforts here first.",
-                    style={"color": "#7a8fbb", "fontSize": "13px",
-                           "marginBottom": "20px", "maxWidth": "860px"},
-                ),
                 dcc.Graph(id="graph-pdc-params-history"),
                 html.Hr(),
                 dcc.Store(id="pdc-slider-dates"),
@@ -1078,7 +1070,23 @@ app.layout = html.Div(
                     min=0, max=0, value=0, step=1,
                     marks={},
                 ),
-                html.Hr(),
+                html.Div(style={"height": "40px"}),
+            ]),
+
+            # ── Testing page ─────────────────────────────────────────────────
+            html.Div(id="page-testing", style={"display": "none"}, children=[
+                html.H2("Testing",
+                        style={"color": "#e8edf5", "marginBottom": "8px",
+                               "fontWeight": "600", "fontSize": "22px"}),
+                html.P(
+                    "Each MMP data point is coloured by its sigmoid decay weight "
+                    "(bright blue = recent / trustworthy, grey = old / may need retesting). "
+                    "The dashed orange line is the fitted two-component PDC model. "
+                    "Red residual bars show durations where the model overestimates "
+                    "your data — focus testing efforts here first.",
+                    style={"color": "#7a8fbb", "fontSize": "13px",
+                           "marginBottom": "20px", "maxWidth": "860px"},
+                ),
                 dcc.Graph(id="graph-pdc-investigation"),
                 html.Hr(),
                 dcc.Graph(id="graph-sigmoid-decay"),
@@ -1396,6 +1404,7 @@ app.layout = html.Div(
 @app.callback(
     Output("page-fitness",          "style"),
     Output("page-pdc-model",        "style"),
+    Output("page-testing",          "style"),
     Output("page-activities-list",  "style"),
     Output("page-activities",       "style"),
     Output("page-workout-list",     "style"),
@@ -1404,25 +1413,30 @@ app.layout = html.Div(
     Output("nav-activities",        "style"),
     Output("nav-workout",           "style"),
     Output("nav-pdc-model",         "style"),
+    Output("nav-testing",           "style"),
     Input("nav-fitness",            "n_clicks"),
     Input("nav-activities",         "n_clicks"),
     Input("nav-workout",            "n_clicks"),
     Input("nav-pdc-model",          "n_clicks"),
+    Input("nav-testing",            "n_clicks"),
 )
-def switch_page(_, __, ___, ____):
+def switch_page(_, __, ___, ____, _____):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
-        return (hide, hide, show, hide, hide, hide,
-                _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE)
+        return (hide, hide, hide, show, hide, hide, hide,
+                _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
     if ctx.triggered_id == "nav-workout":
-        return (hide, hide, hide, hide, show, hide,
-                _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
+        return (hide, hide, hide, hide, hide, show, hide,
+                _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE)
     if ctx.triggered_id == "nav-pdc-model":
-        return (hide, show, hide, hide, hide, hide,
-                _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE)
-    return (show, hide, hide, hide, hide, hide,
-            _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
+        return (hide, show, hide, hide, hide, hide, hide,
+                _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
+    if ctx.triggered_id == "nav-testing":
+        return (hide, hide, show, hide, hide, hide, hide,
+                _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE)
+    return (show, hide, hide, hide, hide, hide, hide,
+            _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
 
 
 @app.callback(
