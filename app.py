@@ -1009,8 +1009,8 @@ app.layout = html.Div(
             }),
             html.Button("Fitness",    id="nav-fitness",     n_clicks=0, style=_NAV_ACTIVE),
             html.Button("Activities", id="nav-activities",  n_clicks=0, style=_NAV_BASE),
+            html.Button("Workouts",   id="nav-workout",     n_clicks=0, style=_NAV_BASE),
             html.Button("PDC Model",  id="nav-pdc-model",   n_clicks=0, style=_NAV_BASE),
-            html.Button("Workout",    id="nav-workout",     n_clicks=0, style=_NAV_BASE),
             html.Div(id="status-bar", style={
                 "marginTop": "auto", "padding": "12px 20px",
                 "fontSize": "11px", "color": "#556", "lineHeight": "1.5",
@@ -1398,25 +1398,25 @@ app.layout = html.Div(
     Output("page-workout-list",     "style"),
     Output("page-workout",          "style"),
     Output("nav-fitness",           "style"),
-    Output("nav-pdc-model",         "style"),
     Output("nav-activities",        "style"),
     Output("nav-workout",           "style"),
+    Output("nav-pdc-model",         "style"),
     Input("nav-fitness",            "n_clicks"),
-    Input("nav-pdc-model",          "n_clicks"),
     Input("nav-activities",         "n_clicks"),
     Input("nav-workout",            "n_clicks"),
+    Input("nav-pdc-model",          "n_clicks"),
 )
 def switch_page(_, __, ___, ____):
     show = {"display": "block"}
     hide = {"display": "none"}
     if ctx.triggered_id == "nav-activities":
         return (hide, hide, show, hide, hide, hide,
-                _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
-    if ctx.triggered_id == "nav-pdc-model":
-        return (hide, show, hide, hide, hide, hide,
                 _NAV_BASE, _NAV_ACTIVE, _NAV_BASE, _NAV_BASE)
     if ctx.triggered_id == "nav-workout":
         return (hide, hide, hide, hide, show, hide,
+                _NAV_BASE, _NAV_BASE, _NAV_ACTIVE, _NAV_BASE)
+    if ctx.triggered_id == "nav-pdc-model":
+        return (hide, show, hide, hide, hide, hide,
                 _NAV_BASE, _NAV_BASE, _NAV_BASE, _NAV_ACTIVE)
     return (show, hide, hide, hide, hide, hide,
             _NAV_ACTIVE, _NAV_BASE, _NAV_BASE, _NAV_BASE)
