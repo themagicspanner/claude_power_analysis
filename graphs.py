@@ -388,9 +388,15 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             p_tot = _power_model_extended(t_sm, AWC, Pmax, MAP, tau2, tte, tte_b)
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
-            # Base = flat at LTP, capped at total power (consistent with TSS zones)
-            p_base = np.minimum(ltp, p_tot)
-            # Threshold = aerobic above LTP, capped at total power
+            ltp_frac = ltp / MAP if MAP > 0 else 0.0
+            # Before TtE: base follows aerobic ramp scaled by LTP/MAP
+            # After TtE: base is flat at LTP, capped at total power
+            if tte is not None:
+                p_base = np.where(t_sm <= tte,
+                                  p_aer * ltp_frac,
+                                  np.minimum(ltp, p_tot))
+            else:
+                p_base = p_aer * ltp_frac
             p_thresh_top = np.minimum(p_aer, p_tot)
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_base,
@@ -524,9 +530,15 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
                 p_aerobic = p_aer_base
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
-            # Base = flat at LTP, capped at total power (consistent with TSS zones)
-            p_base = np.minimum(ltp, p_total)
-            # Threshold = aerobic above LTP, capped at total power
+            ltp_frac = ltp / MAP if MAP > 0 else 0.0
+            # Before TtE: base follows aerobic ramp scaled by LTP/MAP
+            # After TtE: base is flat at LTP, capped at total power
+            if tte is not None:
+                p_base = np.where(t_smooth <= tte,
+                                  p_aerobic * ltp_frac,
+                                  np.minimum(ltp, p_total))
+            else:
+                p_base = p_aerobic * ltp_frac
             p_thresh_top = np.minimum(p_aerobic, p_total)
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_base,
