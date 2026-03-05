@@ -1362,6 +1362,13 @@ app.layout = html.Div(
                                        "border": "1px solid #4a9eff",
                                        "background": "transparent",
                                        "color": "#4a9eff", "fontSize": "13px"}),
+                    html.Button("Duplicate Last Row", id="workout-dup-row",
+                                n_clicks=0,
+                                style={"padding": "6px 16px", "cursor": "pointer",
+                                       "borderRadius": "4px",
+                                       "border": "1px solid #4a9eff",
+                                       "background": "transparent",
+                                       "color": "#4a9eff", "fontSize": "13px"}),
                     html.Button("- Remove Last Row", id="workout-remove-row",
                                 n_clicks=0,
                                 style={"padding": "6px 16px", "cursor": "pointer",
@@ -2182,11 +2189,12 @@ def go_back_to_workout_list(n_clicks):
 @app.callback(
     Output("workout-table", "rowData", allow_duplicate=True),
     Input("workout-add-row",    "n_clicks"),
+    Input("workout-dup-row",    "n_clicks"),
     Input("workout-remove-row", "n_clicks"),
     State("workout-table",      "rowData"),
     prevent_initial_call=True,
 )
-def manage_workout_rows(add_clicks, remove_clicks, current_rows):
+def manage_workout_rows(add_clicks, dup_clicks, remove_clicks, current_rows):
     if ctx.triggered_id == "workout-add-row":
         current_rows.append({
             "work_duration_min": 5, "work_ref": "MAP",
@@ -2195,6 +2203,9 @@ def manage_workout_rows(add_clicks, remove_clicks, current_rows):
             "rest_intensity_pct": 80,
             "repetitions": 3,
         })
+        return current_rows
+    elif ctx.triggered_id == "workout-dup-row" and current_rows:
+        current_rows.append(dict(current_rows[-1]))
         return current_rows
     elif ctx.triggered_id == "workout-remove-row" and len(current_rows) > 1:
         current_rows.pop()
