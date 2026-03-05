@@ -1476,6 +1476,8 @@ def go_back_to_list(n_clicks):
     Output("metric-boxes",             "children"),
     Output("activities-table",         "rowData"),
     Output("pdc-slider-dates",         "data"),
+    Output("graph-pdc-historical",     "figure"),
+    Output("pdc-historical-cards",     "children"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("known-ride-ids",   "data"),
@@ -1520,6 +1522,15 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     # Build slider dates from daily_pdc
     slider_dates = sorted(daily_pdc["date"].dropna().unique().tolist())
 
+    # Default PDC historical view: latest date
+    if slider_dates:
+        latest_str = slider_dates[-1]
+        pdc_hist_fig = fig_90day_mmp(mmp_all, reference_date=datetime.date.fromisoformat(latest_str))
+        pdc_hist_cards = _build_pdc_cards(daily_pdc, latest_str)
+    else:
+        pdc_hist_fig = go.Figure()
+        pdc_hist_cards = []
+
     return (
         ver,
         current_ids,
@@ -1536,6 +1547,8 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
         slider_dates,
+        pdc_hist_fig,
+        pdc_hist_cards,
     )
 
 
@@ -1562,6 +1575,37 @@ app.clientside_callback(
     Output("toast-text", "children"),
     Input("toast-message", "data"),
 )
+
+
+def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
+    """Build PDC parameter cards for a given date string."""
+    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
+           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
+           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
+    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
+           "textTransform": "uppercase", "letterSpacing": "0.05em"}
+    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
+    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
+
+    row = daily_pdc[daily_pdc["date"] == ref_str]
+    if row.empty:
+        return []
+    r = row.iloc[0]
+    map_v  = int(round(r["MAP"]))
+    pmax_v = int(round(r["Pmax"]))
+    awc_v  = f"{r['AWC']/1000:.1f}"
+    ltp_v  = int(round(r["ltp"]))
+    ftp_v  = int(round(_power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
+    return [
+        _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
+                   {**_ls, "fontSize": "13px", "color": "#222"},
+                   {**_vs, "fontSize": "16px", "color": "#7a8fbb"}, _us),
+        _make_card("FTP",  str(ftp_v),  "W", _cs, _ls, _vs, _us),
+        _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
+        _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
+        _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
+        _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
+    ]
 
 
 # ── Historical PDC click callback ─────────────────────────────────────────────
@@ -1597,37 +1641,7 @@ def update_pdc_historical(click_data, dates):
     ref_date = datetime.date.fromisoformat(ref_str)
     _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
     fig = fig_90day_mmp(mmp_all, reference_date=ref_date)
-
-    # Build PDC parameter cards from daily_pdc for the selected date
-    _cs = {"background": "#f8f9fa", "border": "1px solid #dee2e6",
-           "borderRadius": "8px", "padding": "12px 20px", "minWidth": "100px",
-           "textAlign": "center", "boxShadow": "0 1px 3px rgba(0,0,0,0.08)"}
-    _ls = {"fontSize": "11px", "color": "#888", "marginBottom": "4px",
-           "textTransform": "uppercase", "letterSpacing": "0.05em"}
-    _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
-    _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
-
-    row = daily_pdc[daily_pdc["date"] == ref_str]
-    if not row.empty:
-        r = row.iloc[0]
-        map_v  = int(round(r["MAP"]))
-        pmax_v = int(round(r["Pmax"]))
-        awc_v  = f"{r['AWC']/1000:.1f}"
-        ltp_v  = int(round(r["ltp"]))
-        ftp_v  = int(round(_power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
-        cards = [
-            _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
-                       {**_ls, "fontSize": "13px", "color": "#222"},
-                       {**_vs, "fontSize": "16px", "color": "#7a8fbb"}, _us),
-            _make_card("FTP",  str(ftp_v),  "W", _cs, _ls, _vs, _us),
-            _make_card("MAP",  str(map_v),  "W", _cs, _ls, _vs, _us),
-            _make_card("LTP",  str(ltp_v),  "W", _cs, _ls, _vs, _us),
-            _make_card("AWC",  awc_v,       "kJ", _cs, _ls, _vs, _us),
-            _make_card("Pmax", str(pmax_v), "W", _cs, _ls, _vs, _us),
-        ]
-    else:
-        cards = []
-
+    cards = _build_pdc_cards(daily_pdc, ref_str)
     fig_history = fig_pdc_params_history(daily_pdc, _rides, reference_date=ref_date)
     return fig, cards, fig_history
 
