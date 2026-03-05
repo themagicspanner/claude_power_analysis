@@ -337,13 +337,15 @@ def _fit_with_endurance_tail(dur, pwr, n_iter=8, asymmetry=10.0,
         if b is None:
             continue
 
-        # Score: sum of squared weighted residuals across both stages
+        # Score: mean squared weighted residuals (normalized by count per stage)
         pred_short = _power_model(dur[mask_short], *popt)
         resid_short = pwr[mask_short] - pred_short
         w_short = np.where(resid_short > 0, asymmetry, 1.0)
         w_long  = np.where(resid_long > 0, asymmetry, 1.0)
-        score = (float(np.sum(w_short * resid_short**2))
-                 + float(np.sum(w_long * resid_long**2)))
+        n_short = float(mask_short.sum())
+        n_long  = float(mask_long.sum())
+        score = (float(np.sum(w_short * resid_short**2)) / n_short
+                 + float(np.sum(w_long * resid_long**2)) / n_long)
 
         if score < best_score:
             best_score = score
