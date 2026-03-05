@@ -1216,15 +1216,13 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     Helps the athlete identify which durations need targeted testing efforts by
     showing how fresh each MMP data point is and how well it supports the model.
 
-    Panel 1 — Decayed MMP scatter + PDC curve:
-        Each (ride, duration) point is coloured by its sigmoid decay weight.
-        Bright blue = recent (trustworthy data); grey = old (may need retesting).
-        The envelope (best aged power per duration) and the fitted PDC curve are
-        overlaid so the athlete can see where the model sits relative to the data.
+    Panel 1 — Decayed MMP envelope + PDC curve:
+        Black line shows the decayed MMP envelope.  Sections where the decay
+        weight drops below 0.9 are highlighted in red (stale / needs retesting).
+        The fitted PDC curve is overlaid for comparison.
 
     Panel 2 — Residuals (decayed envelope − PDC model):
-        Green bar: athlete is above model here (data strongly supports the curve).
-        Red bar:   athlete is below model (testing opportunity / model overestimates).
+        Line chart showing where the athlete is above or below the model.
     """
     today     = datetime.date.today()
     today_str = today.isoformat()
@@ -1285,66 +1283,23 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         row_heights=[0.62, 0.38],
         vertical_spacing=0.10,
         subplot_titles=[
-            "Decayed MMP vs PDC model  (point colour = decay weight)",
-            "Residual: aged MMP − PDC model  (green = above model; red = below / test needed)",
+            "Decayed MMP vs PDC model  (red = decay < 0.9)",
+            "Residual: aged MMP − PDC model",
         ],
     )
 
-    # ── Panel 1: all individual MMP points ────────────────────────────────────
-    _weight_colorscale = [
-        [0.0, "rgba(160,160,160,0.20)"],
-        [0.4, "rgba(100,150,200,0.55)"],
-        [1.0, "rgba(41,128,185,0.90)"],
-    ]
+    # ── Panel 1: MMP envelope (black line, highlighted where decay < 0.9) ───
+    # Split the envelope into "fresh" (weight >= 0.9) and "stale" (weight < 0.9)
+    weights = env_df["weight"].to_numpy(dtype=float)
+    stale_mask = weights < 0.9
 
-    fig.add_trace(go.Scatter(
-        x=window["duration_s"],
-        y=window["aged_power"],
-        mode="markers",
-        name="All MMP points (aged)",
-        marker=dict(
-            size=5,
-            color=window["weight"].to_numpy(dtype=float),
-            colorscale=_weight_colorscale,
-            cmin=0, cmax=1,
-            showscale=False,
-        ),
-        customdata=np.column_stack([
-            window["weight"].round(3),
-            window["age_days"].round(0),
-            window["ride_date"].to_numpy(),
-            window["power"].round(0),
-        ]),
-        hovertemplate=(
-            "<b>%{x:.0f} s</b><br>"
-            "Aged power: %{y:.0f} W<br>"
-            "Raw power:  %{customdata[3]:.0f} W<br>"
-            "Weight: %{customdata[0]}  ·  Age: %{customdata[1]:.0f} d<br>"
-            "Ride: %{customdata[2]}<extra></extra>"
-        ),
-    ), row=1, col=1)
-
-    # Envelope: best aged power per duration, marker colour = weight
+    # Base envelope line in black
     fig.add_trace(go.Scatter(
         x=env_df["duration_s"],
         y=env_df["aged_power"],
-        mode="lines+markers",
+        mode="lines",
         name="Decayed MMP envelope",
-        line=dict(color="steelblue", width=1.5, dash="dot"),
-        marker=dict(
-            size=10,
-            color=env_df["weight"].to_numpy(dtype=float),
-            colorscale=_weight_colorscale,
-            cmin=0, cmax=1,
-            line=dict(color="white", width=1.2),
-            showscale=True,
-            colorbar=dict(
-                title=dict(text="Decay weight", side="right"),
-                thickness=13, len=0.52, y=0.78,
-                tickvals=[0, 0.5, 1],
-                ticktext=["0 (old)", "0.5", "1 (fresh)"],
-            ),
-        ),
+        line=dict(color="black", width=2),
         customdata=np.column_stack([
             env_df["weight"].round(3),
             env_df["age_days"].round(0),
@@ -1359,6 +1314,21 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             "Ride: %{customdata[2]}<extra></extra>"
         ),
     ), row=1, col=1)
+
+    # Highlight segments where decay weight < 0.9 (stale data)
+    if stale_mask.any():
+        stale_x = env_df["duration_s"].to_numpy(dtype=float).copy()
+        stale_y = env_df["aged_power"].to_numpy(dtype=float).copy()
+        stale_y[~stale_mask] = np.nan
+        fig.add_trace(go.Scatter(
+            x=stale_x,
+            y=stale_y,
+            mode="lines",
+            name="Stale (decay < 0.9)",
+            line=dict(color="crimson", width=4),
+            hoverinfo="skip",
+            showlegend=True,
+        ), row=1, col=1)
 
     # PDC model curve
     if ok:
@@ -1383,12 +1353,14 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
         residuals  = env_df["residual"].to_numpy(dtype=float)
-        bar_colors = ["seagreen" if r >= 0 else "crimson" for r in residuals]
-        fig.add_trace(go.Bar(
+        fig.add_trace(go.Scatter(
             x=dur_arr,
             y=residuals,
+            mode="lines",
             name="Residual",
-            marker_color=bar_colors,
+            line=dict(color="steelblue", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(70,130,180,0.15)",
             customdata=np.column_stack([
                 env_df["residual_pct"].to_numpy(),
                 env_df["aged_power"].round(0),
