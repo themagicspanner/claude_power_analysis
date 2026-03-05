@@ -659,12 +659,16 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     fig.update_yaxes(title_text="AWC (kJ)", showgrid=False,
                      rangemode="tozero", secondary_y=True)
     if reference_date is not None:
-        fig.add_vline(
-            x=reference_date.isoformat(),
-            line=dict(color="#ff6b6b", width=2, dash="dash"),
-            annotation_text=reference_date.isoformat(),
-            annotation_position="top",
-            annotation_font=dict(size=10, color="#ff6b6b"),
+        ref_iso = reference_date.isoformat()
+        fig.add_shape(
+            type="line", x0=ref_iso, x1=ref_iso, y0=0, y1=1,
+            yref="paper", line=dict(color="#ff6b6b", width=2, dash="dash"),
+        )
+        fig.add_annotation(
+            x=ref_iso, y=1, yref="paper",
+            text=ref_iso, showarrow=False,
+            font=dict(size=10, color="#ff6b6b"),
+            yshift=10,
         )
 
     fig.update_layout(
