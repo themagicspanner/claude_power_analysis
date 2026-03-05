@@ -8,7 +8,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from build_database import (
-    _power_model, _fit_power_curve, _normalized_power,
+    _power_model, _power_model_extended, _fit_power_curve,
+    _fit_with_endurance_tail, _normalized_power,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 
@@ -358,14 +359,17 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
 
         # Resolve model parameters
         ok = False
+        tte = tte_b = None
         if live_pdc is not None:
             AWC, Pmax, MAP, tau2 = (
                 live_pdc["AWC"], live_pdc["Pmax"],
                 live_pdc["MAP"], live_pdc["tau2"],
             )
+            tte   = live_pdc.get("tte")
+            tte_b = live_pdc.get("tte_b")
             ok = True
         elif len(dur) >= 4:
-            popt, ok = _fit_power_curve(dur, pwr)
+            popt, ok, tte, tte_b = _fit_with_endurance_tail(dur, pwr)
             if ok:
                 AWC, Pmax, MAP, tau2 = popt
 
@@ -373,8 +377,15 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
         if ok:
             tau   = AWC / Pmax
             t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
-            p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
+            p_aer_base = MAP * (1.0 - np.exp(-t_sm / tau2))
+            # Beyond TtE aerobic is fully ramped, but total power declines
+            if tte is not None:
+                p_aer = np.where(t_sm <= tte, p_aer_base,
+                                 np.minimum(p_aer_base, _power_model_extended(
+                                     t_sm, AWC, Pmax, MAP, tau2, tte, tte_b)))
+            else:
+                p_aer = p_aer_base
+            p_tot = _power_model_extended(t_sm, AWC, Pmax, MAP, tau2, tte, tte_b)
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
             ltp_frac = ltp / MAP if MAP > 0 else 0.0
@@ -497,13 +508,18 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
         # ── Model fit with aerobic / anaerobic contributions ──────────────
         dur = aged["duration_s"].to_numpy(dtype=float)
         pwr = aged["aged_power"].to_numpy(dtype=float)
-        popt, ok = _fit_power_curve(dur, pwr)
+        popt, ok, tte, tte_b = _fit_with_endurance_tail(dur, pwr)
         if ok:
             AWC, Pmax, MAP, tau2 = popt
             tau      = AWC / Pmax
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
-            p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
-            p_total   = _power_model(t_smooth, *popt)
+            p_aer_base = MAP * (1.0 - np.exp(-t_smooth / tau2))
+            p_total   = _power_model_extended(t_smooth, AWC, Pmax, MAP, tau2, tte, tte_b)
+            # Beyond TtE, aerobic is fully ramped; cap at total power
+            if tte is not None:
+                p_aerobic = np.minimum(p_aer_base, p_total)
+            else:
+                p_aerobic = p_aer_base
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
             # Base component (0 → LTP/MAP proportion of aerobic curve)
@@ -1274,22 +1290,22 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             "ride_date":  best["ride_date"],
         })
     env_df = pd.DataFrame(env_rows).sort_values("duration_s")
-    # Limit to durations up to 1 hour (the model is only fitted to this range)
-    env_df = env_df[env_df["duration_s"] <= 3600].copy()
 
     dur_arr = env_df["duration_s"].to_numpy(dtype=float)
     pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
 
-    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
-                else (None, False))
+    tte = tte_b = None
+    popt, ok, tte, tte_b = (_fit_with_endurance_tail(dur_arr, pwr_arr)
+                             if len(dur_arr) >= 4
+                             else (None, False, None, None))
 
     if ok:
         AWC, Pmax, MAP, tau2 = popt
-        model_vals             = _power_model(dur_arr, *popt)
+        model_vals             = _power_model_extended(dur_arr, AWC, Pmax, MAP, tau2, tte, tte_b)
         env_df["model_power"]  = model_vals
         env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
         env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
-        ftp = float(_power_model(3600.0, *popt))
+        ftp = float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b))
         ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # ── Figure ────────────────────────────────────────────────────────────────
@@ -1349,8 +1365,10 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     # PDC model curve with zone splits (Base / Threshold / Anaerobic)
     if ok:
         t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
-        p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
-        p_tot = _power_model(t_sm, *popt)
+        p_aer_base = MAP * (1.0 - np.exp(-t_sm / tau2))
+        p_tot = _power_model_extended(t_sm, AWC, Pmax, MAP, tau2, tte, tte_b)
+        # Beyond TtE, aerobic is fully ramped; cap at total power
+        p_aer = np.minimum(p_aer_base, p_tot) if tte is not None else p_aer_base
         ltp_frac = ltp / MAP if MAP > 0 else 0.0
         p_base = p_aer * ltp_frac
         fig.add_trace(go.Scatter(

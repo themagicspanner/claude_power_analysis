@@ -191,6 +191,25 @@ def _power_model(t, AWC, Pmax, MAP, tau2):
     return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
 
 
+def _power_model_extended(t, AWC, Pmax, MAP, tau2, tte=None, tte_b=None):
+    """Extended power-duration model with log-linear tail beyond TtE.
+
+    For t <= TtE (or when TtE is None):
+        P(t) = AWC/t * (1 - exp(-t/tau)) + MAP * (1 - exp(-t/tau2))
+    For t > TtE:
+        P(t) = P(TtE) - b * ln(t / TtE)
+
+    The log-linear tail is continuous at TtE by construction.
+    """
+    p_base = _power_model(t, AWC, Pmax, MAP, tau2)
+    if tte is None or tte_b is None:
+        return p_base
+    t = np.asarray(t, dtype=float)
+    p_at_tte = float(_power_model(tte, AWC, Pmax, MAP, tau2))
+    tail = p_at_tte - tte_b * np.log(t / tte)
+    return np.where(t <= tte, p_base, tail)
+
+
 def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
                      n_iter: int = 8, asymmetry: float = 10.0,
                      p0_init: list | None = None):
@@ -233,6 +252,110 @@ def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
         weights   = np.where(residuals > 0, asymmetry, 1.0)
 
     return popt, True
+
+
+# ── Endurance tail (TtE + log-linear) ────────────────────────────────────────
+
+# TtE grid: 35 min to 70 min in 5-min steps
+_TTE_GRID = list(range(2100, 4201, 300))
+_TTE_MIN_LONG_POINTS = 2   # need at least 2 data points beyond TtE
+
+
+def _fit_log_linear_b(dur_long, pwr_long, p_at_tte, tte,
+                       n_iter=6, asymmetry=10.0):
+    """Fit the slope b of the log-linear tail using skimming IRLS.
+
+    Model: pwr = p_at_tte - b * ln(dur / tte)
+    Rearranged: pwr = p_at_tte - b * x   where x = ln(dur / tte)
+
+    Returns (b, residuals) or (None, None) on failure.
+    """
+    x = np.log(dur_long / tte)
+    if x.max() - x.min() < 0.01:
+        return None, None              # degenerate: all points at same log-duration
+
+    weights = np.ones(len(x))
+    b = None
+    for _ in range(n_iter):
+        # Weighted least squares: pwr = p_at_tte - b*x  →  (p_at_tte - pwr) = b*x
+        y = p_at_tte - pwr_long
+        b = float(np.sum(weights * y * x) / np.sum(weights * x * x)) if np.sum(weights * x * x) > 0 else None
+        if b is None or b <= 0:
+            return None, None          # log-linear tail must be declining
+        pred = p_at_tte - b * x
+        residuals = pwr_long - pred
+        weights = np.where(residuals > 0, asymmetry, 1.0)
+
+    pred = p_at_tte - b * x
+    residuals = pwr_long - pred
+    return b, residuals
+
+
+def _fit_with_endurance_tail(dur, pwr, n_iter=8, asymmetry=10.0,
+                              p0_init=None):
+    """Two-stage fit: 4-param model up to TtE, log-linear tail beyond.
+
+    Returns (popt, ok, tte, tte_b) where tte/tte_b are None when
+    insufficient long-duration data exists.
+    """
+    max_dur = float(dur.max())
+
+    # If no data beyond the minimum TtE, fit the old model on all data
+    if max_dur <= _TTE_GRID[0]:
+        popt, ok = _fit_power_curve(dur, pwr, n_iter=n_iter,
+                                     asymmetry=asymmetry, p0_init=p0_init)
+        return popt, ok, None, None
+
+    best_score = np.inf
+    best_result = (None, False, None, None)
+
+    for tte in _TTE_GRID:
+        if tte >= max_dur:
+            break  # no data beyond this TtE
+
+        mask_short = dur <= tte
+        mask_long  = dur > tte
+
+        if mask_long.sum() < _TTE_MIN_LONG_POINTS:
+            continue
+        if mask_short.sum() < 4:
+            continue
+
+        # Stage 1: fit 4-param model to data <= TtE
+        popt, ok = _fit_power_curve(dur[mask_short], pwr[mask_short],
+                                     n_iter=n_iter, asymmetry=asymmetry,
+                                     p0_init=p0_init)
+        if not ok:
+            continue
+
+        # Stage 2: fit log-linear tail to data > TtE
+        p_at_tte = float(_power_model(tte, *popt))
+        b, resid_long = _fit_log_linear_b(
+            dur[mask_long], pwr[mask_long], p_at_tte, tte,
+            asymmetry=asymmetry,
+        )
+        if b is None:
+            continue
+
+        # Score: sum of squared weighted residuals across both stages
+        pred_short = _power_model(dur[mask_short], *popt)
+        resid_short = pwr[mask_short] - pred_short
+        w_short = np.where(resid_short > 0, asymmetry, 1.0)
+        w_long  = np.where(resid_long > 0, asymmetry, 1.0)
+        score = (float(np.sum(w_short * resid_short**2))
+                 + float(np.sum(w_long * resid_long**2)))
+
+        if score < best_score:
+            best_score = score
+            best_result = (popt, True, float(tte), float(b))
+
+    # If grid search failed entirely, fall back to full-range 4-param fit
+    if best_result[1] is False:
+        popt, ok = _fit_power_curve(dur, pwr, n_iter=n_iter,
+                                     asymmetry=asymmetry, p0_init=p0_init)
+        return popt, ok, None, None
+
+    return best_result
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -289,7 +412,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             tss_ltp               REAL,
             ltp                   REAL,
             variability_index     REAL,
-            aerobic_decoupling_pct REAL
+            aerobic_decoupling_pct REAL,
+            tte                   REAL,
+            tte_b                 REAL
         );
 
         CREATE TABLE IF NOT EXISTS zone_distribution (
@@ -305,7 +430,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             Pmax  REAL NOT NULL,
             AWC   REAL NOT NULL,
             tau2  REAL NOT NULL,
-            ltp   REAL NOT NULL
+            ltp   REAL NOT NULL,
+            tte   REAL,
+            tte_b REAL
         );
 
         CREATE TABLE IF NOT EXISTS db_meta (
@@ -358,6 +485,17 @@ def init_db(conn: sqlite3.Connection) -> None:
     for col_def in ["avg_heart_rate REAL", "max_heart_rate INTEGER"]:
         try:
             conn.execute(f"ALTER TABLE rides ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
+
+    # TtE + log-linear tail columns
+    for col_def in ["tte REAL", "tte_b REAL"]:
+        try:
+            conn.execute(f"ALTER TABLE pdc_params ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(f"ALTER TABLE daily_pdc_params ADD COLUMN {col_def}")
         except sqlite3.OperationalError:
             pass
 
@@ -529,7 +667,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     if len(dur) < 4:
         return
 
-    popt, ok = _fit_power_curve(dur, pwr)
+    popt, ok, tte, tte_b = _fit_with_endurance_tail(dur, pwr)
     if not ok:
         return
 
@@ -539,7 +677,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # ── TSS metrics ───────────────────────────────────────────────────────────
-    ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
+    ftp = float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b))
 
     rec = pd.read_sql(
         "SELECT elapsed_s, power, heart_rate FROM records WHERE ride_id = ? ORDER BY elapsed_s",
@@ -567,8 +705,9 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
         """INSERT OR REPLACE INTO pdc_params
                (ride_id, AWC, Pmax, MAP, tau2, computed_at,
                 ftp, normalized_power, intensity_factor, tss,
-                tss_map, tss_awc, tss_ltp, ltp, variability_index, aerobic_decoupling_pct)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tss_map, tss_awc, tss_ltp, ltp, variability_index,
+                aerobic_decoupling_pct, tte, tte_b)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ride_id,
             round(float(AWC),  1),
@@ -586,6 +725,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
             round(ltp,     1),
             vi,
             aedec,
+            tte,
+            tte_b,
         ),
     )
     conn.commit()
@@ -672,7 +813,8 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
 
         has_new_ride = ref in ride_dates
         n_iter = 8 if (has_new_ride or prev_popt is None) else 4
-        popt, ok = _fit_power_curve(dur, pwr, n_iter=n_iter, p0_init=prev_popt)
+        popt, ok, tte, tte_b = _fit_with_endurance_tail(
+            dur, pwr, n_iter=n_iter, p0_init=prev_popt)
         if not ok:
             prev_popt = None
             continue
@@ -688,12 +830,15 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
             round(float(AWC), 1),
             round(float(tau2), 1),
             round(ltp, 1),
+            tte,
+            round(tte_b, 2) if tte_b is not None else None,
         ))
 
     if rows:
         conn.executemany(
             "INSERT OR REPLACE INTO daily_pdc_params "
-            "(date, MAP, Pmax, AWC, tau2, ltp) VALUES (?, ?, ?, ?, ?, ?)",
+            "(date, MAP, Pmax, AWC, tau2, ltp, tte, tte_b) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
     conn.commit()

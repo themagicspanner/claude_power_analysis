@@ -43,7 +43,8 @@ from build_database import (
     init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones, backfill_missing_mmp,
     recompute_all_pdc_params, ensure_daily_pdc_current,
-    _power_model, _fit_power_curve, _normalized_power,
+    _power_model, _power_model_extended, _fit_power_curve,
+    _fit_with_endurance_tail, _normalized_power,
     calculate_mmp, calculate_zones, MMP_DURATIONS,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
@@ -369,7 +370,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
     if len(dur) < 4:
         return None
 
-    popt, ok = _fit_power_curve(dur, pwr)
+    popt, ok, tte, tte_b = _fit_with_endurance_tail(dur, pwr)
     if not ok:
         return None
 
@@ -379,7 +380,9 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "Pmax": float(Pmax),
         "MAP":  float(MAP),
         "tau2": float(tau2),
-        "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+        "tte":  tte,
+        "tte_b": tte_b,
+        "ftp":  float(_power_model_extended(3600.0, AWC, Pmax, MAP, tau2, tte, tte_b)),
         "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
 
@@ -1595,7 +1598,9 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
     pmax_v = int(round(r["Pmax"]))
     awc_v  = f"{r['AWC']/1000:.1f}"
     ltp_v  = int(round(r["ltp"]))
-    ftp_v  = int(round(_power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
+    ftp_v  = int(round(_power_model_extended(
+        3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"],
+        r.get("tte"), r.get("tte_b"))))
     return [
         _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
                    {**_ls, "fontSize": "13px", "color": "#222"},
@@ -2016,9 +2021,13 @@ def _pdc_duration_for_zone_pcts(base_pct: float, thresh_pct: float, awc_pct: flo
     ltp_r = ltp / MAP
 
     # Compute zone fractions across the PDC at a fine grid of durations
+    tte   = pdc.get("tte")
+    tte_b = pdc.get("tte_b")
     t_grid = np.logspace(np.log10(0.5), np.log10(7200), 2000)
-    p_total = _power_model(t_grid, AWC, Pmax, MAP, tau2)
-    p_aer   = MAP * (1.0 - np.exp(-t_grid / tau2))
+    p_total = _power_model_extended(t_grid, AWC, Pmax, MAP, tau2, tte, tte_b)
+    p_aer_base = MAP * (1.0 - np.exp(-t_grid / tau2))
+    # Beyond TtE the total power drops below the raw aerobic ramp; cap aerobic
+    p_aer   = np.minimum(p_aer_base, p_total) if tte is not None else p_aer_base
 
     f_base_grid   = (p_aer * ltp_r) / p_total * 100.0
     f_thresh_grid = (p_aer * (1.0 - ltp_r)) / p_total * 100.0
