@@ -388,8 +388,10 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             p_tot = _power_model_extended(t_sm, AWC, Pmax, MAP, tau2, tte, tte_b)
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
-            ltp_frac = ltp / MAP if MAP > 0 else 0.0
-            p_base = p_aer * ltp_frac
+            # Base = flat at LTP, capped at total power (consistent with TSS zones)
+            p_base = np.minimum(ltp, p_tot)
+            # Threshold = aerobic above LTP, capped at total power
+            p_thresh_top = np.minimum(p_aer, p_tot)
             fig.add_trace(go.Scatter(
                 x=t_sm, y=p_base,
                 mode="lines", name="base (≤LTP)",
@@ -397,7 +399,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
                 line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
             ))
             fig.add_trace(go.Scatter(
-                x=t_sm, y=p_aer,
+                x=t_sm, y=p_thresh_top,
                 mode="lines", name="threshold (LTP→MAP)",
                 fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.20),
                 line=dict(color=_zc(_RGB_THRESH, 0.7), width=1.2),
@@ -522,23 +524,23 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
                 p_aerobic = p_aer_base
             ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
             ltp = max(ltp, 0.0)
-            # Base component (0 → LTP/MAP proportion of aerobic curve)
-            ltp_frac = ltp / MAP if MAP > 0 else 0.0
-            p_base = p_aerobic * ltp_frac
+            # Base = flat at LTP, capped at total power (consistent with TSS zones)
+            p_base = np.minimum(ltp, p_total)
+            # Threshold = aerobic above LTP, capped at total power
+            p_thresh_top = np.minimum(p_aerobic, p_total)
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_base,
                 mode="lines", name="base (≤LTP)",
                 fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
                 line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
             ))
-            # Threshold component (LTP → aerobic curve)
             fig.add_trace(go.Scatter(
-                x=t_smooth, y=p_aerobic,
+                x=t_smooth, y=p_thresh_top,
                 mode="lines", name="threshold (LTP→MAP)",
                 fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.20),
                 line=dict(color=_zc(_RGB_THRESH, 0.7), width=1.2),
             ))
-            # Total model — fills from aerobic line, so the shaded band = anaerobic
+            # Total model — fills from threshold line, so the shaded band = anaerobic
             fig.add_trace(go.Scatter(
                 x=t_smooth, y=p_total,
                 mode="lines",
