@@ -1339,7 +1339,7 @@ app.layout = html.Div(
                     rowData=[
                         {"work_duration_min": 5, "work_ref": "MAP",
                          "work_intensity_pct": 100,
-                         "rest_duration_min": 5, "rest_ref": "LTP",
+                         "rest_duration_min": 5, "rest_ref": "MAP",
                          "rest_intensity_pct": 80,
                          "repetitions": 5},
                     ],
@@ -2161,7 +2161,7 @@ def open_workout(cell_clicked, new_clicks):
         default_rows = [{
             "work_duration_min": 5, "work_ref": "MAP",
             "work_intensity_pct": 100,
-            "rest_duration_min": 5, "rest_ref": "LTP",
+            "rest_duration_min": 5, "rest_ref": "MAP",
             "rest_intensity_pct": 80,
             "repetitions": 5,
         }]
@@ -2199,7 +2199,7 @@ def manage_workout_rows(add_clicks, dup_clicks, remove_clicks, current_rows):
         current_rows.append({
             "work_duration_min": 5, "work_ref": "MAP",
             "work_intensity_pct": 100,
-            "rest_duration_min": 5, "rest_ref": "LTP",
+            "rest_duration_min": 5, "rest_ref": "MAP",
             "rest_intensity_pct": 80,
             "repetitions": 3,
         })
