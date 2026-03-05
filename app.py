@@ -1065,11 +1065,6 @@ app.layout = html.Div(
                          style={"display": "flex", "gap": "12px",
                                 "flexWrap": "wrap", "marginBottom": "12px"}),
                 dcc.Graph(id="graph-pdc-historical"),
-                dcc.Slider(
-                    id="pdc-date-slider",
-                    min=0, max=0, value=0, step=1,
-                    marks={},
-                ),
                 html.Div(style={"height": "40px"}),
             ]),
 
@@ -1481,9 +1476,6 @@ def go_back_to_list(n_clicks):
     Output("metric-boxes",             "children"),
     Output("activities-table",         "rowData"),
     Output("pdc-slider-dates",         "data"),
-    Output("pdc-date-slider",          "max"),
-    Output("pdc-date-slider",          "value"),
-    Output("pdc-date-slider",          "marks"),
     Input("poll-interval",    "n_intervals"),
     State("known-version",    "data"),
     State("known-ride-ids",   "data"),
@@ -1527,25 +1519,6 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
 
     # Build slider dates from daily_pdc
     slider_dates = sorted(daily_pdc["date"].dropna().unique().tolist())
-    slider_max = max(len(slider_dates) - 1, 0)
-    slider_value = slider_max  # default to today
-    # ~6 evenly-spaced marks with styled labels
-    if len(slider_dates) > 1:
-        step = max(1, len(slider_dates) // 6)
-        mark_indices = list(range(0, len(slider_dates), step))
-        if mark_indices[-1] != slider_max:
-            mark_indices.append(slider_max)
-        slider_marks = {
-            i: {"label": slider_dates[i],
-                "style": {"color": "#7a8fbb", "fontSize": "11px"}}
-            for i in mark_indices
-        }
-    else:
-        slider_marks = (
-            {0: {"label": slider_dates[0],
-                 "style": {"color": "#7a8fbb", "fontSize": "11px"}}}
-            if slider_dates else {}
-        )
 
     return (
         ver,
@@ -1563,9 +1536,6 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         _metric_boxes(pdc_params, rides),
         _build_table_data(rides, pdc_params, gps_traces),
         slider_dates,
-        slider_max,
-        slider_value,
-        slider_marks,
     )
 
 
@@ -1594,42 +1564,36 @@ app.clientside_callback(
 )
 
 
-# ── Historical PDC slider callback ────────────────────────────────────────────
+# ── Historical PDC click callback ─────────────────────────────────────────────
 
 @app.callback(
     Output("graph-pdc-historical",      "figure"),
     Output("pdc-historical-cards",      "children"),
     Output("graph-pdc-params-history",  "figure", allow_duplicate=True),
-    Output("pdc-date-slider",           "value",  allow_duplicate=True),
-    Input("pdc-date-slider",              "value"),
     Input("graph-pdc-params-history",     "clickData"),
     State("pdc-slider-dates", "data"),
     prevent_initial_call=True,
 )
-def update_pdc_historical(slider_idx, click_data, dates):
-    if not dates:
+def update_pdc_historical(click_data, dates):
+    if not dates or not click_data:
         raise dash.exceptions.PreventUpdate
 
-    triggered = ctx.triggered_id
-    if triggered == "graph-pdc-params-history" and click_data:
-        # Extract clicked date and find nearest slider index
-        clicked_x = click_data["points"][0].get("x", "")
-        try:
-            clicked_date = datetime.date.fromisoformat(clicked_x[:10])
-        except (ValueError, TypeError):
-            raise dash.exceptions.PreventUpdate
-        best_idx = 0
-        best_diff = abs((datetime.date.fromisoformat(dates[0]) - clicked_date).days)
-        for i, d in enumerate(dates):
-            diff = abs((datetime.date.fromisoformat(d) - clicked_date).days)
-            if diff < best_diff:
-                best_diff = diff
-                best_idx = i
-        slider_idx = best_idx
-    elif slider_idx is None:
+    clicked_x = click_data["points"][0].get("x", "")
+    try:
+        clicked_date = datetime.date.fromisoformat(clicked_x[:10])
+    except (ValueError, TypeError):
         raise dash.exceptions.PreventUpdate
 
-    ref_str = dates[int(slider_idx)]
+    # Find nearest date in available dates
+    best_idx = 0
+    best_diff = abs((datetime.date.fromisoformat(dates[0]) - clicked_date).days)
+    for i, d in enumerate(dates):
+        diff = abs((datetime.date.fromisoformat(d) - clicked_date).days)
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i
+
+    ref_str = dates[best_idx]
     ref_date = datetime.date.fromisoformat(ref_str)
     _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
     fig = fig_90day_mmp(mmp_all, reference_date=ref_date)
@@ -1665,7 +1629,7 @@ def update_pdc_historical(slider_idx, click_data, dates):
         cards = []
 
     fig_history = fig_pdc_params_history(daily_pdc, _rides, reference_date=ref_date)
-    return fig, cards, fig_history, int(slider_idx)
+    return fig, cards, fig_history
 
 
 def _fmt_mmp_duration(seconds: int) -> str:
