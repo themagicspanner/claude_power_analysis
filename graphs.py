@@ -672,50 +672,38 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     ride_dates = set(rides["ride_date"].dropna().unique())
     ride_rows = df[df["date"].isin(ride_dates)]
 
-    # ── 1. Power chart: Pmax, MAP, LTP, P(TtE) ──────────────────────────────
+    # Shared x-range so all three charts align
+    x_range = [df["date"].min(), df["date"].max()]
+
+    # ── 1. Power chart: Pmax, MAP, LTP ─────────────────────────────────────
     fig_power = go.Figure()
 
     fig_power.add_trace(go.Scatter(
         x=df["date"], y=df["Pmax"],
         mode="lines", name="Pmax (W)",
-        line=dict(color="mediumpurple", width=1.5, dash="dash", shape="hv"),
+        line=dict(color="black", width=1.5, shape="hv"),
     ))
     fig_power.add_trace(go.Scatter(
         x=df["date"], y=df["MAP"],
         mode="lines", name="MAP (W)",
-        line=dict(color=Z_THRESH, width=2, shape="hv"),
+        line=dict(color="#FFBF00", width=2, shape="hv"),
     ))
     fig_power.add_trace(go.Scatter(
         x=df["date"], y=df["ltp"],
         mode="lines", name="LTP (W)",
-        line=dict(color=Z_BASE, width=2, shape="hv"),
+        line=dict(color="green", width=2, shape="hv"),
     ))
-
-    if "tte" in df.columns and "tte_b" in df.columns:
-        p_tte_vals = []
-        for _, row in df.iterrows():
-            _AWC, _Pmax, _MAP, _tau2 = row["AWC"], row["Pmax"], row["MAP"], row["tau2"]
-            _tte = float(row["tte"]) if pd.notna(row.get("tte")) else None
-            _tte_b = float(row["tte_b"]) if pd.notna(row.get("tte_b")) else None
-            _t = _tte if _tte is not None else 3600.0
-            p_tte_vals.append(float(_power_model_extended(
-                _t, _AWC, _Pmax, _MAP, _tau2, _tte, _tte_b)))
-        fig_power.add_trace(go.Scatter(
-            x=df["date"], y=p_tte_vals,
-            mode="lines", name="P(TtE) (W)",
-            line=dict(color="#e07020", width=2, dash="dashdot", shape="hv"),
-        ))
 
     if not ride_rows.empty:
         fig_power.add_trace(go.Scatter(
             x=ride_rows["date"], y=ride_rows["MAP"],
             mode="markers", name="Ride",
-            marker=dict(color=Z_THRESH, size=6, symbol="circle-open",
-                        line=dict(color=Z_THRESH, width=2)),
+            marker=dict(color="#FFBF00", size=6, symbol="circle-open",
+                        line=dict(color="#FFBF00", width=2)),
             hovertemplate="%{x}  MAP: %{y:.0f} W<extra>Ride</extra>",
         ))
 
-    fig_power.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_power.update_xaxes(showgrid=True, gridcolor="lightgrey", range=x_range)
     fig_power.update_yaxes(title_text="Power (W)", showgrid=True,
                            gridcolor="lightgrey", rangemode="tozero")
     _add_reference_line(fig_power, reference_date)
@@ -727,10 +715,10 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
     fig_energy.add_trace(go.Scatter(
         x=df["date"], y=df["AWC"] / 1000,
         mode="lines", name="AWC (kJ)",
-        line=dict(color=Z_AWC, width=2, shape="hv"),
+        line=dict(color="red", width=2, shape="hv"),
     ))
 
-    fig_energy.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_energy.update_xaxes(showgrid=True, gridcolor="lightgrey", range=x_range)
     fig_energy.update_yaxes(title_text="Energy (kJ)", showgrid=True,
                             gridcolor="lightgrey", rangemode="tozero")
     _add_reference_line(fig_energy, reference_date)
@@ -746,7 +734,7 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
             fig_time.add_trace(go.Scatter(
                 x=df["date"], y=tte_min,
                 mode="lines", name="TtE_MAP (min)",
-                line=dict(color=Z_THRESH, width=2, dash="dot", shape="hv"),
+                line=dict(color="#FFBF00", width=2, shape="hv"),
             ))
 
     if "tte_ltp" in df.columns:
@@ -756,10 +744,10 @@ def fig_pdc_params_history(daily_pdc: pd.DataFrame,
             fig_time.add_trace(go.Scatter(
                 x=df["date"], y=tte_ltp_min,
                 mode="lines", name="TtE_LTP (min)",
-                line=dict(color=Z_BASE, width=2, shape="hv"),
+                line=dict(color="green", width=2, shape="hv"),
             ))
 
-    fig_time.update_xaxes(showgrid=True, gridcolor="lightgrey")
+    fig_time.update_xaxes(showgrid=True, gridcolor="lightgrey", range=x_range)
     fig_time.update_yaxes(title_text="Time (min)", showgrid=True,
                           gridcolor="lightgrey", rangemode="tozero")
     _add_reference_line(fig_time, reference_date)
