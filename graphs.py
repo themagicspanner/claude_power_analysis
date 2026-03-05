@@ -1595,12 +1595,29 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
         ), row=row, col=1, secondary_y=False)
 
         # TSB dotted line on RIGHT axis
+        tsb_vals = pmc["tsb"].round(1)
         fig.add_trace(go.Scatter(
-            x=dates, y=pmc["tsb"].round(1),
+            x=dates, y=tsb_vals,
             mode="lines", name=f"TSB ({label})",
             line=dict(color=ctl_col, width=1.5, dash="dot"),
             showlegend=show,
             hovertemplate=f"TSB ({label}): %{{y:.1f}}<extra></extra>",
+        ), row=row, col=1, secondary_y=True)
+
+        # Readiness dots on the TSB line
+        if label == "AWC":
+            _cutoff_vals = pd.Series(0.0, index=pmc.index)
+        elif label == "Threshold":
+            _cutoff_vals = -0.30 * pmc["ctl"]
+        else:  # Base
+            _cutoff_vals = -0.50 * pmc["ctl"]
+        _ok = tsb_vals.values > _cutoff_vals.values
+        _dot_colors = np.where(_ok, "#16a34a", "#dc2626")
+        fig.add_trace(go.Scatter(
+            x=dates, y=tsb_vals,
+            mode="markers", name=f"TSB status ({label})",
+            marker=dict(color=_dot_colors, size=4),
+            showlegend=False, hoverinfo="skip",
         ), row=row, col=1, secondary_y=True)
 
         # ATL on RIGHT axis — short-term fatigue (dashed)
@@ -1813,25 +1830,49 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     ), secondary_y=True)
 
     # ── TSB lines on RIGHT axis ────────────────────────────────────────
+    _tsb_awc_vals = pmc_awc["tsb"].round(1)
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_awc["tsb"].round(1),
+        x=dates, y=_tsb_awc_vals,
         mode="lines", name="TSB AWC",
         line=dict(color=Z_AWC, width=2),
         hovertemplate="TSB AWC: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
-
+    _ok_awc = _tsb_awc_vals.values > 0
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_thresh["tsb"].round(1),
+        x=dates, y=_tsb_awc_vals,
+        mode="markers", name="TSB status AWC",
+        marker=dict(color=np.where(_ok_awc, "#16a34a", "#dc2626"), size=4),
+        showlegend=False, hoverinfo="skip",
+    ), secondary_y=True)
+
+    _tsb_thresh_vals = pmc_thresh["tsb"].round(1)
+    fig.add_trace(go.Scatter(
+        x=dates, y=_tsb_thresh_vals,
         mode="lines", name="TSB Threshold",
         line=dict(color=Z_THRESH, width=2),
         hovertemplate="TSB Thresh: %{y:.1f}<extra></extra>",
     ), secondary_y=True)
-
+    _ok_thresh = _tsb_thresh_vals.values > (-0.30 * pmc_thresh["ctl"]).values
     fig.add_trace(go.Scatter(
-        x=dates, y=pmc_ltp["tsb"].round(1),
+        x=dates, y=_tsb_thresh_vals,
+        mode="markers", name="TSB status Thresh",
+        marker=dict(color=np.where(_ok_thresh, "#16a34a", "#dc2626"), size=4),
+        showlegend=False, hoverinfo="skip",
+    ), secondary_y=True)
+
+    _tsb_base_vals = pmc_ltp["tsb"].round(1)
+    fig.add_trace(go.Scatter(
+        x=dates, y=_tsb_base_vals,
         mode="lines", name="TSB Base",
         line=dict(color=Z_BASE, width=2),
         hovertemplate="TSB Base: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+    _ok_base = _tsb_base_vals.values > (-0.50 * pmc_ltp["ctl"]).values
+    fig.add_trace(go.Scatter(
+        x=dates, y=_tsb_base_vals,
+        mode="markers", name="TSB status Base",
+        marker=dict(color=np.where(_ok_base, "#16a34a", "#dc2626"), size=4),
+        showlegend=False, hoverinfo="skip",
     ), secondary_y=True)
 
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
