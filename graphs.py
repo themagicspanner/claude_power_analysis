@@ -1352,24 +1352,24 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
 
     # ── Panel 2: residuals ────────────────────────────────────────────────────
     if ok:
-        residuals  = env_df["residual"].to_numpy(dtype=float)
+        residuals_pct = env_df["residual_pct"].to_numpy(dtype=float)
         fig.add_trace(go.Scatter(
             x=dur_arr,
-            y=residuals,
+            y=residuals_pct,
             mode="lines",
             name="Residual",
             line=dict(color="steelblue", width=2),
             fill="tozeroy",
             fillcolor="rgba(70,130,180,0.15)",
             customdata=np.column_stack([
-                env_df["residual_pct"].to_numpy(),
+                env_df["residual"].to_numpy(),
                 env_df["aged_power"].round(0),
                 env_df["model_power"].round(0),
                 env_df["weight"].round(3),
             ]),
             hovertemplate=(
                 "<b>%{x:.0f} s</b><br>"
-                "Residual: %{y:+.0f} W (%{customdata[0]:+.1f}%)<br>"
+                "Residual: %{y:+.1f}% (%{customdata[0]:+.0f} W)<br>"
                 "Envelope: %{customdata[1]:.0f} W  ·  Model: %{customdata[2]:.0f} W<br>"
                 "Weight: %{customdata[3]}<extra></extra>"
             ),
@@ -1386,7 +1386,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title_text="Duration", row=2, col=1)
     fig.update_yaxes(title_text="Power (W)",    showgrid=True, gridcolor="lightgrey",
                      row=1, col=1)
-    fig.update_yaxes(title_text="Residual (W)", showgrid=True, gridcolor="lightgrey",
+    fig.update_yaxes(title_text="Residual (%)", showgrid=True, gridcolor="lightgrey",
                      row=2, col=1)
 
     if ok:
