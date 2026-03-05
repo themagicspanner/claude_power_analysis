@@ -2419,9 +2419,16 @@ def update_workout_charts(cell_changed, row_data, _ver):
     _vs = {"fontSize": "22px", "fontWeight": "bold", "color": "#222"}
     _us = {"fontSize": "12px", "color": "#666", "marginLeft": "3px"}
     pdc_cards = [
-        _make_card("MAP", f"{int(map_w)}", "W", _cs, _ls, _vs, _us),
-        _make_card("LTP", f"{int(ltp_w)}", "W", _cs, _ls, _vs, _us),
-        _make_card("P(TtE)", f"{int(ftp_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("Pmax", f"{int(latest_pdc['Pmax'])}", "W", _cs, _ls, _vs, _us),
+        _make_card("AWC",  f"{latest_pdc['AWC']/1000:.1f}", "kJ", _cs, _ls, _vs, _us),
+        _make_card("MAP",  f"{int(map_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("TtE\u2098\u2090\u209a",
+                   f"{latest_pdc['tte']/60:.0f}" if latest_pdc.get("tte") else "—",
+                   "min", _cs, _ls, _vs, _us),
+        _make_card("LTP",  f"{int(ltp_w)}", "W", _cs, _ls, _vs, _us),
+        _make_card("TtE\u2097\u209c\u209a",
+                   _fmt_tte_ltp(latest_pdc.get("tte_ltp")),
+                   "h:mm", _cs, _ls, _vs, _us),
     ]
 
     return wk_fig_power, wk_fig_tss, wk_fig_zones, wk_fig_mmp, stats, pdc_cards
