@@ -239,7 +239,7 @@ def _load_pdc_params() -> pd.DataFrame:
 def _load_daily_pdc() -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql(
-        "SELECT date, MAP, Pmax, AWC, ltp, tau2 FROM daily_pdc_params ORDER BY date",
+        "SELECT date, MAP, Pmax, AWC, ltp, tau2, tte, tte_b FROM daily_pdc_params ORDER BY date",
         conn,
     )
     conn.close()
@@ -273,7 +273,7 @@ def load_records(ride_id: int) -> pd.DataFrame:
 # ── One-time DB migration ─────────────────────────────────────────────────────
 
 # Bump this when stored PDC params need to be fully recomputed.
-_DB_SCHEMA_VERSION = 3
+_DB_SCHEMA_VERSION = 4
 
 
 def _maybe_migrate(conn: sqlite3.Connection) -> None:
