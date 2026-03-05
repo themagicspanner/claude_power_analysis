@@ -1600,13 +1600,35 @@ app.clientside_callback(
     Output("graph-pdc-historical",      "figure"),
     Output("pdc-historical-cards",      "children"),
     Output("graph-pdc-params-history",  "figure", allow_duplicate=True),
-    Input("pdc-date-slider",  "value"),
+    Output("pdc-date-slider",           "value",  allow_duplicate=True),
+    Input("pdc-date-slider",              "value"),
+    Input("graph-pdc-params-history",     "clickData"),
     State("pdc-slider-dates", "data"),
     prevent_initial_call=True,
 )
-def update_pdc_historical(slider_idx, dates):
-    if not dates or slider_idx is None:
+def update_pdc_historical(slider_idx, click_data, dates):
+    if not dates:
         raise dash.exceptions.PreventUpdate
+
+    triggered = ctx.triggered_id
+    if triggered == "graph-pdc-params-history" and click_data:
+        # Extract clicked date and find nearest slider index
+        clicked_x = click_data["points"][0].get("x", "")
+        try:
+            clicked_date = datetime.date.fromisoformat(clicked_x[:10])
+        except (ValueError, TypeError):
+            raise dash.exceptions.PreventUpdate
+        best_idx = 0
+        best_diff = abs((datetime.date.fromisoformat(dates[0]) - clicked_date).days)
+        for i, d in enumerate(dates):
+            diff = abs((datetime.date.fromisoformat(d) - clicked_date).days)
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = i
+        slider_idx = best_idx
+    elif slider_idx is None:
+        raise dash.exceptions.PreventUpdate
+
     ref_str = dates[int(slider_idx)]
     ref_date = datetime.date.fromisoformat(ref_str)
     _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
@@ -1643,7 +1665,7 @@ def update_pdc_historical(slider_idx, dates):
         cards = []
 
     fig_history = fig_pdc_params_history(daily_pdc, _rides, reference_date=ref_date)
-    return fig, cards, fig_history
+    return fig, cards, fig_history, int(slider_idx)
 
 
 def _fmt_mmp_duration(seconds: int) -> str:
