@@ -1346,22 +1346,31 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
             showlegend=True,
         ), row=1, col=1)
 
-    # PDC model curve
+    # PDC model curve with zone splits (Base / Threshold / Anaerobic)
     if ok:
         t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
         p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
         p_tot = _power_model(t_sm, *popt)
+        ltp_frac = ltp / MAP if MAP > 0 else 0.0
+        p_base = p_aer * ltp_frac
+        fig.add_trace(go.Scatter(
+            x=t_sm, y=p_base,
+            mode="lines", name="base (≤LTP)",
+            fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.20),
+            line=dict(color=_zc(_RGB_BASE, 0.7), width=1.2),
+            hoverinfo="skip",
+        ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=t_sm, y=p_aer,
-            mode="lines", name="aerobic (MAP)",
-            fill="tozeroy", fillcolor=_zc(_RGB_BASE, 0.15),
-            line=dict(color=_zc(_RGB_BASE, 0.6), width=1),
+            mode="lines", name="threshold (LTP→MAP)",
+            fill="tonexty", fillcolor=_zc(_RGB_THRESH, 0.20),
+            line=dict(color=_zc(_RGB_THRESH, 0.7), width=1.2),
             hoverinfo="skip",
         ), row=1, col=1)
         fig.add_trace(go.Scatter(
             x=t_sm, y=p_tot,
             mode="lines", name="PDC model",
-            fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.10),
+            fill="tonexty", fillcolor=_zc(_RGB_AWC, 0.18),
             line=dict(color=Z_AWC, width=2.5, dash="dash"),
             hovertemplate="Model: %{y:.0f} W<extra></extra>",
         ), row=1, col=1)
