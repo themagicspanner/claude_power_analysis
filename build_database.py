@@ -50,7 +50,7 @@ MMP_DURATIONS = sorted(set(
 
 def mmp_durations_for_ride(n_samples: int) -> list[int]:
     """Return MMP durations list extended in 5-min intervals to the ride length."""
-    durations = list(MMP_DURATIONS)
+    durations = [d for d in MMP_DURATIONS if d <= n_samples]
     t = 3600 + 300
     while t <= n_samples:
         durations.append(t)

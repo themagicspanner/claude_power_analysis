@@ -1993,10 +1993,27 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     fig.add_hline(y=0, line=dict(color="grey", dash="dot", width=1),
                   secondary_y=True)
 
+    # ── Total CTL and TSB on RIGHT axis ─────────────────────────────
+    total_ctl = (pmc_ltp["ctl"] + pmc_thresh["ctl"] + pmc_awc["ctl"]).round(1)
+    total_tsb = (pmc_ltp["tsb"] + pmc_thresh["tsb"] + pmc_awc["tsb"]).round(1)
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=total_ctl,
+        mode="lines", name="CTL Total",
+        line=dict(color="black", width=2),
+        hovertemplate="CTL Total: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=total_tsb,
+        mode="lines", name="TSB Total",
+        line=dict(color="black", width=2, dash="dash"),
+        hovertemplate="TSB Total: %{y:.1f}<extra></extra>",
+    ), secondary_y=True)
+
     # ── Align zero across both axes ────────────────────────────────────
-    total_ctl = pmc_ltp["ctl"] + pmc_thresh["ctl"] + pmc_awc["ctl"]
     r_min = float(min(pmc_ltp["tsb"].min(), pmc_thresh["tsb"].min(),
-                      pmc_awc["tsb"].min(), 0))
+                      pmc_awc["tsb"].min(), total_tsb.min(), 0))
     r_max = float(max(total_ctl.max(), pmc_ltp["tsb"].max(),
                       pmc_thresh["tsb"].max(), pmc_awc["tsb"].max(), 1))
     l_max = float(max(
