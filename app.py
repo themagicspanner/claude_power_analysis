@@ -107,6 +107,7 @@ def _reload():
         _daily_pdc    = dp
         _gps_traces   = g
         _data_version += 1
+    print(f"[data] Loaded {len(r)} rides, {len(m)} MMP entries (v{_data_version}).")
 
 
 def get_data():
@@ -324,12 +325,16 @@ def _strava_sync() -> None:
     after = (datetime.date.today() - datetime.timedelta(days=STRAVA_SYNC_LOOKBACK)).isoformat()
     conn = None
     try:
+        print(f"[strava] Authenticating with Strava API …")
         client = get_client()
         conn = sqlite3.connect(DB_PATH)
         init_db(conn)
+        print(f"[strava] Fetching activities since {after} …")
         fetch_and_import(client, conn, after)
+        print("[strava] Backfilling VI / zones …")
         backfill_vi_aedec(conn)
         backfill_zones(conn)
+        print("[strava] Reloading data …")
         _reload()
         print("[strava] Sync complete.")
     except Exception as exc:
@@ -985,19 +990,30 @@ if _args.lookback is not None:
     STRAVA_SYNC_LOOKBACK = _args.lookback
     print(f"[strava] Lookback overridden to {STRAVA_SYNC_LOOKBACK} days.")
 
+print("[boot] Initialising database …")
 _boot_conn = sqlite3.connect(DB_PATH)
 init_db(_boot_conn)
 _maybe_migrate(_boot_conn)   # one-time recompute if DB schema is stale
+print("[boot] Backfilling PDC params …")
 backfill_pdc_params(_boot_conn)
+print("[boot] Backfilling missing MMP entries …")
 backfill_missing_mmp(_boot_conn)
+print("[boot] Backfilling VI / AE / DEC …")
 backfill_vi_aedec(_boot_conn)
+print("[boot] Backfilling power zones …")
 backfill_zones(_boot_conn)
+print("[boot] Backfilling MMH …")
 backfill_mmh(_boot_conn)
+print("[boot] Backfilling GPS / elevation …")
 backfill_gps_elevation(_boot_conn)
+print("[boot] Ensuring daily PDC is current …")
 ensure_daily_pdc_current(_boot_conn)
 _boot_conn.close()
+print("[boot] Backfill complete.")
 
+print("[boot] Loading data into memory …")
 _reload()              # initial load (picks up freshly computed pdc_params)
+print("[boot] Data loaded.")
 _start_strava_timer(run_immediately=True)  # sync Strava in background, don't block startup
 
 app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None,
@@ -2531,5 +2547,6 @@ def _open_browser():
 
 
 if __name__ == "__main__":
+    print("[boot] Starting Dash server on http://127.0.0.1:8050 …")
     threading.Thread(target=_open_browser, daemon=True).start()
     app.run(debug=True, port=8050)
