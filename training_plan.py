@@ -182,28 +182,40 @@ WORKOUTS: dict[str, Workout] = {
 # The planner picks the first one whose freshness requirement is met.
 
 PHASE_PREFERENCES: dict[Phase, list[str]] = {
+    # Base: build aerobic foundation only — no threshold / anaerobic
     Phase.BASE: [
         "endurance_long",
         "endurance_short",
-        "sweet_spot",          # occasional threshold stimulus
         "recovery",
         "rest",
     ],
+    # Build: introduce threshold stimulus, maintain base volume
     Phase.BUILD: [
         "threshold_intervals",
         "sweet_spot",
-        "vo2max",
         "endurance_short",
         "recovery",
         "rest",
     ],
+    # Peak: add anaerobic / VO2max on top of threshold, reduce volume
     Phase.PEAK: [
         "vo2max",
         "anaerobic",
         "sweet_spot",
+        "threshold_intervals",
         "recovery",
         "rest",
     ],
+}
+
+# Zone weights per phase: controls how much of the ideal daily TSS goes to
+# each zone.  During base, nearly all load is base; build adds threshold;
+# peak adds anaerobic.  The weights are normalised so they sum to 1.
+PHASE_ZONE_WEIGHTS: dict[Phase, tuple[float, float, float]] = {
+    #                      base   thresh  anaerobic
+    Phase.BASE:  (1.0,   0.0,    0.0),
+    Phase.BUILD: (0.50,  0.45,   0.05),
+    Phase.PEAK:  (0.25,  0.35,   0.40),
 }
 
 # Freshness hierarchy: GREEN > AMBER > RED > BLACK
@@ -262,16 +274,17 @@ def _phase_for_day(day_offset: int, total_days: int,
 
 # ── Workout scaling ─────────────────────────────────────────────────────────
 
-def _scale_workout(workout: Workout, target_total_tss: float) -> ZoneTSS:
+def _scale_workout(workout: Workout, target_total_tss: float,
+                    max_factor: float = 2.0) -> ZoneTSS:
     """Scale a workout template's zone TSS to hit a target total TSS.
 
     Preserves the zone ratio of the template.  Clamps minimum at 0.
+    max_factor caps how far the workout can be scaled up.
     """
     if workout.total_tss <= 0:
         return ZoneTSS(0, 0, 0)
     factor = max(0.0, target_total_tss / workout.total_tss)
-    # Don't scale beyond 2× the template (safety cap)
-    factor = min(factor, 2.0)
+    factor = min(factor, max_factor)
     return ZoneTSS(
         base=workout.zone_tss.base * factor,
         threshold=workout.zone_tss.threshold * factor,
@@ -342,13 +355,16 @@ def simulate_plan(
                                peak_weeks)
         freshness = sim.freshness()
 
-        # 2. Compute ideal daily TSS per zone to reach target CTL
-        ideal_base = _daily_tss_for_ctl_ramp(
-            sim.base.ctl, target_ctl.base, days_remaining)
-        ideal_thresh = _daily_tss_for_ctl_ramp(
-            sim.threshold.ctl, target_ctl.threshold, days_remaining)
-        ideal_anaerobic = _daily_tss_for_ctl_ramp(
-            sim.anaerobic.ctl, target_ctl.anaerobic, days_remaining)
+        # 2. Compute ideal daily TSS, gated by phase zone weights.
+        #    Only ramp zones the current phase trains — base phase asks
+        #    for base TSS only, build adds threshold, peak adds anaerobic.
+        w_b, w_t, w_a = PHASE_ZONE_WEIGHTS[phase]
+        ideal_base = (_daily_tss_for_ctl_ramp(
+            sim.base.ctl, target_ctl.base, days_remaining) if w_b > 0 else 0)
+        ideal_thresh = (_daily_tss_for_ctl_ramp(
+            sim.threshold.ctl, target_ctl.threshold, days_remaining) if w_t > 0 else 0)
+        ideal_anaerobic = (_daily_tss_for_ctl_ramp(
+            sim.anaerobic.ctl, target_ctl.anaerobic, days_remaining) if w_a > 0 else 0)
         ideal_total = max(0, ideal_base + ideal_thresh + ideal_anaerobic)
 
         # 3. Safety cap: don't exceed 1.5× zone CTL in a single day
@@ -357,24 +373,11 @@ def simulate_plan(
         ideal_total = min(ideal_total, max_tss)
 
         # 4. Pick the best workout that freshness allows, scored by
-        #    phase preference AND which zone CTL is furthest from target
+        #    how well it matches the phase's zone weight distribution.
         prefs = PHASE_PREFERENCES[phase]
         chosen_key = "rest"
         chosen = WORKOUTS["rest"]
         best_score = -1e9
-
-        # Zone deficits (positive = behind target, needs more work)
-        deficit_base = max(0, target_ctl.base - sim.base.ctl)
-        deficit_thresh = max(0, target_ctl.threshold - sim.threshold.ctl)
-        deficit_ana = max(0, target_ctl.anaerobic - sim.anaerobic.ctl)
-        deficit_total = deficit_base + deficit_thresh + deficit_ana + 1e-9
-
-        # Relative deficit: how far each zone is from target as a fraction
-        # of what it needs. Zones further behind get boosted priority.
-        rel_base = deficit_base / max(target_ctl.base, 1)
-        rel_thresh = deficit_thresh / max(target_ctl.threshold, 1)
-        rel_ana = deficit_ana / max(target_ctl.anaerobic, 1)
-        rel_total = rel_base + rel_thresh + rel_ana + 1e-9
 
         for idx, key in enumerate(prefs):
             w = WORKOUTS[key]
@@ -387,12 +390,12 @@ def simulate_plan(
                     chosen_key, chosen = key, w
                 continue
             # Score = how well this workout's zone mix matches the
-            # *relative* deficit — zones further behind get more weight
+            # phase's target zone distribution
             w_total = w.zone_tss.total
             zone_match = (
-                (w.zone_tss.base / w_total) * (rel_base / rel_total)
-                + (w.zone_tss.threshold / w_total) * (rel_thresh / rel_total)
-                + (w.zone_tss.anaerobic / w_total) * (rel_ana / rel_total)
+                (w.zone_tss.base / w_total) * w_b
+                + (w.zone_tss.threshold / w_total) * w_t
+                + (w.zone_tss.anaerobic / w_total) * w_a
             )
             # Phase preference bonus (first in list = highest)
             pref_bonus = 0.3 * (1.0 - idx / len(prefs))
@@ -401,9 +404,11 @@ def simulate_plan(
                 best_score = score
                 chosen_key, chosen = key, w
 
-        # 5. Scale the chosen workout to the ideal total TSS
+        # 5. Scale the chosen workout to the ideal total TSS.
+        #    Recovery rides are capped at 1× (don't inflate easy days).
         if chosen.total_tss > 0:
-            zone_tss = _scale_workout(chosen, ideal_total)
+            cap = 1.0 if chosen_key == "recovery" else 2.0
+            zone_tss = _scale_workout(chosen, ideal_total, max_factor=cap)
         else:
             zone_tss = ZoneTSS(0, 0, 0)
 
