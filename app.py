@@ -339,13 +339,20 @@ def _strava_sync() -> None:
             conn.close()
 
 
-def _start_strava_timer() -> None:
-    """Run _strava_sync on a repeating background timer."""
+def _start_strava_timer(run_immediately: bool = False) -> None:
+    """Run _strava_sync on a repeating background timer.
+
+    If *run_immediately* is True the first sync fires right away (in the
+    background thread) instead of waiting for the full interval.  This
+    avoids blocking the main thread at startup.
+    """
     def _loop():
-        while True:
+        if not run_immediately:
             time.sleep(STRAVA_SYNC_INTERVAL)
-            print(f"[strava] Periodic sync starting …")
+        while True:
+            print(f"[strava] Background sync starting …")
             _strava_sync()
+            time.sleep(STRAVA_SYNC_INTERVAL)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
@@ -986,8 +993,7 @@ ensure_daily_pdc_current(_boot_conn)
 _boot_conn.close()
 
 _reload()              # initial load (picks up freshly computed pdc_params)
-_strava_sync()         # import any new Strava rides on startup
-_start_strava_timer()  # periodic background sync
+_start_strava_timer(run_immediately=True)  # sync Strava in background, don't block startup
 
 app = dash.Dash(__name__, title="Cycling Power Analysis", update_title=None,
                 suppress_callback_exceptions=True)
