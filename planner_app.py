@@ -308,7 +308,7 @@ _default_event = (date.today() + timedelta(weeks=20)).isoformat()
 
 app.layout = html.Div(style={
     "fontFamily": "sans-serif", "background": BG, "color": TEXT,
-    "minHeight": "100vh", "padding": "24px 32px",
+    "minHeight": "100vh", "padding": "24px 32px 60px",
 }, children=[
 
     # ── Header ───────────────────────────────────────────────────────────
