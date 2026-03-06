@@ -601,6 +601,12 @@ def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
         window_sums[1:] -= cumsum[:n - d]
         result[d] = float(window_sums.max() / d)
 
+    # Enforce monotonically decreasing: longer durations can't exceed shorter ones
+    prev = float("inf")
+    for d in sorted(result):
+        result[d] = min(result[d], prev)
+        prev = result[d]
+
     return result
 
 
