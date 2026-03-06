@@ -1572,7 +1572,7 @@ def go_back_to_list(n_clicks):
 def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     ver, rides, mmp_all, mmh_all, pdc_params, daily_pdc, gps_traces = get_data()
 
-    if ver == known_ver and n_intervals > 0:
+    if ver == known_ver:
         # Nothing changed — return no-update for everything
         raise dash.exceptions.PreventUpdate
 
@@ -1613,6 +1613,7 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
     # Default PDC historical view: latest date
     if slider_dates:
         latest_str = slider_dates[-1]
+        print(f"[render]   Historical PDC snapshot ({latest_str}) …")
         pdc_hist_fig = fig_90day_mmp(mmp_all, reference_date=datetime.date.fromisoformat(latest_str))
         pdc_hist_cards = _build_pdc_cards(daily_pdc, latest_str)
     else:
@@ -2583,4 +2584,4 @@ def update_workout_charts(cell_changed, row_data, _ver):
 
 if __name__ == "__main__":
     print("[boot] Starting Dash server on http://127.0.0.1:8050 …")
-    app.run(debug=True, port=8050)
+    app.run(debug=True, use_reloader=False, port=8050)
