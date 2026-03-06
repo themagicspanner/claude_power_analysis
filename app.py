@@ -624,7 +624,8 @@ def _days_to_trainable(atl: float, ctl: float,
 
 
 def _compute_freshness_status(pdc_params: pd.DataFrame,
-                               rides: pd.DataFrame) -> tuple:
+                               rides: pd.DataFrame,
+                               project_tomorrow: bool = False) -> tuple:
     """Return freshness tuple including base, threshold, and AWC components.
 
     Uses three zone-specific TSB values against CTL-relative cutoffs:
@@ -636,6 +637,10 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
               'amber'  — base & thresh OK but TSB_AWC ≤ 0  (aerobic only)
               'red'    — thresh below cutoff (rest from intensity; base OK)
               'black'  — base below cutoff  (full rest / recovery)
+
+    If *project_tomorrow* is True, projects one extra day with 0 TSS so
+    the returned values reflect tomorrow's expected readiness.
+
     Returns a tuple of Nones when there is insufficient data.
     """
     _none = (None,) * 12
@@ -661,9 +666,10 @@ def _compute_freshness_status(pdc_params: pd.DataFrame,
 
     daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc"]].sum()
 
-    pmc_base   = _compute_pmc(daily["tss_ltp"])
-    pmc_thresh = _compute_pmc(daily["tss_thresh"])
-    pmc_awc    = _compute_pmc(daily["tss_awc"])
+    extra = 1 if project_tomorrow else 0
+    pmc_base   = _compute_pmc(daily["tss_ltp"], future_days=extra)
+    pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=extra)
+    pmc_awc    = _compute_pmc(daily["tss_awc"], future_days=extra)
 
     if pmc_base.empty or pmc_thresh.empty or pmc_awc.empty:
         return _none
@@ -833,11 +839,16 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     tte_ltp_v = _fmt_tte_ltp(latest.get("tte_ltp") if pd.notna(latest.get("tte_ltp")) else None)
     as_of  = latest["ride_date"]
 
-    # Training readiness card
+    # Training readiness card — show tomorrow's readiness if a ride was
+    # recorded today, otherwise show today's.
+    today_str = datetime.date.today().isoformat()
+    rode_today = not rides.empty and (rides["ride_date"] == today_str).any()
+
     (status, tsb_base, tsb_thresh, tsb_awc,
      base_threshold, thresh_threshold,
      atl_base, ctl_base, atl_thresh, ctl_thresh,
-     atl_awc, ctl_awc) = _compute_freshness_status(pdc_params, rides)
+     atl_awc, ctl_awc) = _compute_freshness_status(
+        pdc_params, rides, project_tomorrow=rode_today)
     if status is not None:
         cfg = _FRESHNESS_CFG[status]
 
@@ -872,12 +883,6 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
             _zone_row("Base",      base_ok,   tsb_base,   base_threshold,   "−0.5 CTL"),
         ]
 
-        # Check if a ride was recorded today — advice is for tomorrow if so
-        today_str = datetime.date.today().isoformat()
-        rode_today = (
-            not rides.empty
-            and (rides["ride_date"] == today_str).any()
-        )
         advice_day = "Tomorrow" if rode_today else "Today"
 
         # Summary text and next-zone countdown
