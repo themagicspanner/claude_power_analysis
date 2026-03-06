@@ -307,6 +307,16 @@ def _fit_log_linear_b(dur_long, pwr_long, p_at_tte, tte,
     return b, residuals
 
 
+def _monotonic_decreasing(dur, pwr):
+    """Enforce monotonically decreasing power: cap each value at the previous."""
+    order = np.argsort(dur)
+    dur_s = dur[order]
+    pwr_s = pwr[order].copy()
+    for i in range(1, len(pwr_s)):
+        pwr_s[i] = min(pwr_s[i], pwr_s[i - 1])
+    return dur_s, pwr_s
+
+
 def _fit_with_endurance_tail(dur, pwr, n_iter=8, asymmetry=10.0,
                               p0_init=None):
     """Two-stage fit: 4-param model up to TtE, log-linear tail beyond.
@@ -314,6 +324,8 @@ def _fit_with_endurance_tail(dur, pwr, n_iter=8, asymmetry=10.0,
     Returns (popt, ok, tte, tte_b) where tte/tte_b are None when
     insufficient long-duration data exists.
     """
+    dur, pwr = _monotonic_decreasing(np.asarray(dur, dtype=float),
+                                      np.asarray(pwr, dtype=float))
     max_dur = float(dur.max())
 
     # If no data beyond the minimum TtE, fit the old model on all data
@@ -600,12 +612,6 @@ def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
         window_sums = cumsum[d - 1:].copy()
         window_sums[1:] -= cumsum[:n - d]
         result[d] = float(window_sums.max() / d)
-
-    # Enforce monotonically decreasing: longer durations can't exceed shorter ones
-    prev = float("inf")
-    for d in sorted(result):
-        result[d] = min(result[d], prev)
-        prev = result[d]
 
     return result
 
