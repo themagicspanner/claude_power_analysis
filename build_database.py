@@ -616,6 +616,21 @@ def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
     return result
 
 
+def find_mmp_window(power_series: np.ndarray, duration: int) -> int | None:
+    """Return the start index of the best MMP window for *duration* seconds.
+
+    *power_series* should be 1-Hz power with NaN filled to 0.
+    Returns ``None`` if the series is shorter than *duration*.
+    """
+    n = len(power_series)
+    if n < duration:
+        return None
+    cumsum = power_series.cumsum()
+    window_sums = cumsum[duration - 1:].copy()
+    window_sums[1:] -= cumsum[:n - duration]
+    return int(window_sums.argmax())
+
+
 def calculate_mmh(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
     """Return {duration_s: best_avg_heart_rate} for each requested duration.
 

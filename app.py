@@ -45,7 +45,7 @@ from build_database import (
     recompute_all_pdc_params, ensure_daily_pdc_current,
     _power_model, _power_model_extended, _fit_power_curve,
     _fit_with_endurance_tail, _normalized_power, _compute_tte_ltp,
-    calculate_mmp, calculate_zones, MMP_DURATIONS,
+    calculate_mmp, find_mmp_window, calculate_zones, MMP_DURATIONS,
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
 )
 from strava_import import get_client, fetch_and_import, CONFIG_PATH
@@ -1242,6 +1242,9 @@ app.layout = html.Div(
                     dcc.Graph(id="graph-mmh"),
                 ]),
 
+                # Store for MMP click → power highlight
+                dcc.Store(id="ride-power-store", data=None),
+
                 html.Div(style={"height": "40px"}),
             ]),
 
@@ -1837,6 +1840,7 @@ def _build_mmp_table(this_mmp: pd.DataFrame,
     Output("power-stats",                "children"),
     Output("hr-stats",                   "children"),
     Output("mmp-table-container",        "children"),
+    Output("ride-power-store",           "data"),
     Input("ride-dropdown",    "value"),
     State("known-version",    "data"),
 )
@@ -1978,6 +1982,14 @@ def update_ride_charts(ride_id, _ver):
 
     mmp_table = []
 
+    # Store power array for MMP-click highlighting (elapsed_s + power, NaN→0)
+    power_store = None
+    if not records["power"].isna().all():
+        power_store = {
+            "elapsed_s": records["elapsed_s"].tolist(),
+            "power": records["power"].fillna(0).tolist(),
+        }
+
     return (
         fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
         fig_hr(records),
@@ -1998,6 +2010,7 @@ def update_ride_charts(ride_id, _ver):
         power_stats,
         hr_stats,
         mmp_table,
+        power_store,
     )
 
 
@@ -2047,6 +2060,52 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
         return p
 
     return make_patch(), make_patch(), make_patch(), make_patch()
+
+
+# ── MMP click → highlight on power trace ──────────────────────────────────────
+
+@app.callback(
+    Output("graph-power-hr", "figure", allow_duplicate=True),
+    Input("graph-mmp-pdc",   "clickData"),
+    State("ride-power-store", "data"),
+    prevent_initial_call=True,
+)
+def _highlight_mmp_on_power(click_data, power_store):
+    """When user clicks an MMP point, highlight the matching window on power."""
+    if not click_data or not power_store:
+        raise dash.exceptions.PreventUpdate
+
+    # The x value of the MMP chart is duration in seconds (log scale)
+    point = click_data["points"][0]
+    duration = int(round(point["x"]))
+    if duration < 1:
+        raise dash.exceptions.PreventUpdate
+
+    power = np.array(power_store["power"], dtype=float)
+    elapsed = np.array(power_store["elapsed_s"], dtype=float)
+
+    start_idx = find_mmp_window(power, duration)
+    if start_idx is None:
+        raise dash.exceptions.PreventUpdate
+
+    end_idx = start_idx + duration - 1
+    x0 = float(elapsed[start_idx])
+    x1 = float(elapsed[min(end_idx, len(elapsed) - 1)])
+
+    patch = Patch()
+    # Clear any previous highlight, then add the new one
+    patch["layout"]["shapes"] = [
+        {
+            "type": "rect",
+            "xref": "x", "yref": "paper",
+            "x0": x0, "x1": x1,
+            "y0": 0, "y1": 1,
+            "fillcolor": "rgba(255, 165, 0, 0.18)",
+            "line": {"width": 1, "color": "rgba(255, 140, 0, 0.5)"},
+            "layer": "below",
+        },
+    ]
+    return patch
 
 
 # ── Workout builder callbacks ─────────────────────────────────────────────────
