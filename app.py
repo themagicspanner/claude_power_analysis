@@ -1576,6 +1576,8 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         # Nothing changed — return no-update for everything
         raise dash.exceptions.PreventUpdate
 
+    print(f"[render] Fitness page: data version {ver}, {len(rides)} rides …")
+
     # Detect newly added rides
     current_ids = rides["id"].tolist()
     prev_set = set(known_ride_ids or [])
@@ -1617,21 +1619,39 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         pdc_hist_fig = go.Figure()
         pdc_hist_cards = []
 
+    print("[render]   90-day MMP chart …")
+    _fig_mmp = fig_90day_mmp(mmp_all)
+    print("[render]   PMC combined chart …")
+    _fig_pmc_c = fig_pmc_combined(pdc_params, rides)
+    print("[render]   PMC chart …")
+    _fig_pmc = fig_pmc(pdc_params, rides)
+    print("[render]   PDC history charts …")
+    _fig_pdc_h = fig_pdc_params_history(daily_pdc, rides)
+    print("[render]   PDC investigation chart …")
+    _fig_pdc_inv = fig_pdc_investigation(mmp_all)
+    print("[render]   Sigmoid decay chart …")
+    _fig_sig = fig_sigmoid_decay()
+    print("[render]   Activities table …")
+    _table = _build_table_data(rides, pdc_params, gps_traces)
+    print("[render]   Metric boxes …")
+    _metrics = _metric_boxes(pdc_params, rides)
+    print("[render] Fitness page complete.")
+
     return (
         ver,
         current_ids,
         toast_msg,
         options,
         selected,
-        fig_90day_mmp(mmp_all),
-        fig_pmc_combined(pdc_params, rides),
-        fig_pmc(pdc_params, rides),
-        *fig_pdc_params_history(daily_pdc, rides),
-        fig_pdc_investigation(mmp_all),
-        fig_sigmoid_decay(),
+        _fig_mmp,
+        _fig_pmc_c,
+        _fig_pmc,
+        *_fig_pdc_h,
+        _fig_pdc_inv,
+        _fig_sig,
         status,
-        _metric_boxes(pdc_params, rides),
-        _build_table_data(rides, pdc_params, gps_traces),
+        _metrics,
+        _table,
         slider_dates,
         pdc_hist_fig,
         pdc_hist_cards,
@@ -1741,11 +1761,13 @@ def update_pdc_historical(click_power, click_energy, click_time, dates):
 
     ref_str = dates[best_idx]
     ref_date = datetime.date.fromisoformat(ref_str)
+    print(f"[render] Historical PDC view for {ref_str} …")
     _, _rides, mmp_all, _mmh, _pdc, daily_pdc, *_ = get_data()
     fig = fig_90day_mmp(mmp_all, reference_date=ref_date)
     cards = _build_pdc_cards(daily_pdc, ref_str)
     fig_power, fig_energy, fig_time = fig_pdc_params_history(
         daily_pdc, _rides, reference_date=ref_date)
+    print("[render] Historical PDC view complete.")
     return fig, cards, fig_power, fig_energy, fig_time
 
 
@@ -1870,9 +1892,12 @@ def update_ride_charts(ride_id, _ver):
         raise dash.exceptions.PreventUpdate
     _, rides, mmp_all, mmh_all, pdc_params, _daily_pdc, _gps = get_data()
     ride    = rides[rides["id"] == ride_id].iloc[0]
+    print(f"[render] Activity page: {ride['name']} ({ride['ride_date']}) …")
+    print("[render]   Loading records …")
     records = load_records(ride_id)
     # Fit on-the-fly once; share params with TSS components so all
     # activity charts use the same PDC parameters as the PDC curve chart.
+    print("[render]   Fitting PDC …")
     live_pdc = _fit_pdc_for_ride(ride, mmp_all)
 
     has_hr    = "heart_rate" in records.columns and records["heart_rate"].notna().any()
@@ -2011,20 +2036,38 @@ def update_ride_charts(ride_id, _ver):
             "power": records["power"].fillna(0).tolist(),
         }
 
+    print("[render]   Power chart …")
+    _fig_phr = fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones)
+    print("[render]   HR chart …")
+    _fig_hr = fig_hr(records)
+    print("[render]   TSS components chart …")
+    _fig_tss = fig_tss_components(records, ride, pdc_params)
+    print("[render]   Zone bars chart …")
+    _fig_zones = fig_zone_bars(
+        zone_data,
+        zone_tss[0], zone_tss[1], zone_tss[2],
+        ltp_for_zones, map_for_zones,
+    )
+    print("[render]   MMP / PDC chart …")
+    _fig_mmp = fig_mmp_pdc(ride, mmp_all, live_pdc)
+    print("[render]   MMH chart …")
+    _fig_mmh = fig_mmh(ride, mmh_all)
+    print("[render]   Route map …")
+    _fig_map = fig_route_map(records)
+    print("[render]   Elevation chart …")
+    _fig_elev = fig_elevation(records)
+    print(f"[render] Activity page complete.")
+
     return (
-        fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones),
-        fig_hr(records),
-        fig_tss_components(records, ride, pdc_params),
-        fig_zone_bars(
-            zone_data,
-            zone_tss[0], zone_tss[1], zone_tss[2],
-            ltp_for_zones, map_for_zones,
-        ),
-        fig_mmp_pdc(ride, mmp_all, live_pdc),
-        fig_mmh(ride, mmh_all),
+        _fig_phr,
+        _fig_hr,
+        _fig_tss,
+        _fig_zones,
+        _fig_mmp,
+        _fig_mmh,
         mmh_style,
-        fig_route_map(records),
-        fig_elevation(records),
+        _fig_map,
+        _fig_elev,
         map_style,
         ride_header,
         pdc_stats,
