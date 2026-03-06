@@ -1,12 +1,15 @@
 """Interactive training planner — standalone Dash app.
 
+Simple scenario planner: enter a starting CTL and a target CTL,
+and see the 20-week (8 base / 8 build / 4 peak) projection.
+Starting TSB is always 0 (ATL = CTL).
+
 Run with:  python planner_app.py
 Then open http://127.0.0.1:8051
 """
 
 from __future__ import annotations
 
-import os
 from datetime import date, timedelta
 
 import dash
@@ -21,7 +24,6 @@ from training_plan import (
     TrainingState,
     ZoneState,
     ZoneTSS,
-    load_current_state,
     simulate_plan,
 )
 
@@ -77,20 +79,8 @@ _INPUT = {
 }
 _INPUT_LABEL = {"fontSize": "12px", "color": TEXT_DIM, "marginBottom": "4px"}
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "cycling.db")
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _card(label: str, value: str, unit: str = "") -> html.Div:
-    return html.Div(style=_CARD | {"textAlign": "center", "minWidth": "110px"}, children=[
-        html.Div(label, style=_LABEL),
-        html.Div([
-            html.Span(value, style=_VALUE),
-            html.Span(unit, style=_UNIT) if unit else None,
-        ]),
-    ])
-
 
 def _input_group(label: str, input_id: str, value, **kwargs) -> html.Div:
     return html.Div(style={"flex": "1", "minWidth": "130px"}, children=[
@@ -119,14 +109,14 @@ def _fig_ctl_projection(plan: list[DayPlan], target: ZoneTSS) -> go.Figure:
         fig.update_layout(**_LAYOUT_BASE, title="No plan to display")
         return fig
 
-    dates = [d.date.isoformat() for d in plan]
+    weeks = [i / 7.0 for i in range(len(plan))]
     ctl_b = [d.ctl_base for d in plan]
     ctl_t = [d.ctl_threshold for d in plan]
     ctl_a = [d.ctl_anaerobic for d in plan]
 
     fig = go.Figure()
 
-    # Phase background bands
+    # Phase background bands (in weeks)
     i = 0
     while i < len(plan):
         phase = plan[i].phase
@@ -134,19 +124,18 @@ def _fig_ctl_projection(plan: list[DayPlan], target: ZoneTSS) -> go.Figure:
         while j < len(plan) and plan[j].phase == phase:
             j += 1
         fig.add_vrect(
-            x0=plan[i].date.isoformat(),
-            x1=plan[min(j, len(plan) - 1)].date.isoformat(),
+            x0=i / 7.0, x1=min(j, len(plan) - 1) / 7.0,
             fillcolor=PHASE_COLORS[phase], line_width=0,
             annotation_text=phase.name, annotation_position="top left",
             annotation=dict(font=dict(size=11, color=TEXT_DIM)),
         )
         i = j
 
-    fig.add_trace(go.Scatter(x=dates, y=ctl_b, name="Base CTL",
+    fig.add_trace(go.Scatter(x=weeks, y=ctl_b, name="Base CTL",
                              line=dict(color=Z_BASE, width=2)))
-    fig.add_trace(go.Scatter(x=dates, y=ctl_t, name="Threshold CTL",
+    fig.add_trace(go.Scatter(x=weeks, y=ctl_t, name="Threshold CTL",
                              line=dict(color=Z_THRESH, width=2)))
-    fig.add_trace(go.Scatter(x=dates, y=ctl_a, name="Anaerobic CTL",
+    fig.add_trace(go.Scatter(x=weeks, y=ctl_a, name="Anaerobic CTL",
                              line=dict(color=Z_AWC, width=2)))
 
     # Target lines
@@ -161,7 +150,7 @@ def _fig_ctl_projection(plan: list[DayPlan], target: ZoneTSS) -> go.Figure:
                   annotation=dict(font=dict(color=Z_AWC, size=10)))
 
     fig.update_layout(**_LAYOUT_BASE, title="Zone CTL Projection",
-                      yaxis_title="CTL", height=350)
+                      xaxis_title="Week", yaxis_title="CTL", height=350)
     return fig
 
 
@@ -172,11 +161,11 @@ def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
         fig.update_layout(**_LAYOUT_BASE, title="No plan to display")
         return fig
 
-    dates = [d.date.isoformat() for d in plan]
+    weeks = [i / 7.0 for i in range(len(plan))]
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Freshness background strips (coloured by freshness status)
+    # Freshness background strips
     i = 0
     while i < len(plan):
         fr = plan[i].freshness.value
@@ -184,43 +173,41 @@ def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
         while j < len(plan) and plan[j].freshness.value == fr:
             j += 1
         fig.add_vrect(
-            x0=plan[i].date.isoformat(),
-            x1=plan[min(j, len(plan) - 1)].date.isoformat(),
-            fillcolor=FRESHNESS_BG[fr],
-            line_width=0,
+            x0=i / 7.0, x1=min(j, len(plan) - 1) / 7.0,
+            fillcolor=FRESHNESS_BG[fr], line_width=0,
         )
         i = j
 
-    # Stacked TSS bars on secondary y-axis (drawn first so lines sit on top)
+    # Stacked TSS bars on secondary y-axis
     fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.base for d in plan],
+        x=weeks, y=[d.zone_tss.base for d in plan],
         name="Base TSS", marker_color=Z_BASE, opacity=0.25,
         legendgroup="tss",
     ), secondary_y=True)
     fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.threshold for d in plan],
+        x=weeks, y=[d.zone_tss.threshold for d in plan],
         name="Threshold TSS", marker_color=Z_THRESH, opacity=0.25,
         legendgroup="tss",
     ), secondary_y=True)
     fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.anaerobic for d in plan],
+        x=weeks, y=[d.zone_tss.anaerobic for d in plan],
         name="Anaerobic TSS", marker_color=Z_AWC, opacity=0.25,
         legendgroup="tss",
     ), secondary_y=True)
 
     # TSB lines on primary y-axis
     fig.add_trace(go.Scatter(
-        x=dates, y=[d.tsb_base for d in plan],
+        x=weeks, y=[d.tsb_base for d in plan],
         name="Base TSB", line=dict(color=Z_BASE, width=2),
         legendgroup="tsb",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=dates, y=[d.tsb_threshold for d in plan],
+        x=weeks, y=[d.tsb_threshold for d in plan],
         name="Threshold TSB", line=dict(color=Z_THRESH, width=2),
         legendgroup="tsb",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
-        x=dates, y=[d.tsb_anaerobic for d in plan],
+        x=weeks, y=[d.tsb_anaerobic for d in plan],
         name="Anaerobic TSB", line=dict(color=Z_AWC, width=2),
         legendgroup="tsb",
     ), secondary_y=False)
@@ -230,36 +217,11 @@ def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
     fig.update_layout(
         **_LAYOUT_BASE, barmode="stack",
         title="Zone TSB & Daily TSS", height=350,
+        xaxis_title="Week",
         yaxis2=dict(gridcolor="#1e2433", zerolinecolor="#1e2433"),
     )
     fig.update_yaxes(title_text="TSB", secondary_y=False)
     fig.update_yaxes(title_text="TSS", secondary_y=True)
-    return fig
-
-
-def _fig_daily_tss(plan: list[DayPlan]) -> go.Figure:
-    """Stacked bar chart of daily TSS by zone."""
-    if not plan:
-        fig = go.Figure()
-        fig.update_layout(**_LAYOUT_BASE, title="No plan to display")
-        return fig
-
-    dates = [d.date.isoformat() for d in plan]
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.base for d in plan],
-        name="Base", marker_color=Z_BASE))
-    fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.threshold for d in plan],
-        name="Threshold", marker_color=Z_THRESH))
-    fig.add_trace(go.Bar(
-        x=dates, y=[d.zone_tss.anaerobic for d in plan],
-        name="Anaerobic", marker_color=Z_AWC))
-
-    fig.update_layout(**_LAYOUT_BASE, barmode="stack",
-                      title="Daily TSS by Zone", yaxis_title="TSS",
-                      height=250)
     return fig
 
 
@@ -272,12 +234,12 @@ def _fig_weekly_volume(plan: list[DayPlan]) -> go.Figure:
 
     import pandas as pd
     df = pd.DataFrame([{
-        "date": d.date,
+        "day": i,
+        "week": i // 7 + 1,
         "base": d.zone_tss.base,
         "threshold": d.zone_tss.threshold,
         "anaerobic": d.zone_tss.anaerobic,
-    } for d in plan])
-    df["week"] = pd.to_datetime(df["date"]).dt.to_period("W").dt.start_time
+    } for i, d in enumerate(plan)])
     weekly = df.groupby("week")[["base", "threshold", "anaerobic"]].sum()
 
     fig = go.Figure()
@@ -289,8 +251,8 @@ def _fig_weekly_volume(plan: list[DayPlan]) -> go.Figure:
                          name="Anaerobic", marker_color=Z_AWC))
 
     fig.update_layout(**_LAYOUT_BASE, barmode="stack",
-                      title="Weekly TSS Volume", yaxis_title="TSS / week",
-                      height=280)
+                      title="Weekly TSS Volume", xaxis_title="Week",
+                      yaxis_title="TSS / week", height=280)
     return fig
 
 
@@ -326,73 +288,54 @@ app.index_string = '''<!DOCTYPE html>
 </html>
 '''
 
-# Load initial state from DB
-try:
-    _init_state = load_current_state(DB_PATH)
-except Exception:
-    _init_state = TrainingState()
-
-_default_event = (date.today() + timedelta(weeks=20)).isoformat()
-
 app.layout = html.Div(style={
     "fontFamily": "sans-serif", "background": BG, "color": TEXT,
-    "padding": "24px 32px 60px",
+    "padding": "24px 32px 60px", "maxWidth": "1100px", "margin": "0 auto",
 }, children=[
 
     # ── Header ───────────────────────────────────────────────────────────
     html.H1("Training Planner", style={
-        "fontSize": "24px", "fontWeight": "600", "marginBottom": "20px"}),
-
-    # ── Current state cards ──────────────────────────────────────────────
-    html.Div(style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
-                     "marginBottom": "20px"}, children=[
-        _card("Base CTL", f"{_init_state.base.ctl:.1f}"),
-        _card("Threshold CTL", f"{_init_state.threshold.ctl:.1f}"),
-        _card("Anaerobic CTL", f"{_init_state.anaerobic.ctl:.1f}"),
-        _card("Base TSB", f"{_init_state.base.tsb:+.1f}"),
-        _card("Threshold TSB", f"{_init_state.threshold.tsb:+.1f}"),
-        _card("Anaerobic TSB", f"{_init_state.anaerobic.tsb:+.1f}"),
-        _card("Freshness", _init_state.freshness().value.upper()),
-    ]),
+        "fontSize": "24px", "fontWeight": "600", "marginBottom": "4px"}),
+    html.P("20-week scenario: set start and target CTL, TSB starts at 0.",
+           style={"color": TEXT_DIM, "fontSize": "13px", "marginBottom": "20px"}),
 
     # ── Controls ─────────────────────────────────────────────────────────
     html.Div(style={
         **_CARD, "display": "flex", "gap": "16px", "flexWrap": "wrap",
         "alignItems": "flex-end", "marginBottom": "20px",
     }, children=[
-        html.Div(style={"flex": "1", "minWidth": "160px"}, children=[
-            html.Div("Event date", style=_INPUT_LABEL),
-            dcc.DatePickerSingle(
-                id="event-date",
-                date=_default_event,
-                display_format="YYYY-MM-DD",
-                style={"background": BG_INPUT},
-            ),
+        # Start CTL
+        html.Div(style={"flex": "0 0 100%"}, children=[
+            html.Div("START CTL", style={**_LABEL, "marginBottom": "8px"}),
         ]),
-        _input_group("Target Base CTL", "target-base", 50, min=0, max=200),
-        _input_group("Target Threshold CTL", "target-thresh", 25, min=0, max=100),
-        _input_group("Target Anaerobic CTL", "target-ana", 12, min=0, max=60),
-        _input_group("Base weeks", "base-weeks", 8, min=1, max=26),
-        _input_group("Build weeks", "build-weeks", 8, min=1, max=26),
-        _input_group("Peak weeks", "peak-weeks", 4, min=1, max=12),
+        _input_group("Base", "start-base", 20, min=0, max=200),
+        _input_group("Threshold", "start-thresh", 10, min=0, max=100),
+        _input_group("Anaerobic", "start-ana", 5, min=0, max=60),
+
+        # Spacer
+        html.Div(style={"flex": "0 0 100%", "height": "8px"}),
+
+        # Target CTL
+        html.Div(style={"flex": "0 0 100%"}, children=[
+            html.Div("TARGET CTL", style={**_LABEL, "marginBottom": "8px"}),
+        ]),
+        _input_group("Base", "target-base", 50, min=0, max=200),
+        _input_group("Threshold", "target-thresh", 25, min=0, max=100),
+        _input_group("Anaerobic", "target-ana", 12, min=0, max=60),
+
+        # Generate button
         html.Div(style={"flex": "0 0 auto"}, children=[
             html.Button("Generate plan", id="btn-generate", n_clicks=0, style={
                 "padding": "9px 24px", "cursor": "pointer", "borderRadius": "4px",
                 "border": f"1px solid {ACCENT}", "background": ACCENT, "color": "#fff",
-                "fontSize": "14px", "fontWeight": "600", "marginTop": "18px",
+                "fontSize": "14px", "fontWeight": "600", "marginTop": "8px",
             }),
         ]),
     ]),
 
-    # ── Today's suggestion ───────────────────────────────────────────────
-    html.Div(id="today-suggestion", style={
-        **_CARD, "marginBottom": "20px",
-    }),
-
     # ── Charts ───────────────────────────────────────────────────────────
     dcc.Graph(id="graph-ctl", config={"displayModeBar": False}),
     dcc.Graph(id="graph-tsb", config={"displayModeBar": False}),
-    dcc.Graph(id="graph-daily-tss", config={"displayModeBar": False}),
     dcc.Graph(id="graph-weekly", config={"displayModeBar": False}),
 
     # ── Day detail on click ──────────────────────────────────────────────
@@ -408,92 +351,50 @@ app.layout = html.Div(style={
 @app.callback(
     Output("graph-ctl", "figure"),
     Output("graph-tsb", "figure"),
-    Output("graph-daily-tss", "figure"),
     Output("graph-weekly", "figure"),
-    Output("today-suggestion", "children"),
     Output("plan-store", "data"),
     Input("btn-generate", "n_clicks"),
-    State("event-date", "date"),
+    State("start-base", "value"),
+    State("start-thresh", "value"),
+    State("start-ana", "value"),
     State("target-base", "value"),
     State("target-thresh", "value"),
     State("target-ana", "value"),
-    State("base-weeks", "value"),
-    State("build-weeks", "value"),
-    State("peak-weeks", "value"),
 )
-def generate_plan(n_clicks, event_str, t_base, t_thresh, t_ana,
-                  base_w, build_w, peak_w):
-    if not event_str:
-        raise dash.exceptions.PreventUpdate
+def generate_plan(n_clicks, s_base, s_thresh, s_ana, t_base, t_thresh, t_ana):
+    s_base = float(s_base or 0)
+    s_thresh = float(s_thresh or 0)
+    s_ana = float(s_ana or 0)
+    t_base = float(t_base or 50)
+    t_thresh = float(t_thresh or 25)
+    t_ana = float(t_ana or 12)
 
-    event = date.fromisoformat(event_str[:10])
-    target = ZoneTSS(
-        base=float(t_base or 50),
-        threshold=float(t_thresh or 25),
-        anaerobic=float(t_ana or 12),
+    # Build starting state: TSB = 0 means ATL = CTL
+    state = TrainingState(
+        base=ZoneState(ctl=s_base, atl=s_base),
+        threshold=ZoneState(ctl=s_thresh, atl=s_thresh),
+        anaerobic=ZoneState(ctl=s_ana, atl=s_ana),
     )
-    base_w = int(base_w or 8)
-    build_w = int(build_w or 8)
-    peak_w = int(peak_w or 4)
 
-    state = load_current_state(DB_PATH)
+    target = ZoneTSS(base=t_base, threshold=t_thresh, anaerobic=t_ana)
+
+    # Fixed 20-week plan: use dummy dates (today + 140 days)
     today = date.today()
+    event = today + timedelta(weeks=20)
 
-    plan = simulate_plan(state, target, today, event, base_w, build_w, peak_w)
+    plan = simulate_plan(state, target, today, event,
+                         base_weeks=8, build_weeks=8, peak_weeks=4)
 
     fig_ctl = _fig_ctl_projection(plan, target)
     fig_tsb = _fig_tsb_projection(plan)
-    fig_daily = _fig_daily_tss(plan)
     fig_weekly = _fig_weekly_volume(plan)
-
-    # Today's suggestion
-    if plan:
-        d = plan[0]
-        fresh_color = FRESHNESS_COLORS.get(d.freshness.value, TEXT)
-        suggestion = html.Div(style={"display": "flex", "gap": "24px",
-                                      "alignItems": "center", "flexWrap": "wrap"}, children=[
-            html.Div([
-                html.Div("TODAY'S WORKOUT", style=_LABEL),
-                html.Div(d.workout_name, style={
-                    "fontSize": "20px", "fontWeight": "bold", "color": TEXT}),
-                html.Div(d.workout_description, style={
-                    "fontSize": "13px", "color": TEXT_DIM, "marginTop": "4px"}),
-            ]),
-            html.Div([
-                html.Div("PHASE", style=_LABEL),
-                html.Div(d.phase.name, style={"fontSize": "16px", "fontWeight": "600"}),
-            ]),
-            html.Div([
-                html.Div("FRESHNESS", style=_LABEL),
-                html.Div(d.freshness.value.upper(), style={
-                    "fontSize": "16px", "fontWeight": "600", "color": fresh_color}),
-            ]),
-            html.Div([
-                html.Div("TSS", style=_LABEL),
-                html.Div(f"{d.zone_tss.total:.0f}", style=_VALUE),
-            ]),
-            html.Div([
-                html.Div("ZONE SPLIT", style=_LABEL),
-                html.Div(style={"display": "flex", "gap": "8px"}, children=[
-                    html.Span(f"B:{d.zone_tss.base:.0f}",
-                              style={"color": Z_BASE, "fontWeight": "600"}),
-                    html.Span(f"T:{d.zone_tss.threshold:.0f}",
-                              style={"color": Z_THRESH, "fontWeight": "600"}),
-                    html.Span(f"A:{d.zone_tss.anaerobic:.0f}",
-                              style={"color": Z_AWC, "fontWeight": "600"}),
-                ]),
-            ]),
-        ])
-    else:
-        suggestion = html.Div("No plan — event date is in the past.",
-                              style={"color": TEXT_DIM})
 
     # Serialize plan for click interactions
     plan_data = [{
-        "date": d.date.isoformat(),
+        "day": i,
+        "week": f"{i // 7 + 1}",
         "phase": d.phase.name,
         "freshness": d.freshness.value,
-        "workout_key": d.workout_key,
         "workout_name": d.workout_name,
         "workout_description": d.workout_description,
         "tss_total": round(d.zone_tss.total, 1),
@@ -506,91 +407,66 @@ def generate_plan(n_clicks, event_str, t_base, t_thresh, t_ana,
         "tsb_base": round(d.tsb_base, 1),
         "tsb_threshold": round(d.tsb_threshold, 1),
         "tsb_anaerobic": round(d.tsb_anaerobic, 1),
-    } for d in plan]
+    } for i, d in enumerate(plan)]
 
-    return fig_ctl, fig_tsb, fig_daily, fig_weekly, suggestion, plan_data
+    return fig_ctl, fig_tsb, fig_weekly, plan_data
 
 
 @app.callback(
     Output("day-detail", "children"),
-    Input("graph-daily-tss", "clickData"),
+    Input("graph-weekly", "clickData"),
     State("plan-store", "data"),
 )
 def show_day_detail(click_data, plan_data):
     if not click_data or not plan_data:
-        return html.Div("Click a bar on the daily TSS chart to see workout details.",
+        return html.Div("Click a bar on the weekly chart to see week details.",
                         style={"color": TEXT_DIM, "fontSize": "13px"})
 
     point = click_data["points"][0]
-    clicked_date = point["x"]
+    clicked_week = int(point["x"])
 
-    # Find the matching day
-    day = None
-    for d in plan_data:
-        if d["date"] == clicked_date:
-            day = d
-            break
+    # Get all days in that week
+    week_days = [d for d in plan_data if int(d["week"]) == clicked_week]
+    if not week_days:
+        return html.Div(f"No data for week {clicked_week}",
+                        style={"color": TEXT_DIM})
 
-    if not day:
-        return html.Div(f"No data for {clicked_date}", style={"color": TEXT_DIM})
+    total_tss = sum(d["tss_total"] for d in week_days)
+    last = week_days[-1]
 
-    fresh_color = FRESHNESS_COLORS.get(day["freshness"], TEXT)
     return html.Div(style={"display": "flex", "gap": "24px",
                             "alignItems": "center", "flexWrap": "wrap"}, children=[
         html.Div([
-            html.Div("DATE", style=_LABEL),
-            html.Div(day["date"], style={"fontSize": "16px", "fontWeight": "600"}),
-        ]),
-        html.Div([
-            html.Div("WORKOUT", style=_LABEL),
-            html.Div(day["workout_name"], style={
-                "fontSize": "16px", "fontWeight": "600"}),
-            html.Div(day["workout_description"], style={
-                "fontSize": "12px", "color": TEXT_DIM}),
+            html.Div("WEEK", style=_LABEL),
+            html.Div(str(clicked_week), style=_VALUE),
         ]),
         html.Div([
             html.Div("PHASE", style=_LABEL),
-            html.Div(day["phase"], style={"fontSize": "14px"}),
+            html.Div(week_days[0]["phase"], style={"fontSize": "16px", "fontWeight": "600"}),
         ]),
         html.Div([
-            html.Div("FRESHNESS", style=_LABEL),
-            html.Div(day["freshness"].upper(), style={
-                "fontSize": "14px", "color": fresh_color, "fontWeight": "600"}),
+            html.Div("WEEKLY TSS", style=_LABEL),
+            html.Div(f"{total_tss:.0f}", style=_VALUE),
         ]),
         html.Div([
-            html.Div("TOTAL TSS", style=_LABEL),
-            html.Div(f"{day['tss_total']:.0f}", style=_VALUE),
-        ]),
-        html.Div([
-            html.Div("ZONE TSS", style=_LABEL),
+            html.Div("END-OF-WEEK CTL", style=_LABEL),
             html.Div(style={"display": "flex", "gap": "8px"}, children=[
-                html.Span(f"B:{day['tss_base']:.0f}",
+                html.Span(f"B:{last['ctl_base']:.1f}",
                           style={"color": Z_BASE, "fontWeight": "600"}),
-                html.Span(f"T:{day['tss_threshold']:.0f}",
+                html.Span(f"T:{last['ctl_threshold']:.1f}",
                           style={"color": Z_THRESH, "fontWeight": "600"}),
-                html.Span(f"A:{day['tss_anaerobic']:.0f}",
+                html.Span(f"A:{last['ctl_anaerobic']:.1f}",
                           style={"color": Z_AWC, "fontWeight": "600"}),
             ]),
         ]),
         html.Div([
-            html.Div("ZONE CTL", style=_LABEL),
+            html.Div("END-OF-WEEK TSB", style=_LABEL),
             html.Div(style={"display": "flex", "gap": "8px"}, children=[
-                html.Span(f"B:{day['ctl_base']:.1f}",
+                html.Span(f"B:{last['tsb_base']:+.1f}",
                           style={"color": Z_BASE}),
-                html.Span(f"T:{day['ctl_threshold']:.1f}",
+                html.Span(f"T:{last['tsb_threshold']:+.1f}",
                           style={"color": Z_THRESH}),
-                html.Span(f"A:{day['ctl_anaerobic']:.1f}",
-                          style={"color": Z_AWC}),
-            ]),
-        ]),
-        html.Div([
-            html.Div("ZONE TSB", style=_LABEL),
-            html.Div(style={"display": "flex", "gap": "8px"}, children=[
-                html.Span(f"B:{day['tsb_base']:+.1f}",
-                          style={"color": Z_BASE}),
-                html.Span(f"T:{day['tsb_threshold']:+.1f}",
-                          style={"color": Z_THRESH}),
-                html.Span(f"A:{day['tsb_anaerobic']:+.1f}",
+                html.Span(f"A:{last['tsb_anaerobic']:+.1f}",
                           style={"color": Z_AWC}),
             ]),
         ]),
