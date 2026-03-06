@@ -1598,11 +1598,15 @@ def poll_for_new_data(n_intervals, known_ver, known_ride_ids, current_ride_id):
         {"label": f"{r['ride_date']}  {r['name'].replace('_', ' ')}", "value": r["id"]}
         for _, r in rides.iterrows()
     ]
-    # Keep the currently selected ride if it still exists, else pick the latest
-    if current_ride_id in rides["id"].values:
+    # Keep the currently selected ride if it still exists; don't auto-select
+    # on initial load — the activity page is hidden until the user clicks a ride.
+    if current_ride_id is not None and current_ride_id in rides["id"].values:
         selected = current_ride_id
-    else:
+    elif current_ride_id is not None:
+        # Previously selected ride was deleted; pick the latest
         selected = int(rides.iloc[-1]["id"])
+    else:
+        selected = dash.no_update
 
     ride_count = len(rides)
     status = f"{ride_count} ride{'s' if ride_count != 1 else ''} loaded"
