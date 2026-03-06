@@ -298,6 +298,34 @@ def _fig_weekly_volume(plan: list[DayPlan]) -> go.Figure:
 
 app = dash.Dash(__name__, title="Training Planner")
 
+# Ensure html/body don't clip — Dash's default styles can prevent scrolling
+app.index_string = '''<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            html, body, #react-entry-point {
+                margin: 0; padding: 0;
+                height: auto; min-height: 100vh;
+                overflow-y: auto;
+                background: ''' + BG + ''';
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
 # Load initial state from DB
 try:
     _init_state = load_current_state(DB_PATH)
@@ -308,7 +336,7 @@ _default_event = (date.today() + timedelta(weeks=20)).isoformat()
 
 app.layout = html.Div(style={
     "fontFamily": "sans-serif", "background": BG, "color": TEXT,
-    "minHeight": "100vh", "padding": "24px 32px 60px", "overflow": "auto",
+    "padding": "24px 32px 60px",
 }, children=[
 
     # ── Header ───────────────────────────────────────────────────────────
