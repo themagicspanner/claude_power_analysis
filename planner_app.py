@@ -166,7 +166,7 @@ def _fig_ctl_projection(plan: list[DayPlan], target: ZoneTSS) -> go.Figure:
 
 
 def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
-    """TSB trajectories with freshness-coloured background."""
+    """TSB trajectories with freshness-coloured background and TSS bars."""
     if not plan:
         fig = go.Figure()
         fig.update_layout(**_LAYOUT_BASE, title="No plan to display")
@@ -174,7 +174,7 @@ def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
 
     dates = [d.date.isoformat() for d in plan]
 
-    fig = go.Figure()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     # Freshness background strips (coloured by freshness status)
     i = 0
@@ -191,19 +191,49 @@ def _fig_tsb_projection(plan: list[DayPlan]) -> go.Figure:
         )
         i = j
 
+    # Stacked TSS bars on secondary y-axis (drawn first so lines sit on top)
+    fig.add_trace(go.Bar(
+        x=dates, y=[d.zone_tss.base for d in plan],
+        name="Base TSS", marker_color=Z_BASE, opacity=0.25,
+        legendgroup="tss",
+    ), secondary_y=True)
+    fig.add_trace(go.Bar(
+        x=dates, y=[d.zone_tss.threshold for d in plan],
+        name="Threshold TSS", marker_color=Z_THRESH, opacity=0.25,
+        legendgroup="tss",
+    ), secondary_y=True)
+    fig.add_trace(go.Bar(
+        x=dates, y=[d.zone_tss.anaerobic for d in plan],
+        name="Anaerobic TSS", marker_color=Z_AWC, opacity=0.25,
+        legendgroup="tss",
+    ), secondary_y=True)
+
+    # TSB lines on primary y-axis
     fig.add_trace(go.Scatter(
         x=dates, y=[d.tsb_base for d in plan],
-        name="Base TSB", line=dict(color=Z_BASE, width=2)))
+        name="Base TSB", line=dict(color=Z_BASE, width=2),
+        legendgroup="tsb",
+    ), secondary_y=False)
     fig.add_trace(go.Scatter(
         x=dates, y=[d.tsb_threshold for d in plan],
-        name="Threshold TSB", line=dict(color=Z_THRESH, width=2)))
+        name="Threshold TSB", line=dict(color=Z_THRESH, width=2),
+        legendgroup="tsb",
+    ), secondary_y=False)
     fig.add_trace(go.Scatter(
         x=dates, y=[d.tsb_anaerobic for d in plan],
-        name="Anaerobic TSB", line=dict(color=Z_AWC, width=2)))
-    fig.add_hline(y=0, line=dict(color="#555", dash="dot", width=1))
+        name="Anaerobic TSB", line=dict(color=Z_AWC, width=2),
+        legendgroup="tsb",
+    ), secondary_y=False)
+    fig.add_hline(y=0, line=dict(color="#555", dash="dot", width=1),
+                  secondary_y=False)
 
-    fig.update_layout(**_LAYOUT_BASE, title="Zone TSB (Freshness)",
-                      yaxis_title="TSB", height=300)
+    fig.update_layout(
+        **_LAYOUT_BASE, barmode="stack",
+        title="Zone TSB & Daily TSS", height=350,
+        yaxis2=dict(gridcolor="#1e2433", zerolinecolor="#1e2433"),
+    )
+    fig.update_yaxes(title_text="TSB", secondary_y=False)
+    fig.update_yaxes(title_text="TSS", secondary_y=True)
     return fig
 
 
