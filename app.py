@@ -865,32 +865,40 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
             _zone_row("Base",      base_ok,   tsb_base,   base_threshold,   "−0.5 CTL"),
         ]
 
+        # Check if a ride was recorded today — advice is for tomorrow if so
+        today_str = datetime.date.today().isoformat()
+        rode_today = (
+            not rides.empty
+            and (rides["ride_date"] == today_str).any()
+        )
+        advice_day = "Tomorrow" if rode_today else "Today"
+
         # Summary text and next-zone countdown
         if status == "black":
-            summary = "Full rest recommended — base fatigue is too high for any riding."
+            summary = f"{advice_day}: full rest recommended — base fatigue is too high for any riding."
             days = _days_to_trainable(atl_base, ctl_base, threshold_pct=0.50)
             countdown = (f"Base riding in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "Recovery > 60 days")
             countdown_color = _FRESHNESS_CFG["red"]["color"]
         elif status == "red":
-            summary = "Recovery rides only — threshold fatigue needs to clear before intensity."
+            summary = f"{advice_day}: recovery rides only — threshold fatigue needs to clear before intensity."
             days = _days_to_trainable(atl_thresh, ctl_thresh, threshold_pct=0.30)
             countdown = (f"Threshold sessions in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "Recovery > 60 days")
             countdown_color = _FRESHNESS_CFG["amber"]["color"]
         elif status == "amber":
-            summary = "Aerobic training OK — endurance and tempo, but avoid VO2max / anaerobic work."
+            summary = f"{advice_day}: aerobic training OK — endurance and tempo, but avoid VO2max / anaerobic work."
             days = _days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
             countdown = (f"High intensity in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "High intensity > 60 days")
             countdown_color = _FRESHNESS_CFG["green"]["color"]
         else:
-            summary = "All systems go — ready for any session including high-intensity intervals."
+            summary = f"{advice_day}: all systems go — ready for any session including high-intensity intervals."
             countdown = None
             countdown_color = None
 
         readiness_children = [
-            # Header: overall status
+            # Header: overall status + advice day
             html.Div(style={
                 "display": "flex", "alignItems": "center", "gap": "8px",
                 "marginBottom": "8px",
@@ -901,6 +909,9 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
                 }),
                 html.Span(cfg["label"], style={
                     "fontSize": "18px", "fontWeight": "bold", "color": cfg["color"],
+                }),
+                html.Span(f"({advice_day})", style={
+                    "fontSize": "13px", "color": "#888", "marginLeft": "4px",
                 }),
             ]),
             # Summary sentence
