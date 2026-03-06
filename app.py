@@ -2436,5 +2436,19 @@ def update_workout_charts(cell_changed, row_data, _ver):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _open_browser():
+    """Open Edge in app mode (no address bar) after a short delay."""
+    import time, subprocess, shutil
+    time.sleep(1.5)
+    url = "http://127.0.0.1:8050"
+    edge = shutil.which("msedge") or shutil.which("microsoft-edge")
+    if edge:
+        subprocess.Popen([edge, f"--app={url}"])
+    else:
+        import webbrowser
+        webbrowser.open(url)
+
+
 if __name__ == "__main__":
+    threading.Thread(target=_open_browser, daemon=True).start()
     app.run(debug=True, port=8050)
