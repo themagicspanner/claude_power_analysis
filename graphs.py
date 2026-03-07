@@ -260,16 +260,27 @@ def fig_route_map(records: pd.DataFrame) -> go.Figure:
         )
         return fig
 
-    fig = go.Figure(go.Scattermap(
+    fig = go.Figure()
+    # Trace 0: full route
+    fig.add_trace(go.Scattermap(
         lat=gps["latitude"], lon=gps["longitude"],
         mode="lines",
         line=dict(width=3, color="#4a90d9"),
         hoverinfo="skip",
     ))
+    # Trace 1: MMP highlight segment (initially empty, populated by callback)
+    fig.add_trace(go.Scattermap(
+        lat=[], lon=[],
+        mode="lines",
+        line=dict(width=6, color="rgba(255, 140, 0, 0.9)"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
     fig.update_layout(
         title=dict(text="Route Map", font=dict(size=14)),
         height=350,
         margin=dict(t=55, b=5, l=5, r=5),
+        showlegend=False,
         map=dict(
             style="open-street-map",
             center=dict(lat=float(gps["latitude"].mean()),

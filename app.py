@@ -2034,12 +2034,18 @@ def update_ride_charts(ride_id, _ver):
     mmp_table = []
 
     # Store power array for MMP-click highlighting (elapsed_s + power, NaN→0)
+    # Also include GPS / elevation so MMP clicks can highlight the map & elevation chart.
     power_store = None
     if not records["power"].isna().all():
         power_store = {
             "elapsed_s": records["elapsed_s"].tolist(),
             "power": records["power"].fillna(0).tolist(),
         }
+        if "latitude" in records.columns:
+            power_store["latitude"] = records["latitude"].tolist()
+            power_store["longitude"] = records["longitude"].tolist()
+        if "altitude_m" in records.columns:
+            power_store["altitude_m"] = records["altitude_m"].tolist()
 
     print("[render]   Power chart …")
     _fig_phr = fig_power_hr(records, ride["name"], ltp=ltp_for_zones, map_power=map_for_zones)
@@ -2134,13 +2140,16 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
 # ── MMP click → highlight on power trace ──────────────────────────────────────
 
 @app.callback(
-    Output("graph-power-hr", "figure", allow_duplicate=True),
-    Input("graph-mmp-pdc",   "clickData"),
-    State("ride-power-store", "data"),
+    Output("graph-power-hr",   "figure", allow_duplicate=True),
+    Output("graph-elevation",  "figure", allow_duplicate=True),
+    Output("graph-route-map",  "figure", allow_duplicate=True),
+    Input("graph-mmp-pdc",     "clickData"),
+    State("ride-power-store",  "data"),
     prevent_initial_call=True,
 )
 def _highlight_mmp_on_power(click_data, power_store):
-    """When user clicks an MMP point, highlight the matching window on power."""
+    """When user clicks an MMP point, highlight the matching window on
+    the power trace, elevation chart, and route map."""
     if not click_data or not power_store:
         raise dash.exceptions.PreventUpdate
 
@@ -2161,20 +2170,46 @@ def _highlight_mmp_on_power(click_data, power_store):
     x0 = float(elapsed[start_idx])
     x1 = float(elapsed[min(end_idx, len(elapsed) - 1)])
 
-    patch = Patch()
-    # Clear any previous highlight, then add the new one
-    patch["layout"]["shapes"] = [
-        {
-            "type": "rect",
-            "xref": "x", "yref": "paper",
-            "x0": x0, "x1": x1,
-            "y0": 0, "y1": 1,
-            "fillcolor": "rgba(255, 165, 0, 0.18)",
-            "line": {"width": 1, "color": "rgba(255, 140, 0, 0.5)"},
-            "layer": "below",
-        },
-    ]
-    return patch
+    # ── Shared highlight shape for time-axis charts ──
+    _highlight_rect = {
+        "type": "rect",
+        "xref": "x", "yref": "paper",
+        "x0": x0, "x1": x1,
+        "y0": 0, "y1": 1,
+        "fillcolor": "rgba(255, 165, 0, 0.18)",
+        "line": {"width": 1, "color": "rgba(255, 140, 0, 0.5)"},
+        "layer": "below",
+    }
+
+    # Power trace highlight
+    patch_power = Patch()
+    patch_power["layout"]["shapes"] = [_highlight_rect]
+
+    # Elevation highlight (same x-axis = elapsed_s)
+    patch_elev = Patch()
+    patch_elev["layout"]["shapes"] = [_highlight_rect]
+
+    # Route map: update the highlight trace (trace index 1)
+    patch_map = Patch()
+    lats = power_store.get("latitude")
+    lons = power_store.get("longitude")
+    if lats and lons:
+        seg_lats = lats[start_idx : end_idx + 1]
+        seg_lons = lons[start_idx : end_idx + 1]
+        # Filter out None / NaN values
+        seg = [(la, lo) for la, lo in zip(seg_lats, seg_lons)
+               if la is not None and lo is not None]
+        if seg:
+            s_lats, s_lons = zip(*seg)
+            patch_map["data"][1]["lat"] = list(s_lats)
+            patch_map["data"][1]["lon"] = list(s_lons)
+        else:
+            patch_map["data"][1]["lat"] = []
+            patch_map["data"][1]["lon"] = []
+    else:
+        patch_map = dash.no_update
+
+    return patch_power, patch_elev, patch_map
 
 
 # ── Workout builder callbacks ─────────────────────────────────────────────────
