@@ -1,8 +1,8 @@
 """
 build_database.py
 
-Parse all FIT files in raw_data/, store records and mean-maximal-power (MMP)
-curves in a SQLite database (cycling.db), then print a summary table.
+Core database schema, MMP/MMH calculation, PDC fitting, and ride ingestion.
+Called by strava_import.py and app.py to insert rides and recompute metrics.
 
 Database schema
 ───────────────
@@ -872,7 +872,6 @@ def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
 
 # ── Display helpers ───────────────────────────────────────────────────────────
 
-_fmt_duration = fmt_duration
 
 
 def print_mmp_table(db_path: str) -> None:
@@ -892,7 +891,7 @@ def print_mmp_table(db_path: str) -> None:
 
     mmp = mmp.merge(rides.rename(columns={"id": "ride_id"}), on="ride_id")
     pivot = mmp.pivot(index="duration_s", columns="name", values="power")
-    pivot.index = [_fmt_duration(int(d)) for d in pivot.index]
+    pivot.index = [fmt_duration(int(d)) for d in pivot.index]
     pivot.columns.name = None
 
     # Truncate column names to keep the table readable

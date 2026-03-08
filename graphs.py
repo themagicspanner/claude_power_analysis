@@ -919,56 +919,6 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
             rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
 
 
-def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
-                 pdc_params: pd.DataFrame,
-                 live_pdc: dict | None = None) -> go.Figure:
-    """Total TSS rate (TSS/h) over the ride with 1-hour rolling average."""
-    if records["power"].isna().all():
-        return go.Figure()
-
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-    pp = extract_pdc_params(live_pdc, params_row)
-    if pp is None:
-        return go.Figure()
-
-    elapsed = records["elapsed_s"].to_numpy(dtype=float)
-    power   = records["power"].to_numpy(dtype=float)
-    (t_min, cum_ltp, cum_thresh, cum_awc,
-     rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, pp["ftp"], pp["CP"], ltp=pp["ltp"],
-        AWC=pp["AWC"], Pmax=pp["Pmax"], tau2=pp["tau2"])
-
-    rate_total = rate_ltp + rate_thresh + rate_awc
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_total,
-        mode="lines", name="TSS Rate",
-        fill="tozeroy", fillcolor="rgba(100, 149, 237, 0.15)",
-        line=dict(color="cornflowerblue", width=1),
-    ))
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_1h_avg,
-        mode="lines", name="1h Rolling Avg",
-        line=dict(color="midnightblue", width=1),
-    ))
-
-    wk_max_s = float(t_min[-1]) if len(t_min) else 3600
-    fig.update_yaxes(title_text="TSS Rate (TSS/h)",
-                     showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True)
-    fig.update_layout(
-        title=dict(text="TSS Rate", font=dict(size=14)),
-        height=250,
-        margin=dict(t=55, b=40, l=60, r=20),
-        template="plotly_white",
-        showlegend=False,
-        hovermode="x unified",
-        xaxis=_time_axis_props(wk_max_s),
-    )
-    return fig
-
-
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:

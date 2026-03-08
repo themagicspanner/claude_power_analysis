@@ -38,7 +38,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import dash
 import dash_ag_grid as dag
-from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
+from dash import dcc, html, Input, Output, State, ctx, Patch
 from build_database import (
     init_db, backfill_pdc_params,
     backfill_vi_aedec, backfill_zones, backfill_missing_mmp,
@@ -387,47 +387,6 @@ def _graph_stat_row(items: list[tuple]) -> html.Div:
 
 
 
-
-
-
-def _activities_table_data(rides: pd.DataFrame,
-                           pdc_params: pd.DataFrame) -> list[dict]:
-    """Join rides + pdc_params and return rows for the DataTable, newest first."""
-    df = (
-        rides
-        .merge(pdc_params.rename(columns={"ride_id": "id"}), on="id", how="left")
-        .sort_values("ride_date", ascending=False)
-    )
-
-    def _int(v):
-        return int(round(v)) if pd.notna(v) else ""
-
-    def _f1(v):
-        return round(float(v), 1) if pd.notna(v) else ""
-
-    def _f2(v):
-        return round(float(v), 2) if pd.notna(v) else ""
-
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "date":         r["ride_date"],
-            "name":         r["name"].replace("_", " "),
-            "duration_min": _f1(r.get("duration_min")),
-            "avg_power":    _int(r.get("avg_power")),
-            "max_power":    _int(r.get("max_power")),
-            "ftp":          _int(r.get("ftp")),
-            "np":           _int(r.get("normalized_power")),
-            "if":           _f2(r.get("intensity_factor")),
-            "tss":          _int(r.get("tss")),
-            "tss_ltp":      _int(r.get("tss_ltp")),
-            "tss_map":      _int(r.get("tss_map")),
-            "tss_awc":      _int(r.get("tss_awc")),
-            "map_w":        _int(r.get("MAP")),
-            "awc_kj":       _f1(r["AWC"] / 1000 if pd.notna(r.get("AWC")) else None),
-            "pmax":         _int(r.get("Pmax")),
-        })
-    return rows
 
 
 

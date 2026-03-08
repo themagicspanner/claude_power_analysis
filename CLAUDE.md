@@ -19,26 +19,10 @@ claude_power_analysis/
 ├── graphs.py                # Plotly figure builders for the dashboard
 ├── cycling.db               # SQLite database (generated artefact)
 ├── strava_config.json       # Strava OAuth credentials (gitignored)
-├── extract_fit_data.py      # Legacy FIT extraction script (not used by the app)
 └── raw_data/                # Legacy FIT files directory
 ```
 
 ## Scripts
-
-### `extract_fit_data.py`
-
-First-generation extraction script. Reads every `.fit` file in `2026/`,
-extracts `timestamp`, `power`, and `heart_rate` from `record` messages,
-writes a combined `2026_fit_data.csv`, and saves a two-panel
-(power / HR vs elapsed time) PNG per ride into `plots/`.
-
-```bash
-python extract_fit_data.py
-```
-
-Outputs:
-- `2026_fit_data.csv` — one row per 1-second record across all rides
-- `plots/<ride_name>.png` — per-ride power + HR chart
 
 ### `build_database.py`
 
@@ -117,12 +101,11 @@ window** for O(n) computation:
 No `requirements.txt` is committed. Install manually:
 
 ```bash
-pip install fitdecode pandas matplotlib numpy stravalib
+pip install pandas matplotlib numpy stravalib
 ```
 
 | Package      | Role                              |
 |--------------|-----------------------------------|
-| `fitdecode`  | Parse binary FIT files            |
 | `pandas`     | DataFrame manipulation, CSV I/O   |
 | `matplotlib` | Chart generation (Agg backend)    |
 | `numpy`      | Cumulative-sum MMP calculation    |
@@ -133,15 +116,11 @@ Python 3.11+ is required (uses `list[int]` / `dict[int, float]` type hints).
 
 ## Development Conventions
 
-- **No test suite** exists. Validate changes by running the scripts against
-  the `2026/` FIT files and inspecting outputs.
+- **No test suite** exists. Validate changes by running the scripts and
+  inspecting outputs.
 - **Idempotency**: `build_database.py` skips rides already in the database
   by name. To reprocess a ride, delete its row from `rides` (cascading
   deletes are not configured — also delete from `records` and `mmp`).
-- **matplotlib backend**: `Agg` is set in `extract_fit_data.py` so charts
-  can be generated without a display. `build_database.py` does not set it
-  explicitly — add `matplotlib.use("Agg")` before the import if running
-  headlessly.
 - **Paths**: All paths are derived from `__file__` / `os.path.dirname`,
   so both scripts work correctly when called from any working directory.
 - **Column naming**: Use `snake_case` for all DataFrame columns and
