@@ -7,9 +7,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from build_database import (
-    _power_model, _fit_power_curve, _normalized_power,
+from pdc_fitting import power_model, fit_power_curve, normalized_power
+from helpers import (
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
+    calculate_ltp, apply_sigmoid_aging, aged_envelope,
+    extract_pdc_params, compute_pmc,
 )
 
 LOG_TICK_S   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600,
@@ -337,12 +339,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"]   = window["ride_date"].apply(
-            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"] = window["power"] * window["weight"]
-
+        window = apply_sigmoid_aging(window, ride_date_obj)
         aged = (
             window.groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
@@ -365,7 +362,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             )
             ok = True
         elif len(dur) >= 4:
-            popt, ok = _fit_power_curve(dur, pwr)
+            popt, ok = fit_power_curve(dur, pwr)
             if ok:
                 AWC, Pmax, MAP, tau2 = popt
 
@@ -374,9 +371,8 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             tau   = AWC / Pmax
             t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
-            p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
-            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
-            ltp = max(ltp, 0.0)
+            p_tot = power_model(t_sm, AWC, Pmax, MAP, tau2)
+            ltp = max(calculate_ltp(AWC, MAP), 0.0)
             ltp_frac = ltp / MAP if MAP > 0 else 0.0
             p_base = p_aer * ltp_frac
             fig.add_trace(go.Scatter(
@@ -477,16 +473,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"] = window["ride_date"].apply(
-            lambda d: (today - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]      = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"]  = window["power"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_power"]
-            .max().reset_index().sort_values("duration_s")
-        )
+        aged = aged_envelope(window, today)
         # Sigmoid-aged curve
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_power"],
@@ -497,15 +484,14 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
         # ── Model fit with aerobic / anaerobic contributions ──────────────
         dur = aged["duration_s"].to_numpy(dtype=float)
         pwr = aged["aged_power"].to_numpy(dtype=float)
-        popt, ok = _fit_power_curve(dur, pwr)
+        popt, ok = fit_power_curve(dur, pwr)
         if ok:
             AWC, Pmax, MAP, tau2 = popt
             tau      = AWC / Pmax
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
-            p_total   = _power_model(t_smooth, *popt)
-            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
-            ltp = max(ltp, 0.0)
+            p_total   = power_model(t_smooth, *popt)
+            ltp = max(calculate_ltp(AWC, MAP), 0.0)
             # Base component (0 → LTP/MAP proportion of aerobic curve)
             ltp_frac = ltp / MAP if MAP > 0 else 0.0
             p_base = p_aerobic * ltp_frac
@@ -561,18 +547,9 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"]  = window["ride_date"].apply(
-            lambda d: (today - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]    = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_hr"]   = window["heart_rate"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_hr"]
-            .max().reset_index().sort_values("duration_s")
-        )
+        aged = aged_envelope(window, today, value_col="heart_rate")
         fig.add_trace(go.Scatter(
-            x=aged["duration_s"], y=aged["aged_hr"],
+            x=aged["duration_s"], y=aged["aged_heart_rate"],
             mode="lines+markers", name="aged MMH",
             marker=dict(size=4),
             line=dict(color="crimson", width=2.5),
@@ -844,7 +821,7 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
         # interpolate from power → aerobic contribution.
         tau = AWC / Pmax
         t_grid = np.logspace(-1, np.log10(7200), 2000)
-        p_total_grid = _power_model(t_grid, AWC, Pmax, CP, tau2)
+        p_total_grid = power_model(t_grid, AWC, Pmax, CP, tau2)
         p_aer_grid   = CP * (1.0 - np.exp(-t_grid / tau2))
 
         # np.interp needs increasing x, but P(t) is decreasing → reverse
@@ -940,69 +917,6 @@ def _tss_rate_series(elapsed_s: np.ndarray, power: np.ndarray,
             rate_ltp_ph, rate_thresh_ph, rate_awc_ph, rate_1h_avg)
 
 
-def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
-                 pdc_params: pd.DataFrame,
-                 live_pdc: dict | None = None) -> go.Figure:
-    """Total TSS rate (TSS/h) over the ride with 1-hour rolling average."""
-    if records["power"].isna().all():
-        return go.Figure()
-
-    params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-
-    if live_pdc is not None:
-        CP  = live_pdc["MAP"]
-        ftp = live_pdc["ftp"]
-        ltp = live_pdc.get("ltp")
-        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
-    elif not params_row.empty:
-        r   = params_row.iloc[0]
-        CP  = float(r["MAP"])
-        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
-        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
-        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
-        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
-        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
-    else:
-        return go.Figure()
-
-    elapsed = records["elapsed_s"].to_numpy(dtype=float)
-    power   = records["power"].to_numpy(dtype=float)
-    (t_min, cum_ltp, cum_thresh, cum_awc,
-     rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp,
-        AWC=_awc, Pmax=_pmax, tau2=_tau2)
-
-    rate_total = rate_ltp + rate_thresh + rate_awc
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_total,
-        mode="lines", name="TSS Rate",
-        fill="tozeroy", fillcolor="rgba(100, 149, 237, 0.15)",
-        line=dict(color="cornflowerblue", width=1),
-    ))
-    fig.add_trace(go.Scatter(
-        x=t_min, y=rate_1h_avg,
-        mode="lines", name="1h Rolling Avg",
-        line=dict(color="midnightblue", width=1),
-    ))
-
-    wk_max_s = float(t_min[-1]) if len(t_min) else 3600
-    fig.update_yaxes(title_text="TSS Rate (TSS/h)",
-                     showgrid=True, gridcolor="lightgrey",
-                     fixedrange=True)
-    fig.update_layout(
-        title=dict(text="TSS Rate", font=dict(size=14)),
-        height=250,
-        margin=dict(t=55, b=40, l=60, r=20),
-        template="plotly_white",
-        showlegend=False,
-        hovermode="x unified",
-        xaxis=_time_axis_props(wk_max_s),
-    )
-    return fig
-
-
 def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
                        pdc_params: pd.DataFrame,
                        live_pdc: dict | None = None) -> go.Figure:
@@ -1011,29 +925,16 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         return go.Figure()
 
     params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-
-    if live_pdc is not None:
-        CP  = live_pdc["MAP"]
-        ftp = live_pdc["ftp"]
-        ltp = live_pdc.get("ltp")
-        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
-    elif not params_row.empty:
-        r   = params_row.iloc[0]
-        CP  = float(r["MAP"])
-        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
-        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
-        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
-        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
-        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
-    else:
+    pp = extract_pdc_params(live_pdc, params_row)
+    if pp is None:
         return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     (t_min, cum_ltp, cum_thresh, cum_awc,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp,
-        AWC=_awc, Pmax=_pmax, tau2=_tau2)
+        elapsed, power, pp["ftp"], pp["CP"], ltp=pp["ltp"],
+        AWC=pp["AWC"], Pmax=pp["Pmax"], tau2=pp["tau2"])
 
     final_ltp    = cum_ltp[-1]
     final_thresh = cum_thresh[-1]
@@ -1188,41 +1089,6 @@ def fig_tss_history(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
 
 # ── Performance Management Chart ──────────────────────────────────────────────
 
-def _compute_pmc(daily_tss: pd.Series, future_days: int = 0) -> pd.DataFrame:
-    """Exponential-weighted ATL (τ=7 d) and CTL (τ=42 d) from a daily TSS series.
-
-    daily_tss : Series with a DatetimeIndex.  Missing dates → 0 TSS (rest days).
-    future_days : number of extra days (0 TSS) to project beyond today.
-    Returns DataFrame with columns: date, atl, ctl, tsb
-    where TSB(d) = CTL(d-1) − ATL(d-1)  (form before today's ride).
-    """
-    if daily_tss.empty:
-        return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
-
-    end = pd.Timestamp.today().normalize() + pd.Timedelta(days=future_days)
-    dates = pd.date_range(daily_tss.index.min(), end, freq="D")
-    tss   = daily_tss.reindex(dates, fill_value=0.0)
-
-    k_atl = 1.0 - np.exp(-1.0 / 7.0)
-    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
-
-    n   = len(dates)
-    atl = np.zeros(n)
-    ctl = np.zeros(n)
-    tsb = np.zeros(n)
-
-    for i in range(n):
-        t = float(tss.iloc[i])
-        if i == 0:
-            atl[i] = t * k_atl
-            ctl[i] = t * k_ctl
-        else:
-            tsb[i] = ctl[i - 1] - atl[i - 1]          # form before today's ride
-            atl[i] = atl[i - 1] + k_atl * (t - atl[i - 1])
-            ctl[i] = ctl[i - 1] + k_ctl * (t - ctl[i - 1])
-
-    return pd.DataFrame({"date": dates, "atl": atl, "ctl": ctl, "tsb": tsb})
-
 
 def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     """PDC model investigation: MMP decay weights + residuals vs the fitted curve.
@@ -1255,11 +1121,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         )
         return fig
 
-    window["age_days"]   = window["ride_date"].apply(
-        lambda d: (today - datetime.date.fromisoformat(d)).days
-    )
-    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-    window["aged_power"] = window["power"] * window["weight"]
+    window = apply_sigmoid_aging(window, today)
 
     # Envelope: best aged power per duration, plus metadata of the contributing ride
     env_rows = []
@@ -1280,17 +1142,17 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     dur_arr = env_df["duration_s"].to_numpy(dtype=float)
     pwr_arr = env_df["aged_power"].to_numpy(dtype=float)
 
-    popt, ok = (_fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
+    popt, ok = (fit_power_curve(dur_arr, pwr_arr) if len(dur_arr) >= 4
                 else (None, False))
 
     if ok:
         AWC, Pmax, MAP, tau2 = popt
-        model_vals             = _power_model(dur_arr, *popt)
+        model_vals             = power_model(dur_arr, *popt)
         env_df["model_power"]  = model_vals
         env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
         env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
-        ftp = float(_power_model(3600.0, *popt))
-        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+        ftp = float(power_model(3600.0, *popt))
+        ltp = calculate_ltp(AWC, MAP)
 
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = make_subplots(
@@ -1350,7 +1212,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
     if ok:
         t_sm  = np.logspace(np.log10(dur_arr.min()), np.log10(dur_arr.max()), 400)
         p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
-        p_tot = _power_model(t_sm, *popt)
+        p_tot = power_model(t_sm, *popt)
         ltp_frac = ltp / MAP if MAP > 0 else 0.0
         p_base = p_aer * ltp_frac
         fig.add_trace(go.Scatter(
@@ -1552,9 +1414,9 @@ def fig_pmc(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure:
     daily = df.groupby("ride_date")[["tss", "tss_ltp", "tss_thresh", "tss_awc"]].sum()
 
     FUTURE_DAYS = 7
-    pmc_ltp    = _compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
-    pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
-    pmc_awc    = _compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
+    pmc_ltp    = compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
+    pmc_thresh = compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
+    pmc_awc    = compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
 
     # Align daily TSS to the continuous date grid used by pmc_ltp
     _idx             = pd.DatetimeIndex(pmc_ltp["date"])
@@ -1771,9 +1633,9 @@ def fig_pmc_combined(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> go.Figure
     daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc"]].sum()
 
     FUTURE_DAYS = 7
-    pmc_ltp    = _compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
-    pmc_thresh = _compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
-    pmc_awc    = _compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
+    pmc_ltp    = compute_pmc(daily["tss_ltp"],    future_days=FUTURE_DAYS)
+    pmc_thresh = compute_pmc(daily["tss_thresh"], future_days=FUTURE_DAYS)
+    pmc_awc    = compute_pmc(daily["tss_awc"],    future_days=FUTURE_DAYS)
 
     # Align daily TSS to the continuous date grid
     _idx             = pd.DatetimeIndex(pmc_ltp["date"])
