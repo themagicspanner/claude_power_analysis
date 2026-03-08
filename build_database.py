@@ -18,11 +18,9 @@ Usage
 
 import argparse
 import datetime
-import glob
 import os
 import sqlite3
 
-import fitdecode
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
@@ -34,8 +32,6 @@ from helpers import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
-FIT_DIR      = os.path.join(BASE_DIR, "raw_data")
-_SEMI_TO_DEG = 180.0 / 2**31   # FIT semicircle → decimal degree
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
 
 # Standard MMP durations in seconds
@@ -383,38 +379,6 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-# ── FIT parsing ───────────────────────────────────────────────────────────────
-
-def read_fit(path: str) -> pd.DataFrame:
-    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate,
-    latitude, longitude, altitude_m."""
-    rows = []
-    with fitdecode.FitReader(path) as fit:
-        for frame in fit:
-            if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
-                continue
-            raw_lat = frame.get_value("position_lat",  fallback=None)
-            raw_lon = frame.get_value("position_long", fallback=None)
-            rows.append({
-                "timestamp":  frame.get_value("timestamp",        fallback=None),
-                "power":      frame.get_value("power",            fallback=None),
-                "heart_rate": frame.get_value("heart_rate",       fallback=None),
-                "latitude":   round(raw_lat * _SEMI_TO_DEG, 7) if raw_lat is not None else None,
-                "longitude":  round(raw_lon * _SEMI_TO_DEG, 7) if raw_lon is not None else None,
-                "altitude_m": frame.get_value("enhanced_altitude", fallback=None),
-            })
-
-    if not rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df.sort_values("timestamp", inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    df["elapsed_s"] = (df["timestamp"] - df["timestamp"].iloc[0]).dt.total_seconds()
-    return df
-
-
 # ── MMP calculation ───────────────────────────────────────────────────────────
 
 def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
@@ -724,91 +688,6 @@ def backfill_zones(conn: sqlite3.Connection) -> None:
     print("[zones] Backfill complete.")
 
 
-def backfill_mmh(conn: sqlite3.Connection) -> None:
-    """Compute MMH for any ride that has no MMH rows yet.
-
-    Re-reads the original .fit file so that rides processed before heart rate
-    support was added get their curves populated retrospectively.
-    Also updates rides.avg_heart_rate / max_heart_rate where missing.
-    """
-    rows = conn.execute(
-        """SELECT r.id, r.name FROM rides r
-           WHERE NOT EXISTS (SELECT 1 FROM mmh m WHERE m.ride_id = r.id)
-             AND EXISTS (SELECT 1 FROM records rec
-                         WHERE rec.ride_id = r.id AND rec.heart_rate IS NOT NULL)
-           ORDER BY r.ride_date, r.id"""
-    ).fetchall()
-    if not rows:
-        return
-
-    print(f"[mmh] Backfilling MMH for {len(rows)} ride(s) …")
-    for ride_id, name in rows:
-        fit_path = os.path.join(FIT_DIR, name + ".fit")
-        if not os.path.exists(fit_path):
-            continue
-        df = read_fit(fit_path)
-        if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
-            continue
-
-        mmh = calculate_mmh(df, MMP_DURATIONS)
-        if mmh:
-            conn.executemany(
-                "INSERT OR IGNORE INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
-                [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
-            )
-        conn.execute(
-            "UPDATE rides SET avg_heart_rate = ?, max_heart_rate = ? WHERE id = ?",
-            (
-                round(float(df["heart_rate"].mean()), 1),
-                int(df["heart_rate"].max()),
-                ride_id,
-            ),
-        )
-        conn.commit()
-    print("[mmh] Backfill complete.")
-
-
-def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
-    """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
-    rows = conn.execute(
-        """SELECT r.id, r.name FROM rides r
-           WHERE r.name NOT LIKE 'strava_%'
-             AND NOT EXISTS (
-               SELECT 1 FROM records rec
-               WHERE rec.ride_id = r.id AND rec.latitude IS NOT NULL
-           )
-           ORDER BY r.ride_date, r.id"""
-    ).fetchall()
-    if not rows:
-        return
-
-    print(f"[gps] Backfilling GPS/elevation for {len(rows)} ride(s) …")
-    for ride_id, name in rows:
-        fit_path = os.path.join(FIT_DIR, name + ".fit")
-        if not os.path.exists(fit_path):
-            continue
-        df = read_fit(fit_path)
-        if df.empty or "latitude" not in df.columns or df["latitude"].isna().all():
-            continue
-        conn.executemany(
-            """UPDATE records
-               SET latitude = ?, longitude = ?, altitude_m = ?
-               WHERE ride_id = ? AND elapsed_s = ?""",
-            (
-                (
-                    row.latitude  if pd.notna(row.latitude)  else None,
-                    row.longitude if pd.notna(row.longitude) else None,
-                    round(float(row.altitude_m), 1) if pd.notna(row.altitude_m) else None,
-                    ride_id,
-                    row.elapsed_s,
-                )
-                for row in df.itertuples()
-            ),
-        )
-        conn.commit()
-    print("[gps] Backfill complete.")
-
-
 def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
     """Delete and recompute PDC params for all rides in chronological order.
 
@@ -991,12 +870,6 @@ def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
     recompute_daily_pdc_params(conn, from_date=ride_date)
 
 
-def process_ride(conn: sqlite3.Connection, path: str) -> None:
-    name = os.path.splitext(os.path.basename(path))[0]
-    df = read_fit(path)
-    ingest_ride(conn, name, df)
-
-
 # ── Display helpers ───────────────────────────────────────────────────────────
 
 _fmt_duration = fmt_duration
@@ -1049,7 +922,7 @@ def print_mmp_table(db_path: str) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build cycling SQLite database from FIT files.")
+    parser = argparse.ArgumentParser(description="Build cycling SQLite database.")
     parser.add_argument("--show", action="store_true", help="Print summary tables only, no processing.")
     args = parser.parse_args()
 
@@ -1059,17 +932,6 @@ def main() -> None:
 
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
-
-    fit_files = sorted(glob.glob(os.path.join(FIT_DIR, "*.fit")))
-    if not fit_files:
-        print(f"No .fit files found in {FIT_DIR}")
-        conn.close()
-        return
-
-    print(f"Processing {len(fit_files)} FIT file(s) → {DB_PATH}\n")
-    for path in fit_files:
-        process_ride(conn, path)
-
     backfill_pdc_params(conn)
     backfill_vi_aedec(conn)
     backfill_zones(conn)
