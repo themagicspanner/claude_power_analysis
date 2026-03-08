@@ -9,7 +9,11 @@ from plotly.subplots import make_subplots
 
 from build_database import (
     _power_model, _fit_power_curve, _normalized_power,
+)
+from helpers import (
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
+    calculate_ltp, apply_sigmoid_aging, aged_envelope,
+    extract_pdc_params,
 )
 
 LOG_TICK_S   = [1, 5, 10, 30, 60, 120, 300, 600, 1200, 1800, 3600,
@@ -337,12 +341,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"]   = window["ride_date"].apply(
-            lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"] = window["power"] * window["weight"]
-
+        window = apply_sigmoid_aging(window, ride_date_obj)
         aged = (
             window.groupby("duration_s")["aged_power"]
             .max().reset_index().sort_values("duration_s")
@@ -375,8 +374,7 @@ def fig_mmp_pdc(ride: pd.Series, mmp_all: pd.DataFrame,
             t_sm  = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aer = MAP * (1.0 - np.exp(-t_sm / tau2))
             p_tot = _power_model(t_sm, AWC, Pmax, MAP, tau2)
-            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
-            ltp = max(ltp, 0.0)
+            ltp = max(calculate_ltp(AWC, MAP), 0.0)
             ltp_frac = ltp / MAP if MAP > 0 else 0.0
             p_base = p_aer * ltp_frac
             fig.add_trace(go.Scatter(
@@ -477,16 +475,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"] = window["ride_date"].apply(
-            lambda d: (today - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]      = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_power"]  = window["power"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_power"]
-            .max().reset_index().sort_values("duration_s")
-        )
+        aged = aged_envelope(window, today)
         # Sigmoid-aged curve
         fig.add_trace(go.Scatter(
             x=aged["duration_s"], y=aged["aged_power"],
@@ -504,8 +493,7 @@ def fig_90day_mmp(mmp_all: pd.DataFrame,
             t_smooth = np.logspace(np.log10(dur.min()), np.log10(dur.max()), 400)
             p_aerobic = MAP * (1.0 - np.exp(-t_smooth / tau2))
             p_total   = _power_model(t_smooth, *popt)
-            ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
-            ltp = max(ltp, 0.0)
+            ltp = max(calculate_ltp(AWC, MAP), 0.0)
             # Base component (0 → LTP/MAP proportion of aerobic curve)
             ltp_frac = ltp / MAP if MAP > 0 else 0.0
             p_base = p_aerobic * ltp_frac
@@ -561,18 +549,9 @@ def fig_90day_mmh(mmh_all: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
     if not window.empty:
-        window["age_days"]  = window["ride_date"].apply(
-            lambda d: (today - datetime.date.fromisoformat(d)).days
-        )
-        window["weight"]    = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-        window["aged_hr"]   = window["heart_rate"] * window["weight"]
-
-        aged = (
-            window.groupby("duration_s")["aged_hr"]
-            .max().reset_index().sort_values("duration_s")
-        )
+        aged = aged_envelope(window, today, value_col="heart_rate")
         fig.add_trace(go.Scatter(
-            x=aged["duration_s"], y=aged["aged_hr"],
+            x=aged["duration_s"], y=aged["aged_heart_rate"],
             mode="lines+markers", name="aged MMH",
             marker=dict(size=4),
             line=dict(color="crimson", width=2.5),
@@ -948,29 +927,16 @@ def fig_tss_rate(records: pd.DataFrame, ride: pd.Series,
         return go.Figure()
 
     params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-
-    if live_pdc is not None:
-        CP  = live_pdc["MAP"]
-        ftp = live_pdc["ftp"]
-        ltp = live_pdc.get("ltp")
-        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
-    elif not params_row.empty:
-        r   = params_row.iloc[0]
-        CP  = float(r["MAP"])
-        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
-        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
-        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
-        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
-        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
-    else:
+    pp = extract_pdc_params(live_pdc, params_row)
+    if pp is None:
         return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     (t_min, cum_ltp, cum_thresh, cum_awc,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp,
-        AWC=_awc, Pmax=_pmax, tau2=_tau2)
+        elapsed, power, pp["ftp"], pp["CP"], ltp=pp["ltp"],
+        AWC=pp["AWC"], Pmax=pp["Pmax"], tau2=pp["tau2"])
 
     rate_total = rate_ltp + rate_thresh + rate_awc
 
@@ -1011,29 +977,16 @@ def fig_tss_components(records: pd.DataFrame, ride: pd.Series,
         return go.Figure()
 
     params_row = pdc_params[pdc_params["ride_id"] == ride["id"]]
-
-    if live_pdc is not None:
-        CP  = live_pdc["MAP"]
-        ftp = live_pdc["ftp"]
-        ltp = live_pdc.get("ltp")
-        _awc = live_pdc.get("AWC"); _pmax = live_pdc.get("Pmax"); _tau2 = live_pdc.get("tau2")
-    elif not params_row.empty:
-        r   = params_row.iloc[0]
-        CP  = float(r["MAP"])
-        ftp = float(r["ftp"]) if pd.notna(r.get("ftp")) else CP
-        ltp = float(r["ltp"]) if pd.notna(r.get("ltp")) else None
-        _awc  = float(r["AWC"])  if pd.notna(r.get("AWC"))  else None
-        _pmax = float(r["Pmax"]) if pd.notna(r.get("Pmax")) else None
-        _tau2 = float(r["tau2"]) if pd.notna(r.get("tau2")) else None
-    else:
+    pp = extract_pdc_params(live_pdc, params_row)
+    if pp is None:
         return go.Figure()
 
     elapsed = records["elapsed_s"].to_numpy(dtype=float)
     power   = records["power"].to_numpy(dtype=float)
     (t_min, cum_ltp, cum_thresh, cum_awc,
      rate_ltp, rate_thresh, rate_awc, rate_1h_avg) = _tss_rate_series(
-        elapsed, power, ftp, CP, ltp=ltp,
-        AWC=_awc, Pmax=_pmax, tau2=_tau2)
+        elapsed, power, pp["ftp"], pp["CP"], ltp=pp["ltp"],
+        AWC=pp["AWC"], Pmax=pp["Pmax"], tau2=pp["tau2"])
 
     final_ltp    = cum_ltp[-1]
     final_thresh = cum_thresh[-1]
@@ -1255,11 +1208,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         )
         return fig
 
-    window["age_days"]   = window["ride_date"].apply(
-        lambda d: (today - datetime.date.fromisoformat(d)).days
-    )
-    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-    window["aged_power"] = window["power"] * window["weight"]
+    window = apply_sigmoid_aging(window, today)
 
     # Envelope: best aged power per duration, plus metadata of the contributing ride
     env_rows = []
@@ -1290,7 +1239,7 @@ def fig_pdc_investigation(mmp_all: pd.DataFrame) -> go.Figure:
         env_df["residual"]     = env_df["aged_power"] - env_df["model_power"]
         env_df["residual_pct"] = (env_df["residual"] / env_df["model_power"] * 100).round(1)
         ftp = float(_power_model(3600.0, *popt))
-        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+        ltp = calculate_ltp(AWC, MAP)
 
     # ── Figure ────────────────────────────────────────────────────────────────
     fig = make_subplots(

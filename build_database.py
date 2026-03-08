@@ -27,15 +27,16 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
+from helpers import (
+    PDC_K, PDC_INFLECTION, PDC_WINDOW,
+    calculate_ltp, apply_sigmoid_aging, aged_envelope,
+    calculate_rolling_max_avg, fmt_duration,
+)
+
 BASE_DIR = os.path.dirname(__file__)
 FIT_DIR      = os.path.join(BASE_DIR, "raw_data")
 _SEMI_TO_DEG = 180.0 / 2**31   # FIT semicircle → decimal degree
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
-
-# Sigmoid aging constants for decayed MMP / PDC fitting
-PDC_K          = 0.15   # steepness of the S-curve
-PDC_INFLECTION = 97     # days to midpoint (weight = 0.5)
-PDC_WINDOW     = 150    # days of history to include
 
 # Standard MMP durations in seconds
 MMP_DURATIONS = sorted(set(
@@ -417,57 +418,13 @@ def read_fit(path: str) -> pd.DataFrame:
 # ── MMP calculation ───────────────────────────────────────────────────────────
 
 def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
-    """
-    Return {duration_s: best_avg_power} for each requested duration.
-
-    The records are already 1-second apart (verified).  For any duration d
-    the MMP is simply the maximum of the d-sample rolling mean of the power
-    series.  NaN power values (sensor dropout) are filled with 0 W, which
-    is the convention used by most cycling analysis software.
-    """
-    if df.empty or df["power"].isna().all():
-        return {}
-
-    power = df["power"].fillna(0).to_numpy(dtype=float)
-    n = len(power)
-
-    # Build a cumulative-sum array for O(1) window sums
-    cumsum = power.cumsum()
-
-    result: dict[int, float] = {}
-    for d in durations:
-        if n < d:
-            continue
-        # window sums: sum[i..i+d-1] = cumsum[i+d-1] - cumsum[i-1]
-        window_sums = cumsum[d - 1:].copy()
-        window_sums[1:] -= cumsum[:n - d]
-        result[d] = float(window_sums.max() / d)
-
-    return result
+    """Return {duration_s: best_avg_power} for each requested duration."""
+    return calculate_rolling_max_avg(df, "power", durations)
 
 
 def calculate_mmh(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
-    """Return {duration_s: best_avg_heart_rate} for each requested duration.
-
-    Uses the same rolling-window algorithm as calculate_mmp.
-    Rides without heart rate data return an empty dict.
-    """
-    if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
-        return {}
-
-    hr = df["heart_rate"].fillna(0).to_numpy(dtype=float)
-    n  = len(hr)
-    cumsum = hr.cumsum()
-
-    result: dict[int, float] = {}
-    for d in durations:
-        if n < d:
-            continue
-        window_sums = cumsum[d - 1:].copy()
-        window_sums[1:] -= cumsum[:n - d]
-        result[d] = float(window_sums.max() / d)
-
-    return result
+    """Return {duration_s: best_avg_heart_rate} for each requested duration."""
+    return calculate_rolling_max_avg(df, "heart_rate", durations)
 
 
 def calculate_zones(df: pd.DataFrame, ltp: float, map_: float) -> dict[int, float]:
@@ -513,16 +470,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     if mmp.empty:
         return
 
-    mmp["age_days"]   = mmp["ride_date"].apply(
-        lambda d: (ride_date - datetime.date.fromisoformat(d)).days
-    )
-    mmp["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (mmp["age_days"] - PDC_INFLECTION)))
-    mmp["aged_power"] = mmp["power"] * mmp["weight"]
-
-    aged = (
-        mmp.groupby("duration_s")["aged_power"]
-        .max().reset_index().sort_values("duration_s")
-    )
+    aged = aged_envelope(mmp, ride_date)
     dur = aged["duration_s"].to_numpy(dtype=float)
     pwr = aged["aged_power"].to_numpy(dtype=float)
 
@@ -535,8 +483,7 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
 
     AWC, Pmax, MAP, tau2 = popt
 
-    # Lower threshold power (first lactate turn point)
-    ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+    ltp = calculate_ltp(AWC, MAP)
 
     # ── TSS metrics ───────────────────────────────────────────────────────────
     ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
@@ -656,13 +603,9 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
             prev_popt = None
             continue
 
-        age        = w["date_obj"].apply(lambda d: (ref - d).days)
-        aged_power = w["power"] * (1.0 / (1.0 + np.exp(PDC_K * (age - PDC_INFLECTION))))
-        aged = (
-            w.assign(aged_power=aged_power)
-            .groupby("duration_s")["aged_power"].max()
-            .reset_index().sort_values("duration_s")
-        )
+        # Convert date_obj to ISO strings for apply_sigmoid_aging compatibility
+        w_iso = w.assign(ride_date=w["date_obj"].apply(lambda d: d.isoformat()))
+        aged = aged_envelope(w_iso, ref)
         if len(aged) < 4:
             prev_popt = None
             continue
@@ -679,7 +622,7 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
 
         prev_popt = list(popt)
         AWC, Pmax, MAP, tau2 = popt
-        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
+        ltp = calculate_ltp(AWC, MAP)
 
         rows.append((
             ref.isoformat(),
@@ -1056,14 +999,7 @@ def process_ride(conn: sqlite3.Connection, path: str) -> None:
 
 # ── Display helpers ───────────────────────────────────────────────────────────
 
-def _fmt_duration(s: int) -> str:
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        m, rem = divmod(s, 60)
-        return f"{m}min" if rem == 0 else f"{m}:{rem:02d}"
-    h, rem = divmod(s, 3600)
-    return f"{h}h" if rem == 0 else f"{h}h{rem // 60}min"
+_fmt_duration = fmt_duration
 
 
 def print_mmp_table(db_path: str) -> None:

@@ -14,6 +14,7 @@ with Mean Maximal Power (MMP) charts, PDC fitting, and per-ride visualisations.
 claude_power_analysis/
 ├── app.py                   # Dash web dashboard (auto-syncs Strava on startup + interval)
 ├── build_database.py        # Core DB schema, MMP/PDC calc, ingest_ride()
+├── helpers.py               # Shared utilities (sigmoid aging, LTP, rolling-window, DB query)
 ├── strava_import.py         # Strava API OAuth + import logic
 ├── graphs.py                # Plotly figure builders for the dashboard
 ├── cycling.db               # SQLite database (generated artefact)

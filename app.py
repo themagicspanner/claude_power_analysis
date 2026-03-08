@@ -45,7 +45,10 @@ from build_database import (
     recompute_all_pdc_params, ensure_daily_pdc_current,
     _power_model, _fit_power_curve, _normalized_power,
     calculate_mmp, calculate_zones, MMP_DURATIONS,
+)
+from helpers import (
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
+    calculate_ltp, aged_envelope, query_db, extract_pdc_params,
 )
 from strava_import import get_client, fetch_and_import, CONFIG_PATH
 
@@ -112,28 +115,23 @@ COLOURS = px.colors.qualitative.Light24
 # ── Database helpers ───────────────────────────────────────────────────────────
 
 def _load_rides() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
+    return query_db(
+        DB_PATH,
         """SELECT id, name, ride_date,
                   round(duration_s / 60.0, 1) AS duration_min,
                   avg_power, max_power,
                   avg_heart_rate, max_heart_rate
            FROM rides ORDER BY ride_date, name""",
-        conn,
     )
-    conn.close()
-    return df
 
 
 def _load_gps_traces() -> dict[int, list[tuple[float, float]]]:
     """Load downsampled GPS traces for all rides. Returns {ride_id: [(lat, lon), ...]}."""
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
+    df = query_db(
+        DB_PATH,
         "SELECT ride_id, latitude, longitude FROM records"
         " WHERE latitude IS NOT NULL ORDER BY ride_id, elapsed_s",
-        conn,
     )
-    conn.close()
     traces: dict[int, list[tuple[float, float]]] = {}
     for ride_id, group in df.groupby("ride_id"):
         pts = list(zip(group["latitude"], group["longitude"]))
@@ -205,9 +203,7 @@ def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
 
 
 def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    mmp = pd.read_sql("SELECT ride_id, duration_s, power FROM mmp", conn)
-    conn.close()
+    mmp = query_db(DB_PATH, "SELECT ride_id, duration_s, power FROM mmp")
     mmp = mmp.merge(
         rides.rename(columns={"id": "ride_id"})[["ride_id", "name", "ride_date"]],
         on="ride_id",
@@ -216,9 +212,7 @@ def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    mmh = pd.read_sql("SELECT ride_id, duration_s, heart_rate FROM mmh", conn)
-    conn.close()
+    mmh = query_db(DB_PATH, "SELECT ride_id, duration_s, heart_rate FROM mmh")
     if mmh.empty:
         return mmh
     mmh = mmh.merge(
@@ -229,42 +223,33 @@ def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_pdc_params() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql("SELECT * FROM pdc_params", conn)
-    conn.close()
-    return df
+    return query_db(DB_PATH, "SELECT * FROM pdc_params")
 
 
 def _load_daily_pdc() -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
+    return query_db(
+        DB_PATH,
         "SELECT date, MAP, Pmax, AWC, ltp, tau2 FROM daily_pdc_params ORDER BY date",
-        conn,
     )
-    conn.close()
-    return df
 
 
 def _load_zones_for_ride(ride_id: int) -> dict[int, float]:
     """Return {zone: seconds} for the given ride from zone_distribution."""
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
+    df = query_db(
+        DB_PATH,
         "SELECT zone, seconds FROM zone_distribution WHERE ride_id = ?",
-        conn, params=(ride_id,),
+        params=(ride_id,),
     )
-    conn.close()
     return {int(r["zone"]): float(r["seconds"]) for _, r in df.iterrows()}
 
 
 def load_records(ride_id: int) -> pd.DataFrame:
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql(
+    df = query_db(
+        DB_PATH,
         "SELECT elapsed_s, power, heart_rate, latitude, longitude, altitude_m"
         " FROM records WHERE ride_id = ? ORDER BY elapsed_s",
-        conn,
         params=(ride_id,),
     )
-    conn.close()
     df["elapsed_min"] = df["elapsed_s"] / 60.0
     return df
 
@@ -353,16 +338,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
     if window.empty:
         return None
 
-    window["age_days"]   = window["ride_date"].apply(
-        lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
-    )
-    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
-    window["aged_power"] = window["power"] * window["weight"]
-
-    aged = (
-        window.groupby("duration_s")["aged_power"]
-        .max().reset_index().sort_values("duration_s")
-    )
+    aged = aged_envelope(window, ride_date_obj)
     dur = aged["duration_s"].to_numpy(dtype=float)
     pwr = aged["aged_power"].to_numpy(dtype=float)
 
@@ -380,7 +356,7 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "MAP":  float(MAP),
         "tau2": float(tau2),
         "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
-        "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
+        "ltp":  calculate_ltp(AWC, MAP),
     }
 
 
