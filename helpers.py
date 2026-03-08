@@ -152,3 +152,41 @@ def fmt_duration(s: int) -> str:
         return f"{m}min" if rem == 0 else f"{m}:{rem:02d}"
     h, rem = divmod(s, 3600)
     return f"{h}h" if rem == 0 else f"{h}h{rem // 60}min"
+
+
+# ── Performance Management Chart computation ────────────────────────────────
+
+def compute_pmc(daily_tss: pd.Series, future_days: int = 0) -> pd.DataFrame:
+    """Exponential-weighted ATL (τ=7 d) and CTL (τ=42 d) from a daily TSS series.
+
+    daily_tss : Series with a DatetimeIndex.  Missing dates → 0 TSS (rest days).
+    future_days : number of extra days (0 TSS) to project beyond today.
+    Returns DataFrame with columns: date, atl, ctl, tsb
+    where TSB(d) = CTL(d-1) − ATL(d-1)  (form before today's ride).
+    """
+    if daily_tss.empty:
+        return pd.DataFrame(columns=["date", "atl", "ctl", "tsb"])
+
+    end = pd.Timestamp.today().normalize() + pd.Timedelta(days=future_days)
+    dates = pd.date_range(daily_tss.index.min(), end, freq="D")
+    tss   = daily_tss.reindex(dates, fill_value=0.0)
+
+    k_atl = 1.0 - np.exp(-1.0 / 7.0)
+    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
+
+    n   = len(dates)
+    atl = np.zeros(n)
+    ctl = np.zeros(n)
+    tsb = np.zeros(n)
+
+    for i in range(n):
+        t = float(tss.iloc[i])
+        if i == 0:
+            atl[i] = t * k_atl
+            ctl[i] = t * k_ctl
+        else:
+            tsb[i] = ctl[i - 1] - atl[i - 1]          # form before today's ride
+            atl[i] = atl[i - 1] + k_atl * (t - atl[i - 1])
+            ctl[i] = ctl[i - 1] + k_ctl * (t - ctl[i - 1])
+
+    return pd.DataFrame({"date": dates, "atl": atl, "ctl": ctl, "tsb": tsb})
