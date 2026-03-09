@@ -1,8 +1,8 @@
 """
 build_database.py
 
-Core database schema, MMP/MMH calculation, PDC fitting, and ride ingestion.
-Called by strava_import.py and app.py to insert rides and recompute metrics.
+Parse all FIT files in raw_data/, store records and mean-maximal-power (MMP)
+curves in a SQLite database (cycling.db), then print a summary table.
 
 Database schema
 ───────────────
@@ -18,24 +18,24 @@ Usage
 
 import argparse
 import datetime
+import glob
 import os
 import sqlite3
 
+import fitdecode
 import numpy as np
 import pandas as pd
-
-from helpers import (
-    PDC_K, PDC_INFLECTION, PDC_WINDOW,
-    calculate_ltp, apply_sigmoid_aging, aged_envelope,
-    calculate_rolling_max_avg, fmt_duration,
-)
-from pdc_fitting import (
-    power_model, fit_power_curve, normalized_power,
-    tss_components, aerobic_decoupling,
-)
+from scipy.optimize import curve_fit
 
 BASE_DIR = os.path.dirname(__file__)
+FIT_DIR      = os.path.join(BASE_DIR, "raw_data")
+_SEMI_TO_DEG = 180.0 / 2**31   # FIT semicircle → decimal degree
 DB_PATH  = os.path.join(BASE_DIR, "cycling.db")
+
+# Sigmoid aging constants for decayed MMP / PDC fitting
+PDC_K          = 0.15   # steepness of the S-curve
+PDC_INFLECTION = 97     # days to midpoint (weight = 0.5)
+PDC_WINDOW     = 150    # days of history to include
 
 # Standard MMP durations in seconds
 MMP_DURATIONS = sorted(set(
@@ -57,13 +57,182 @@ def mmp_durations_for_ride(n_samples: int) -> list[int]:
     return durations
 
 
-# ── Backwards-compatible aliases for external importers ──────────────────────
-# app.py and graphs.py previously imported these as private names from here.
-_power_model         = power_model
-_fit_power_curve     = fit_power_curve
-_normalized_power    = normalized_power
-_tss_components      = tss_components
-_aerobic_decoupling  = aerobic_decoupling
+# ── Power-duration model ──────────────────────────────────────────────────────
+
+def _normalized_power(power: np.ndarray, sample_hz: float = 1.0) -> float:
+    """Coggan normalized power — 4th-root of the mean 4th-power of the
+    30-second rolling average. NaN samples are treated as 0 W."""
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    window = max(1, int(30 * sample_hz))
+    if len(p) < window:
+        return float(np.mean(p))
+    kernel  = np.ones(window) / window
+    rolling = np.convolve(p, kernel, mode="valid")
+    return float(np.mean(rolling ** 4) ** 0.25)
+
+
+def _tss_components(elapsed_s: np.ndarray, power: np.ndarray,
+                    ftp: float, CP: float, tss_total: float,
+                    sample_hz: float = 1.0,
+                    ltp: float | None = None,
+                    AWC_val: float | None = None,
+                    Pmax_val: float | None = None,
+                    tau2_val: float | None = None) -> tuple[float, float, float]:
+    """Split the NP-based TSS into base (LTP), threshold, and anaerobic parts.
+
+    Uses p_30s² as a time-weighting kernel (same as NP methodology) to decide
+    how much of each second's training stress should be credited to each zone.
+
+    When AWC_val/Pmax_val/tau2_val are provided, zone fractions use the PDC
+    model's time-dependent aerobic ramp-up so that sprint-level powers
+    attribute only a small fraction to base/threshold (matching the sigmoidal
+    shape of the PDC chart).
+
+    The final values are scaled so that tss_ltp + tss_map + tss_awc = tss_total
+    exactly (tss_map is the *total* aerobic component, unchanged from before;
+    tss_ltp is the sub-component at or below LTP).
+
+    Returns (tss_ltp, tss_map, tss_awc).
+    """
+    p = np.where(np.isnan(power), 0.0, power.astype(float))
+    window = max(1, int(30 * sample_hz))
+    kernel = np.ones(window) / window
+    p_30s  = np.convolve(p, kernel, mode="same")   # same length as input
+
+    dt = np.empty_like(elapsed_s)
+    dt[0]  = 0.0
+    dt[1:] = np.diff(elapsed_s)
+    dt     = np.clip(dt, 0.0, None)
+
+    # Split fractions from instantaneous power using PDC model when available
+    use_pdc = (AWC_val is not None and Pmax_val is not None and tau2_val is not None
+               and AWC_val > 0 and Pmax_val > 0 and tau2_val > 0
+               and CP > 0 and ltp is not None and ltp > 0)
+
+    if use_pdc:
+        t_grid = np.logspace(-1, np.log10(7200), 2000)
+        p_total_grid = _power_model(t_grid, AWC_val, Pmax_val, CP, tau2_val)
+        p_aer_grid   = CP * (1.0 - np.exp(-t_grid / tau2_val))
+        p_total_rev  = p_total_grid[::-1]
+        p_aer_rev    = p_aer_grid[::-1]
+        ltp_frac_r   = ltp / CP
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            above_map = p > CP
+            p_aer_at_p = np.where(
+                above_map,
+                np.interp(p, p_total_rev, p_aer_rev, left=CP, right=0.0),
+                p,
+            )
+            p_base   = np.where(above_map, p_aer_at_p * ltp_frac_r, np.minimum(p, ltp))
+            p_thresh = np.where(above_map, p_aer_at_p - p_base,
+                                np.maximum(np.minimum(p, CP) - ltp, 0.0))
+            f_awc = np.where(p > 0, np.maximum(p - p_base - p_thresh, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, p_base / p, 1.0)
+    elif ltp is not None and ltp > 0 and CP > 0:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+            f_ltp = np.where(p > 0, np.minimum(p, ltp) / p, 1.0)
+    else:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f_awc = np.where(p > 0, np.maximum(p - CP, 0.0) / p, 0.0)
+        f_ltp = 1.0 - f_awc
+
+    # p_30s² weights — same basis as NP; used as split ratio only
+    weights = (p_30s ** 2) * dt if ftp > 0 else np.zeros_like(p_30s)
+    w_total = float(np.sum(weights))
+    if w_total > 0 and tss_total > 0:
+        awc_frac = float(np.sum(weights * f_awc)) / w_total
+        ltp_frac = float(np.sum(weights * f_ltp)) / w_total
+        tss_awc  = tss_total * awc_frac
+        tss_map  = tss_total - tss_awc
+        tss_ltp  = min(tss_total * ltp_frac, tss_map)  # clamp for float safety
+    else:
+        tss_awc = 0.0
+        tss_map = float(tss_total)
+        tss_ltp = float(tss_total)
+    return tss_ltp, tss_map, tss_awc
+
+
+def _aerobic_decoupling(df: pd.DataFrame) -> float | None:
+    """Aerobic decoupling: drift in power:HR efficiency ratio between ride halves.
+
+    Splits the ride in two equal halves and computes the standard TrainingPeaks
+    aerobic decoupling metric:
+
+        AeDec% = (PHR_first − PHR_second) / PHR_first × 100
+
+    where PHR = average(power) / average(heart_rate) for each half.
+
+    Positive value = HR drifted up relative to power (cardiac drift / fatigue).
+    Negative value = efficiency improved in second half (rare).
+    < 5 % = well-paced with good aerobic base; > 10 % = notable cardiac drift.
+
+    Returns None when there are fewer than 60 samples with both power and HR data.
+    """
+    valid = df[["power", "heart_rate"]].dropna()
+    if len(valid) < 60:
+        return None
+    n = len(valid) // 2
+    first, second = valid.iloc[:n], valid.iloc[n:]
+    phr1 = first["power"].mean() / first["heart_rate"].mean()
+    phr2 = second["power"].mean() / second["heart_rate"].mean()
+    return round((phr1 - phr2) / phr1 * 100, 2) if phr1 > 0 else None
+
+
+def _power_model(t, AWC, Pmax, MAP, tau2):
+    """Two-component power-duration model.
+
+    P(t) = AWC/t * (1 - exp(-t/tau))  +  MAP * (1 - exp(-t/tau2))
+
+    where tau = AWC/Pmax  (Pmax is the instantaneous power limit as t → 0).
+    """
+    tau = AWC / Pmax
+    return AWC / t * (1.0 - np.exp(-t / tau)) + MAP * (1.0 - np.exp(-t / tau2))
+
+
+def _fit_power_curve(dur: np.ndarray, pwr: np.ndarray,
+                     n_iter: int = 8, asymmetry: float = 10.0,
+                     p0_init: list | None = None):
+    """Skimming fit via iteratively reweighted least squares (IRLS).
+
+    Points above the model (hard efforts) receive weight `asymmetry`; points
+    below receive weight 1, so the curve rides the upper envelope.
+
+    Returns (popt, True) on success or (None, False) on failure.
+    popt = [AWC, Pmax, MAP, tau2]
+
+    Pass p0_init (a previous popt) to warm-start the solver; it is treated as
+    the result of iteration 0, skipping the cold-start phase.  Only used when
+    it lies within bounds.
+    """
+    p0_default = [20_000, float(pwr.max()) * 1.1, float(np.percentile(pwr, 90)) * 0.9, 300.0]
+    bounds  = ([0, 0, 0, 1], [500_000, 5_000, 3_000, 3_600])
+    weights = np.ones(len(dur))
+    # Warm-start: validate p0_init against bounds before using it
+    popt: list | None = None
+    if p0_init is not None:
+        lo, hi = bounds
+        if all(lo[j] <= p0_init[j] <= hi[j] for j in range(4)):
+            popt = list(p0_init)
+
+    for i in range(n_iter):
+        try:
+            popt, _ = curve_fit(
+                _power_model, dur, pwr,
+                p0=p0_default if popt is None else popt,
+                bounds=bounds,
+                sigma=1.0 / weights,
+                absolute_sigma=False,
+                maxfev=10_000,
+            )
+        except Exception as exc:
+            print(f"[fit] IRLS iter {i} failed: {exc}")
+            return None, False
+        residuals = pwr - _power_model(dur, *popt)
+        weights   = np.where(residuals > 0, asymmetry, 1.0)
+
+    return popt, True
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -213,16 +382,92 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# ── FIT parsing ───────────────────────────────────────────────────────────────
+
+def read_fit(path: str) -> pd.DataFrame:
+    """Return DataFrame with columns: timestamp, elapsed_s, power, heart_rate,
+    latitude, longitude, altitude_m."""
+    rows = []
+    with fitdecode.FitReader(path) as fit:
+        for frame in fit:
+            if not isinstance(frame, fitdecode.FitDataMessage) or frame.name != "record":
+                continue
+            raw_lat = frame.get_value("position_lat",  fallback=None)
+            raw_lon = frame.get_value("position_long", fallback=None)
+            rows.append({
+                "timestamp":  frame.get_value("timestamp",        fallback=None),
+                "power":      frame.get_value("power",            fallback=None),
+                "heart_rate": frame.get_value("heart_rate",       fallback=None),
+                "latitude":   round(raw_lat * _SEMI_TO_DEG, 7) if raw_lat is not None else None,
+                "longitude":  round(raw_lon * _SEMI_TO_DEG, 7) if raw_lon is not None else None,
+                "altitude_m": frame.get_value("enhanced_altitude", fallback=None),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df.sort_values("timestamp", inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    df["elapsed_s"] = (df["timestamp"] - df["timestamp"].iloc[0]).dt.total_seconds()
+    return df
+
+
 # ── MMP calculation ───────────────────────────────────────────────────────────
 
 def calculate_mmp(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
-    """Return {duration_s: best_avg_power} for each requested duration."""
-    return calculate_rolling_max_avg(df, "power", durations)
+    """
+    Return {duration_s: best_avg_power} for each requested duration.
+
+    The records are already 1-second apart (verified).  For any duration d
+    the MMP is simply the maximum of the d-sample rolling mean of the power
+    series.  NaN power values (sensor dropout) are filled with 0 W, which
+    is the convention used by most cycling analysis software.
+    """
+    if df.empty or df["power"].isna().all():
+        return {}
+
+    power = df["power"].fillna(0).to_numpy(dtype=float)
+    n = len(power)
+
+    # Build a cumulative-sum array for O(1) window sums
+    cumsum = power.cumsum()
+
+    result: dict[int, float] = {}
+    for d in durations:
+        if n < d:
+            continue
+        # window sums: sum[i..i+d-1] = cumsum[i+d-1] - cumsum[i-1]
+        window_sums = cumsum[d - 1:].copy()
+        window_sums[1:] -= cumsum[:n - d]
+        result[d] = float(window_sums.max() / d)
+
+    return result
 
 
 def calculate_mmh(df: pd.DataFrame, durations: list[int]) -> dict[int, float]:
-    """Return {duration_s: best_avg_heart_rate} for each requested duration."""
-    return calculate_rolling_max_avg(df, "heart_rate", durations)
+    """Return {duration_s: best_avg_heart_rate} for each requested duration.
+
+    Uses the same rolling-window algorithm as calculate_mmp.
+    Rides without heart rate data return an empty dict.
+    """
+    if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
+        return {}
+
+    hr = df["heart_rate"].fillna(0).to_numpy(dtype=float)
+    n  = len(hr)
+    cumsum = hr.cumsum()
+
+    result: dict[int, float] = {}
+    for d in durations:
+        if n < d:
+            continue
+        window_sums = cumsum[d - 1:].copy()
+        window_sums[1:] -= cumsum[:n - d]
+        result[d] = float(window_sums.max() / d)
+
+    return result
 
 
 def calculate_zones(df: pd.DataFrame, ltp: float, map_: float) -> dict[int, float]:
@@ -268,7 +513,16 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
     if mmp.empty:
         return
 
-    aged = aged_envelope(mmp, ride_date)
+    mmp["age_days"]   = mmp["ride_date"].apply(
+        lambda d: (ride_date - datetime.date.fromisoformat(d)).days
+    )
+    mmp["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (mmp["age_days"] - PDC_INFLECTION)))
+    mmp["aged_power"] = mmp["power"] * mmp["weight"]
+
+    aged = (
+        mmp.groupby("duration_s")["aged_power"]
+        .max().reset_index().sort_values("duration_s")
+    )
     dur = aged["duration_s"].to_numpy(dtype=float)
     pwr = aged["aged_power"].to_numpy(dtype=float)
 
@@ -281,7 +535,8 @@ def compute_pdc_params(conn: sqlite3.Connection, ride_id: int) -> None:
 
     AWC, Pmax, MAP, tau2 = popt
 
-    ltp = calculate_ltp(AWC, MAP)
+    # Lower threshold power (first lactate turn point)
+    ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
     # ── TSS metrics ───────────────────────────────────────────────────────────
     ftp = float(_power_model(3600.0, AWC, Pmax, MAP, tau2))
@@ -401,9 +656,13 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
             prev_popt = None
             continue
 
-        # Convert date_obj to ISO strings for apply_sigmoid_aging compatibility
-        w_iso = w.assign(ride_date=w["date_obj"].apply(lambda d: d.isoformat()))
-        aged = aged_envelope(w_iso, ref)
+        age        = w["date_obj"].apply(lambda d: (ref - d).days)
+        aged_power = w["power"] * (1.0 / (1.0 + np.exp(PDC_K * (age - PDC_INFLECTION))))
+        aged = (
+            w.assign(aged_power=aged_power)
+            .groupby("duration_s")["aged_power"].max()
+            .reset_index().sort_values("duration_s")
+        )
         if len(aged) < 4:
             prev_popt = None
             continue
@@ -420,7 +679,7 @@ def recompute_daily_pdc_params(conn: sqlite3.Connection,
 
         prev_popt = list(popt)
         AWC, Pmax, MAP, tau2 = popt
-        ltp = calculate_ltp(AWC, MAP)
+        ltp = float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP)))
 
         rows.append((
             ref.isoformat(),
@@ -520,6 +779,91 @@ def backfill_zones(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
     print("[zones] Backfill complete.")
+
+
+def backfill_mmh(conn: sqlite3.Connection) -> None:
+    """Compute MMH for any ride that has no MMH rows yet.
+
+    Re-reads the original .fit file so that rides processed before heart rate
+    support was added get their curves populated retrospectively.
+    Also updates rides.avg_heart_rate / max_heart_rate where missing.
+    """
+    rows = conn.execute(
+        """SELECT r.id, r.name FROM rides r
+           WHERE NOT EXISTS (SELECT 1 FROM mmh m WHERE m.ride_id = r.id)
+             AND EXISTS (SELECT 1 FROM records rec
+                         WHERE rec.ride_id = r.id AND rec.heart_rate IS NOT NULL)
+           ORDER BY r.ride_date, r.id"""
+    ).fetchall()
+    if not rows:
+        return
+
+    print(f"[mmh] Backfilling MMH for {len(rows)} ride(s) …")
+    for ride_id, name in rows:
+        fit_path = os.path.join(FIT_DIR, name + ".fit")
+        if not os.path.exists(fit_path):
+            continue
+        df = read_fit(fit_path)
+        if df.empty or "heart_rate" not in df.columns or df["heart_rate"].isna().all():
+            continue
+
+        mmh = calculate_mmh(df, MMP_DURATIONS)
+        if mmh:
+            conn.executemany(
+                "INSERT OR IGNORE INTO mmh (ride_id, duration_s, heart_rate) VALUES (?,?,?)",
+                [(ride_id, d, round(h, 1)) for d, h in mmh.items()],
+            )
+        conn.execute(
+            "UPDATE rides SET avg_heart_rate = ?, max_heart_rate = ? WHERE id = ?",
+            (
+                round(float(df["heart_rate"].mean()), 1),
+                int(df["heart_rate"].max()),
+                ride_id,
+            ),
+        )
+        conn.commit()
+    print("[mmh] Backfill complete.")
+
+
+def backfill_gps_elevation(conn: sqlite3.Connection) -> None:
+    """Populate latitude/longitude/altitude_m for rides processed before GPS support."""
+    rows = conn.execute(
+        """SELECT r.id, r.name FROM rides r
+           WHERE r.name NOT LIKE 'strava_%'
+             AND NOT EXISTS (
+               SELECT 1 FROM records rec
+               WHERE rec.ride_id = r.id AND rec.latitude IS NOT NULL
+           )
+           ORDER BY r.ride_date, r.id"""
+    ).fetchall()
+    if not rows:
+        return
+
+    print(f"[gps] Backfilling GPS/elevation for {len(rows)} ride(s) …")
+    for ride_id, name in rows:
+        fit_path = os.path.join(FIT_DIR, name + ".fit")
+        if not os.path.exists(fit_path):
+            continue
+        df = read_fit(fit_path)
+        if df.empty or "latitude" not in df.columns or df["latitude"].isna().all():
+            continue
+        conn.executemany(
+            """UPDATE records
+               SET latitude = ?, longitude = ?, altitude_m = ?
+               WHERE ride_id = ? AND elapsed_s = ?""",
+            (
+                (
+                    row.latitude  if pd.notna(row.latitude)  else None,
+                    row.longitude if pd.notna(row.longitude) else None,
+                    round(float(row.altitude_m), 1) if pd.notna(row.altitude_m) else None,
+                    ride_id,
+                    row.elapsed_s,
+                )
+                for row in df.itertuples()
+            ),
+        )
+        conn.commit()
+    print("[gps] Backfill complete.")
 
 
 def recompute_all_pdc_params(conn: sqlite3.Connection) -> None:
@@ -704,8 +1048,22 @@ def ingest_ride(conn: sqlite3.Connection, name: str, df: pd.DataFrame) -> None:
     recompute_daily_pdc_params(conn, from_date=ride_date)
 
 
+def process_ride(conn: sqlite3.Connection, path: str) -> None:
+    name = os.path.splitext(os.path.basename(path))[0]
+    df = read_fit(path)
+    ingest_ride(conn, name, df)
+
+
 # ── Display helpers ───────────────────────────────────────────────────────────
 
+def _fmt_duration(s: int) -> str:
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        m, rem = divmod(s, 60)
+        return f"{m}min" if rem == 0 else f"{m}:{rem:02d}"
+    h, rem = divmod(s, 3600)
+    return f"{h}h" if rem == 0 else f"{h}h{rem // 60}min"
 
 
 def print_mmp_table(db_path: str) -> None:
@@ -725,7 +1083,7 @@ def print_mmp_table(db_path: str) -> None:
 
     mmp = mmp.merge(rides.rename(columns={"id": "ride_id"}), on="ride_id")
     pivot = mmp.pivot(index="duration_s", columns="name", values="power")
-    pivot.index = [fmt_duration(int(d)) for d in pivot.index]
+    pivot.index = [_fmt_duration(int(d)) for d in pivot.index]
     pivot.columns.name = None
 
     # Truncate column names to keep the table readable
@@ -755,7 +1113,7 @@ def print_mmp_table(db_path: str) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build cycling SQLite database.")
+    parser = argparse.ArgumentParser(description="Build cycling SQLite database from FIT files.")
     parser.add_argument("--show", action="store_true", help="Print summary tables only, no processing.")
     args = parser.parse_args()
 
@@ -765,6 +1123,17 @@ def main() -> None:
 
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
+
+    fit_files = sorted(glob.glob(os.path.join(FIT_DIR, "*.fit")))
+    if not fit_files:
+        print(f"No .fit files found in {FIT_DIR}")
+        conn.close()
+        return
+
+    print(f"Processing {len(fit_files)} FIT file(s) → {DB_PATH}\n")
+    for path in fit_files:
+        process_ride(conn, path)
+
     backfill_pdc_params(conn)
     backfill_vi_aedec(conn)
     backfill_zones(conn)
