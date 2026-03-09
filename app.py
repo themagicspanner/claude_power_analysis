@@ -26,6 +26,7 @@ Pages / sections
 import argparse
 import base64
 import datetime
+import json
 import os
 import sqlite3
 import threading
@@ -37,29 +38,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import dash
 import dash_ag_grid as dag
-from dash import dcc, html, Input, Output, State, ctx, Patch
+from dash import dcc, html, Input, Output, State, ctx, Patch, ClientsideFunction
 from build_database import (
-    init_db, backfill_pdc_params,
+    init_db, backfill_pdc_params, backfill_mmh, backfill_gps_elevation,
     backfill_vi_aedec, backfill_zones, backfill_missing_mmp,
     recompute_all_pdc_params, ensure_daily_pdc_current,
+    _power_model, _fit_power_curve, _normalized_power,
     calculate_mmp, calculate_zones, MMP_DURATIONS,
-)
-from pdc_fitting import power_model, fit_power_curve, normalized_power
-from helpers import (
     PDC_K, PDC_INFLECTION, PDC_WINDOW,
-    calculate_ltp, aged_envelope, query_db, extract_pdc_params,
-    compute_pmc, fmt_duration,
 )
 from strava_import import get_client, fetch_and_import, CONFIG_PATH
-from workouts import (
-    get_latest_pdc, load_workouts, save_workouts,
-    resolve_ref_watts, build_workout_records,
-    make_power_trace_svg, pdc_duration_for_zone_pcts,
-    workout_summary_row,
-)
-from freshness import (
-    FRESHNESS_CFG, days_to_trainable, compute_freshness_status,
-)
 
 from graphs import (
     fig_power_hr, fig_hr, fig_mmh, fig_route_map, fig_elevation,
@@ -67,11 +55,12 @@ from graphs import (
     fig_pdc_params_history, fig_tss_components,
     fig_tss_history, fig_pmc, fig_pmc_combined, fig_zone_bars,
     fig_pdc_investigation, fig_sigmoid_decay,
-    _tss_rate_series,
+    _tss_rate_series, _compute_pmc,
 )
 
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
 DB_PATH        = os.path.join(BASE_DIR, "cycling.db")
+WORKOUTS_PATH  = os.path.join(BASE_DIR, "saved_workouts.json")
 
 STRAVA_SYNC_INTERVAL = 15 * 60  # seconds between background Strava syncs
 STRAVA_SYNC_LOOKBACK = 90       # default days to look back when syncing
@@ -123,23 +112,28 @@ COLOURS = px.colors.qualitative.Light24
 # ── Database helpers ───────────────────────────────────────────────────────────
 
 def _load_rides() -> pd.DataFrame:
-    return query_db(
-        DB_PATH,
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
         """SELECT id, name, ride_date,
                   round(duration_s / 60.0, 1) AS duration_min,
                   avg_power, max_power,
                   avg_heart_rate, max_heart_rate
            FROM rides ORDER BY ride_date, name""",
+        conn,
     )
+    conn.close()
+    return df
 
 
 def _load_gps_traces() -> dict[int, list[tuple[float, float]]]:
     """Load downsampled GPS traces for all rides. Returns {ride_id: [(lat, lon), ...]}."""
-    df = query_db(
-        DB_PATH,
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
         "SELECT ride_id, latitude, longitude FROM records"
         " WHERE latitude IS NOT NULL ORDER BY ride_id, elapsed_s",
+        conn,
     )
+    conn.close()
     traces: dict[int, list[tuple[float, float]]] = {}
     for ride_id, group in df.groupby("ride_id"):
         pts = list(zip(group["latitude"], group["longitude"]))
@@ -211,7 +205,9 @@ def _build_table_data(rides: pd.DataFrame, pdc_params: pd.DataFrame,
 
 
 def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
-    mmp = query_db(DB_PATH, "SELECT ride_id, duration_s, power FROM mmp")
+    conn = sqlite3.connect(DB_PATH)
+    mmp = pd.read_sql("SELECT ride_id, duration_s, power FROM mmp", conn)
+    conn.close()
     mmp = mmp.merge(
         rides.rename(columns={"id": "ride_id"})[["ride_id", "name", "ride_date"]],
         on="ride_id",
@@ -220,7 +216,9 @@ def _load_mmp_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
-    mmh = query_db(DB_PATH, "SELECT ride_id, duration_s, heart_rate FROM mmh")
+    conn = sqlite3.connect(DB_PATH)
+    mmh = pd.read_sql("SELECT ride_id, duration_s, heart_rate FROM mmh", conn)
+    conn.close()
     if mmh.empty:
         return mmh
     mmh = mmh.merge(
@@ -231,33 +229,42 @@ def _load_mmh_all(rides: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_pdc_params() -> pd.DataFrame:
-    return query_db(DB_PATH, "SELECT * FROM pdc_params")
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql("SELECT * FROM pdc_params", conn)
+    conn.close()
+    return df
 
 
 def _load_daily_pdc() -> pd.DataFrame:
-    return query_db(
-        DB_PATH,
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
         "SELECT date, MAP, Pmax, AWC, ltp, tau2 FROM daily_pdc_params ORDER BY date",
+        conn,
     )
+    conn.close()
+    return df
 
 
 def _load_zones_for_ride(ride_id: int) -> dict[int, float]:
     """Return {zone: seconds} for the given ride from zone_distribution."""
-    df = query_db(
-        DB_PATH,
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
         "SELECT zone, seconds FROM zone_distribution WHERE ride_id = ?",
-        params=(ride_id,),
+        conn, params=(ride_id,),
     )
+    conn.close()
     return {int(r["zone"]): float(r["seconds"]) for _, r in df.iterrows()}
 
 
 def load_records(ride_id: int) -> pd.DataFrame:
-    df = query_db(
-        DB_PATH,
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
         "SELECT elapsed_s, power, heart_rate, latitude, longitude, altitude_m"
         " FROM records WHERE ride_id = ? ORDER BY elapsed_s",
+        conn,
         params=(ride_id,),
     )
+    conn.close()
     df["elapsed_min"] = df["elapsed_s"] / 60.0
     return df
 
@@ -346,14 +353,23 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
     if window.empty:
         return None
 
-    aged = aged_envelope(window, ride_date_obj)
+    window["age_days"]   = window["ride_date"].apply(
+        lambda d: (ride_date_obj - datetime.date.fromisoformat(d)).days
+    )
+    window["weight"]     = 1.0 / (1.0 + np.exp(PDC_K * (window["age_days"] - PDC_INFLECTION)))
+    window["aged_power"] = window["power"] * window["weight"]
+
+    aged = (
+        window.groupby("duration_s")["aged_power"]
+        .max().reset_index().sort_values("duration_s")
+    )
     dur = aged["duration_s"].to_numpy(dtype=float)
     pwr = aged["aged_power"].to_numpy(dtype=float)
 
     if len(dur) < 4:
         return None
 
-    popt, ok = fit_power_curve(dur, pwr)
+    popt, ok = _fit_power_curve(dur, pwr)
     if not ok:
         return None
 
@@ -363,8 +379,8 @@ def _fit_pdc_for_ride(ride: pd.Series, mmp_all: pd.DataFrame) -> dict | None:
         "Pmax": float(Pmax),
         "MAP":  float(MAP),
         "tau2": float(tau2),
-        "ftp":  float(power_model(3600.0, AWC, Pmax, MAP, tau2)),
-        "ltp":  calculate_ltp(AWC, MAP),
+        "ftp":  float(_power_model(3600.0, AWC, Pmax, MAP, tau2)),
+        "ltp":  float(MAP * (1.0 - (5.0 / 2.0) * ((AWC / 1000.0) / MAP))),
     }
 
 
@@ -398,8 +414,255 @@ def _graph_stat_row(items: list[tuple]) -> html.Div:
 
 
 
+def _activities_table_data(rides: pd.DataFrame,
+                           pdc_params: pd.DataFrame) -> list[dict]:
+    """Join rides + pdc_params and return rows for the DataTable, newest first."""
+    df = (
+        rides
+        .merge(pdc_params.rename(columns={"ride_id": "id"}), on="id", how="left")
+        .sort_values("ride_date", ascending=False)
+    )
+
+    def _int(v):
+        return int(round(v)) if pd.notna(v) else ""
+
+    def _f1(v):
+        return round(float(v), 1) if pd.notna(v) else ""
+
+    def _f2(v):
+        return round(float(v), 2) if pd.notna(v) else ""
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "date":         r["ride_date"],
+            "name":         r["name"].replace("_", " "),
+            "duration_min": _f1(r.get("duration_min")),
+            "avg_power":    _int(r.get("avg_power")),
+            "max_power":    _int(r.get("max_power")),
+            "ftp":          _int(r.get("ftp")),
+            "np":           _int(r.get("normalized_power")),
+            "if":           _f2(r.get("intensity_factor")),
+            "tss":          _int(r.get("tss")),
+            "tss_ltp":      _int(r.get("tss_ltp")),
+            "tss_map":      _int(r.get("tss_map")),
+            "tss_awc":      _int(r.get("tss_awc")),
+            "map_w":        _int(r.get("MAP")),
+            "awc_kj":       _f1(r["AWC"] / 1000 if pd.notna(r.get("AWC")) else None),
+            "pmax":         _int(r.get("Pmax")),
+        })
+    return rows
 
 
+
+
+
+
+
+# ── Workout builder helpers ────────────────────────────────────────────────────
+
+def _get_latest_pdc(pdc_params: pd.DataFrame,
+                    rides: pd.DataFrame) -> dict | None:
+    """Return the most recent PDC params as a dict, or None."""
+    if pdc_params.empty or rides.empty:
+        return None
+    merged = (
+        pdc_params
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+        .sort_values("ride_date", ascending=False)
+        .dropna(subset=["MAP", "AWC", "Pmax"])
+    )
+    if merged.empty:
+        return None
+    r = merged.iloc[0]
+    return {
+        "MAP":  float(r["MAP"]),
+        "AWC":  float(r["AWC"]),
+        "Pmax": float(r["Pmax"]),
+        "tau2": float(r["tau2"]) if pd.notna(r.get("tau2")) else 300.0,
+        "ftp":  float(r["ftp"]) if pd.notna(r.get("ftp")) else float(r["MAP"]),
+        "ltp":  float(r["ltp"]) if pd.notna(r.get("ltp")) else 0.0,
+    }
+
+
+# ── Saved workouts persistence ────────────────────────────────────────────────
+
+def _load_workouts() -> dict[str, list[dict]]:
+    """Load saved workouts from JSON file. Returns {name: rowData}."""
+    if os.path.exists(WORKOUTS_PATH):
+        with open(WORKOUTS_PATH, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_workouts(workouts: dict[str, list[dict]]) -> None:
+    """Persist workouts dict to JSON file."""
+    with open(WORKOUTS_PATH, "w") as f:
+        json.dump(workouts, f, indent=2)
+
+
+def _resolve_ref_watts(ref: str, pdc: dict | None, map_watts: float) -> float:
+    """Return the reference power in watts for a given zone label."""
+    if pdc is None:
+        return map_watts
+    ref = (ref or "MAP").upper()
+    if ref == "FTP":
+        return float(pdc.get("ftp") or map_watts)
+    if ref == "LTP":
+        return float(pdc.get("ltp") or 0.0) or map_watts * 0.75
+    if ref == "PMAX":
+        return float(pdc.get("Pmax") or map_watts)
+    return map_watts  # default: MAP
+
+
+def _build_workout_records(row_data: list[dict],
+                           map_watts: float,
+                           pdc: dict | None = None) -> pd.DataFrame:
+    """Generate a 1-Hz simulated power DataFrame from workout interval rows."""
+    power_samples: list[float] = []
+    for row in row_data:
+        work_s = int(float(row.get("work_duration_min") or 0) * 60)
+        rest_s = int(float(row.get("rest_duration_min") or 0) * 60)
+        work_ref_w = _resolve_ref_watts(row.get("work_ref", "MAP"), pdc, map_watts)
+        rest_ref_w = _resolve_ref_watts(row.get("rest_ref", "MAP"), pdc, map_watts)
+        work_w = float(row.get("work_intensity_pct") or 0) / 100.0 * work_ref_w
+        rest_w = float(row.get("rest_intensity_pct") or 0) / 100.0 * rest_ref_w
+        reps   = int(row.get("repetitions") or 1)
+        for _ in range(max(reps, 0)):
+            power_samples.extend([work_w] * work_s)
+            if rest_s > 0:
+                power_samples.extend([rest_w] * rest_s)
+
+    if not power_samples:
+        return pd.DataFrame(columns=["elapsed_s", "elapsed_min", "power", "heart_rate"])
+
+    n = len(power_samples)
+    return pd.DataFrame({
+        "elapsed_s":   np.arange(n, dtype=float),
+        "elapsed_min": np.arange(n, dtype=float) / 60.0,
+        "power":       np.array(power_samples, dtype=float),
+        "heart_rate":  np.full(n, np.nan),
+    })
+
+
+# ── Freshness status ──────────────────────────────────────────────────────────
+
+_FRESHNESS_CFG = {
+    "green": {
+        "color": "#16a34a", "label": "Ready",
+        "desc": "All training",
+        "bg": "#f0fdf4", "border": "#86efac",
+    },
+    "amber": {
+        "color": "#d97706", "label": "Aerobic Only",
+        "desc": "Low intensity",
+        "bg": "#fffbeb", "border": "#fcd34d",
+    },
+    "red": {
+        "color": "#dc2626", "label": "Fatigued",
+        "desc": "Rest from intensity",
+        "bg": "#fef2f2", "border": "#fca5a5",
+    },
+    "black": {
+        "color": "#1e1e1e", "label": "Full Rest",
+        "desc": "Deeply fatigued",
+        "bg": "#f3f3f3", "border": "#a0a0a0",
+    },
+}
+
+
+def _days_to_trainable(atl: float, ctl: float,
+                        threshold_pct: float = 0.0,
+                        max_days: int = 60) -> int | None:
+    """Days of complete rest until TSB > -threshold_pct * CTL.
+
+    threshold_pct = 0.30 for the MAP aerobic boundary (TSB > -30% CTL),
+                  = 0.0  for the AWC high-intensity boundary (TSB > 0).
+    Uses the same ATL τ=7 d / CTL τ=42 d decay as _compute_pmc.
+    Returns None if the threshold is not crossed within max_days.
+    """
+    k_atl = 1.0 - np.exp(-1.0 / 7.0)
+    k_ctl = 1.0 - np.exp(-1.0 / 42.0)
+    for day in range(1, max_days + 1):
+        tsb = ctl - atl                    # form before that day's TSS
+        atl = atl + k_atl * (0.0 - atl)   # rest: TSS = 0
+        ctl = ctl + k_ctl * (0.0 - ctl)
+        if tsb > -threshold_pct * ctl:
+            return day
+    return None
+
+
+def _compute_freshness_status(pdc_params: pd.DataFrame,
+                               rides: pd.DataFrame) -> tuple:
+    """Return freshness tuple including base, threshold, and AWC components.
+
+    Uses three zone-specific TSB values against CTL-relative cutoffs:
+      • Base (≤ LTP):         cutoff = −50 % of base CTL
+      • Threshold (LTP→MAP):  cutoff = −30 % of threshold CTL
+      • AWC (> MAP):          cutoff = TSB > 0
+
+    status is 'green'  — all three OK  (ready for anything)
+              'amber'  — base & thresh OK but TSB_AWC ≤ 0  (aerobic only)
+              'red'    — thresh below cutoff (rest from intensity; base OK)
+              'black'  — base below cutoff  (full rest / recovery)
+    Returns a tuple of Nones when there is insufficient data.
+    """
+    _none = (None,) * 12
+    if pdc_params.empty or not {"tss_map", "tss_awc"}.issubset(pdc_params.columns):
+        return _none
+
+    df = (
+        pdc_params.dropna(subset=["tss_map", "tss_awc"])
+        .merge(rides[["id", "ride_date"]], left_on="ride_id", right_on="id", how="left")
+    )
+    if df.empty:
+        return _none
+
+    df["ride_date"] = pd.to_datetime(df["ride_date"])
+
+    # Derive the threshold component (above LTP, below MAP)
+    if "tss_ltp" in df.columns:
+        df["tss_ltp"]    = df["tss_ltp"].fillna(df["tss_map"])
+        df["tss_thresh"] = (df["tss_map"] - df["tss_ltp"]).clip(lower=0)
+    else:
+        df["tss_ltp"]    = df["tss_map"]   # fallback: no LTP data yet
+        df["tss_thresh"] = df["tss_map"]
+
+    daily = df.groupby("ride_date")[["tss_ltp", "tss_thresh", "tss_awc"]].sum()
+
+    pmc_base   = _compute_pmc(daily["tss_ltp"])
+    pmc_thresh = _compute_pmc(daily["tss_thresh"])
+    pmc_awc    = _compute_pmc(daily["tss_awc"])
+
+    if pmc_base.empty or pmc_thresh.empty or pmc_awc.empty:
+        return _none
+
+    tsb_base         = float(pmc_base["tsb"].iloc[-1])
+    ctl_base         = float(pmc_base["ctl"].iloc[-1])
+    base_threshold   = -0.50 * ctl_base    # −50 % of base training load
+
+    tsb_thresh       = float(pmc_thresh["tsb"].iloc[-1])
+    ctl_thresh       = float(pmc_thresh["ctl"].iloc[-1])
+    thresh_threshold = -0.30 * ctl_thresh   # −30 % of threshold training load
+
+    tsb_awc          = float(pmc_awc["tsb"].iloc[-1])
+
+    if tsb_base <= base_threshold:
+        status = "black"
+    elif tsb_thresh <= thresh_threshold:
+        status = "red"
+    elif tsb_awc <= 0:
+        status = "amber"
+    else:
+        status = "green"
+
+    return (
+        status, tsb_base, tsb_thresh, tsb_awc,
+        base_threshold, thresh_threshold,
+        float(pmc_base["atl"].iloc[-1]), ctl_base,
+        float(pmc_thresh["atl"].iloc[-1]), ctl_thresh,
+        float(pmc_awc["atl"].iloc[-1]), float(pmc_awc["ctl"].iloc[-1]),
+    )
 
 
 # ── Metric summary boxes ──────────────────────────────────────────────────────
@@ -537,9 +800,9 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
     (status, tsb_base, tsb_thresh, tsb_awc,
      base_threshold, thresh_threshold,
      atl_base, ctl_base, atl_thresh, ctl_thresh,
-     atl_awc, ctl_awc) = compute_freshness_status(pdc_params, rides)
+     atl_awc, ctl_awc) = _compute_freshness_status(pdc_params, rides)
     if status is not None:
-        cfg = FRESHNESS_CFG[status]
+        cfg = _FRESHNESS_CFG[status]
 
         # Per-zone status: (zone_label, ok?, tsb, cutoff_label)
         base_ok   = tsb_base  > base_threshold
@@ -575,22 +838,22 @@ def _metric_boxes(pdc_params: pd.DataFrame, rides: pd.DataFrame) -> list:
         # Summary text and next-zone countdown
         if status == "black":
             summary = "Full rest recommended — base fatigue is too high for any riding."
-            days = days_to_trainable(atl_base, ctl_base, threshold_pct=0.50)
+            days = _days_to_trainable(atl_base, ctl_base, threshold_pct=0.50)
             countdown = (f"Base riding in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "Recovery > 60 days")
-            countdown_color = FRESHNESS_CFG["red"]["color"]
+            countdown_color = _FRESHNESS_CFG["red"]["color"]
         elif status == "red":
             summary = "Recovery rides only — threshold fatigue needs to clear before intensity."
-            days = days_to_trainable(atl_thresh, ctl_thresh, threshold_pct=0.30)
+            days = _days_to_trainable(atl_thresh, ctl_thresh, threshold_pct=0.30)
             countdown = (f"Threshold sessions in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "Recovery > 60 days")
-            countdown_color = FRESHNESS_CFG["amber"]["color"]
+            countdown_color = _FRESHNESS_CFG["amber"]["color"]
         elif status == "amber":
             summary = "Aerobic training OK — endurance and tempo, but avoid VO2max / anaerobic work."
-            days = days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
+            days = _days_to_trainable(atl_awc, ctl_awc, threshold_pct=0.0)
             countdown = (f"High intensity in ~{days} day{'s' if days != 1 else ''}"
                          if days is not None else "High intensity > 60 days")
-            countdown_color = FRESHNESS_CFG["green"]["color"]
+            countdown_color = _FRESHNESS_CFG["green"]["color"]
         else:
             summary = "All systems go — ready for any session including high-intensity intervals."
             countdown = None
@@ -689,6 +952,8 @@ backfill_pdc_params(_boot_conn)
 backfill_missing_mmp(_boot_conn)
 backfill_vi_aedec(_boot_conn)
 backfill_zones(_boot_conn)
+backfill_mmh(_boot_conn)
+backfill_gps_elevation(_boot_conn)
 ensure_daily_pdc_current(_boot_conn)
 _boot_conn.close()
 
@@ -1330,7 +1595,7 @@ def _build_pdc_cards(daily_pdc: pd.DataFrame, ref_str: str) -> list:
     pmax_v = int(round(r["Pmax"]))
     awc_v  = f"{r['AWC']/1000:.1f}"
     ltp_v  = int(round(r["ltp"]))
-    ftp_v  = int(round(power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
+    ftp_v  = int(round(_power_model(3600.0, r["AWC"], r["Pmax"], r["MAP"], r["tau2"])))
     return [
         _make_card(ref_str, "", "", {**_cs, "minWidth": "140px"},
                    {**_ls, "fontSize": "13px", "color": "#222"},
@@ -1381,6 +1646,16 @@ def update_pdc_historical(click_data, dates):
     return fig, cards, fig_history
 
 
+def _fmt_mmp_duration(seconds: int) -> str:
+    """Format a duration in seconds to a human-readable label for the MMP table."""
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{m}min" if s == 0 else f"{m}:{s:02d}"
+    h, rem = divmod(seconds, 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}" if m else f"{h}h"
 
 
 def _build_mmp_table(this_mmp: pd.DataFrame,
@@ -1440,7 +1715,7 @@ def _build_mmp_table(this_mmp: pd.DataFrame,
             delta_text = "—"
 
         rows.append(html.Tr([
-            html.Td(fmt_duration(d), style=dur_style),
+            html.Td(_fmt_mmp_duration(d), style=dur_style),
             html.Td(f"{p:.0f} W", style=pwr_style),
             html.Td(f"{prior:.0f} W" if prior is not None else "—", style=prior_style),
             html.Td(delta_text, style=delta_style),
@@ -1694,6 +1969,178 @@ def _sync_ride_chart_xaxes(rld_phr, rld_hr, rld_tss_z, rld_elev):
 
 # ── Workout builder callbacks ─────────────────────────────────────────────────
 
+def _make_power_trace_svg(power: np.ndarray, width: int = 120, height: int = 40) -> str:
+    """Return a mini SVG sparkline of the power trace for the workout list."""
+    if len(power) < 2:
+        return ""
+    # Downsample to ~width points for a compact SVG
+    step = max(1, len(power) // width)
+    p = power[::step]
+    n = len(p)
+    p_min, p_max = float(np.nanmin(p)), float(np.nanmax(p))
+    p_range = p_max - p_min or 1.0
+    pad = 2
+    x_scale = (width - 2 * pad) / max(n - 1, 1)
+    y_scale = (height - 2 * pad) / p_range
+    pts = " ".join(
+        f"{i * x_scale + pad:.1f},{height - ((p[i] - p_min) * y_scale + pad):.1f}"
+        for i in range(n)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
+        f'<polyline points="{pts}" fill="none" stroke="#4a9eff" stroke-width="1.2"'
+        f' stroke-linejoin="round" stroke-linecap="round"/>'
+        f'</svg>'
+    )
+
+
+def _pdc_duration_for_zone_pcts(base_pct: float, thresh_pct: float, awc_pct: float,
+                                 pdc: dict | None) -> tuple[str, str, str]:
+    """Find the PDC duration where each zone's fraction matches the given percentage.
+
+    Returns formatted duration strings (e.g. "5:00", "1:30:00") for base,
+    threshold, and AWC zones, or "—" if no match.
+    """
+    if (pdc is None or not pdc.get("AWC") or not pdc.get("Pmax")
+            or not pdc.get("tau2") or not pdc.get("MAP") or not pdc.get("ltp")):
+        return ("—", "—", "—")
+
+    AWC  = pdc["AWC"]
+    Pmax = pdc["Pmax"]
+    MAP  = pdc["MAP"]
+    tau2 = pdc["tau2"]
+    ltp  = pdc["ltp"]
+    if MAP <= 0 or ltp <= 0:
+        return ("—", "—", "—")
+
+    ltp_r = ltp / MAP
+
+    # Compute zone fractions across the PDC at a fine grid of durations
+    t_grid = np.logspace(np.log10(0.5), np.log10(7200), 2000)
+    p_total = _power_model(t_grid, AWC, Pmax, MAP, tau2)
+    p_aer   = MAP * (1.0 - np.exp(-t_grid / tau2))
+
+    f_base_grid   = (p_aer * ltp_r) / p_total * 100.0
+    f_thresh_grid = (p_aer * (1.0 - ltp_r)) / p_total * 100.0
+    f_awc_grid    = (p_total - p_aer) / p_total * 100.0
+
+    def _fmt_duration(seconds: float) -> str:
+        s = int(round(seconds))
+        if s >= 3600:
+            h, rem = divmod(s, 3600)
+            m, sec = divmod(rem, 60)
+            return f"{h}:{m:02d}:{sec:02d}"
+        m, sec = divmod(s, 60)
+        return f"{m}:{sec:02d}"
+
+    def _lookup(frac_grid: np.ndarray, target_pct: float) -> str:
+        """Interpolate to find the duration where frac_grid == target_pct."""
+        if target_pct <= 0:
+            return "—"
+        # base and threshold fractions increase with duration; AWC decreases.
+        if frac_grid[-1] > frac_grid[0]:
+            # Increasing
+            if target_pct < frac_grid[0] or target_pct > frac_grid[-1]:
+                return "—"
+            t = float(np.interp(target_pct, frac_grid, t_grid))
+        else:
+            # Decreasing — reverse for np.interp
+            if target_pct < frac_grid[-1] or target_pct > frac_grid[0]:
+                return "—"
+            t = float(np.interp(target_pct, frac_grid[::-1], t_grid[::-1]))
+        return _fmt_duration(t)
+
+    return (
+        _lookup(f_base_grid,   base_pct),
+        _lookup(f_thresh_grid, thresh_pct),
+        _lookup(f_awc_grid,    awc_pct),
+    )
+
+
+def _workout_summary_row(name: str, rows: list[dict],
+                         pdc: dict | None) -> dict:
+    """Build a summary dict for the workout list table with full metrics."""
+    map_w = pdc["MAP"] if pdc else 300.0
+    ftp_w = pdc["ftp"] if pdc else map_w
+    ltp_w = pdc.get("ltp", 0.0) if pdc else 0.0
+    awc_w  = pdc.get("AWC")  if pdc else None
+    pmax_w = pdc.get("Pmax") if pdc else None
+    tau2_w = pdc.get("tau2") if pdc else None
+
+    records = _build_workout_records(rows, map_w, pdc)
+    total_s = len(records)
+
+    if records.empty or total_s < 2:
+        return {"Name": name, "Power": "", "Type": "—", "Duration": "0m",
+                "Avg Power": "—", "NP": "—", "IF": "—",
+                "TSS": "—", "Base TSS": "—", "Thresh TSS": "—",
+                "AWC TSS": "—",
+                "PDC Base": "—", "PDC Thresh": "—", "PDC AWC": "—"}
+
+    power = records["power"].to_numpy(dtype=float)
+    elapsed = records["elapsed_s"].to_numpy(dtype=float)
+
+    avg_w  = float(np.nanmean(power))
+    np_val = _normalized_power(power)
+    if_val = np_val / ftp_w if ftp_w > 0 else 0.0
+    tss    = (total_s / 3600.0) * (np_val / ftp_w) ** 2 * 100.0 if ftp_w > 0 else 0.0
+
+    # Zone TSS breakdown
+    (_, cum_ltp, cum_thresh, cum_awc, *_rest) = _tss_rate_series(
+        elapsed, power, ftp_w, map_w, ltp=ltp_w,
+        AWC=awc_w, Pmax=pmax_w, tau2=tau2_w,
+    )
+
+    mins = total_s // 60
+    dur_str = f"{mins // 60}h{mins % 60:02d}m" if mins >= 60 else f"{mins}m"
+
+    # Power trace SVG
+    svg = _make_power_trace_svg(power)
+    thumb = ""
+    if svg:
+        b64 = base64.b64encode(svg.encode()).decode()
+        thumb = f'<img src="data:image/svg+xml;base64,{b64}" style="display:block"/>'
+
+    base_tss   = cum_ltp[-1]
+    thresh_tss = cum_thresh[-1]
+    awc_tss    = cum_awc[-1]
+    total_zone = base_tss + thresh_tss + awc_tss
+
+    if awc_tss >= 1:
+        zone_type = "Anaerobic"
+    elif thresh_tss >= 1:
+        zone_type = "Threshold"
+    else:
+        zone_type = "Base"
+
+    # PDC equivalent durations for each zone's TSS percentage
+    if total_zone > 0:
+        base_pct   = base_tss / total_zone * 100.0
+        thresh_pct = thresh_tss / total_zone * 100.0
+        awc_pct    = awc_tss / total_zone * 100.0
+        pdc_base, pdc_thresh, pdc_awc = _pdc_duration_for_zone_pcts(
+            base_pct, thresh_pct, awc_pct, pdc)
+    else:
+        pdc_base = pdc_thresh = pdc_awc = "—"
+
+    return {
+        "Name":       name,
+        "Power":      thumb,
+        "Type":       zone_type,
+        "Duration":   dur_str,
+        "Avg Power":  f"{avg_w:.0f}",
+        "NP":         f"{np_val:.0f}",
+        "IF":         f"{if_val:.2f}",
+        "TSS":        f"{tss:.0f}",
+        "Base TSS":   f"{base_tss:.0f}",
+        "Thresh TSS": f"{thresh_tss:.0f}",
+        "AWC TSS":    f"{awc_tss:.0f}",
+        "PDC Base":   pdc_base,
+        "PDC Thresh": pdc_thresh,
+        "PDC AWC":    pdc_awc,
+    }
+
+
 @app.callback(
     Output("workout-list-table", "rowData"),
     Input("page-workout-list",   "style"),
@@ -1703,11 +2150,10 @@ def populate_workout_list(style):
     """Refresh the workout list table when the page becomes visible."""
     if style and style.get("display") == "none":
         raise dash.exceptions.PreventUpdate
-    workouts = load_workouts()
+    workouts = _load_workouts()
     _, rides, _, _, pdc_params, _, _ = get_data()
-    pdc = get_latest_pdc(pdc_params, rides)
-    return [workout_summary_row(k, v, pdc, tss_rate_fn=_tss_rate_series)
-            for k, v in sorted(workouts.items())]
+    pdc = _get_latest_pdc(pdc_params, rides)
+    return [_workout_summary_row(k, v, pdc) for k, v in sorted(workouts.items())]
 
 
 @app.callback(
@@ -1733,7 +2179,7 @@ def open_workout(cell_clicked, new_clicks):
         return default_rows, "", hide, show
     if ctx.triggered_id == "workout-list-table" and cell_clicked:
         name = cell_clicked["rowId"]
-        workouts = load_workouts()
+        workouts = _load_workouts()
         if name in workouts:
             return workouts[name], name, hide, show
     raise dash.exceptions.PreventUpdate
@@ -1791,14 +2237,14 @@ def manage_workout_rows(add_clicks, dup_clicks, remove_clicks, current_rows):
 )
 def save_or_delete_workout(save_clicks, del_clicks, name, row_data):
     trigger = ctx.triggered_id
-    workouts = load_workouts()
+    workouts = _load_workouts()
 
     if trigger == "workout-save-btn":
         if not name or not name.strip():
             return "Enter a name first", dash.no_update, dash.no_update, dash.no_update
         name = name.strip()
         workouts[name] = row_data
-        save_workouts(workouts)
+        _save_workouts(workouts)
         return f"Saved '{name}'", name, dash.no_update, dash.no_update
 
     elif trigger == "workout-delete-btn":
@@ -1806,7 +2252,7 @@ def save_or_delete_workout(save_clicks, del_clicks, name, row_data):
         if not target or target not in workouts:
             return "Enter the name of a saved workout to delete", dash.no_update, dash.no_update, dash.no_update
         del workouts[target]
-        save_workouts(workouts)
+        _save_workouts(workouts)
         # Go back to list after deleting
         return dash.no_update, "", {"display": "block"}, {"display": "none"}
 
@@ -1829,7 +2275,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
         raise dash.exceptions.PreventUpdate
 
     _, rides, mmp_all, _, pdc_params, _, _ = get_data()
-    latest_pdc = get_latest_pdc(pdc_params, rides)
+    latest_pdc = _get_latest_pdc(pdc_params, rides)
     if latest_pdc is None:
         empty = go.Figure()
         empty.add_annotation(
@@ -1844,7 +2290,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
     ltp_w = latest_pdc["ltp"]
     ftp_w = latest_pdc["ftp"]
 
-    records = build_workout_records(row_data, map_w, latest_pdc)
+    records = _build_workout_records(row_data, map_w, latest_pdc)
     if records.empty or len(records) < 2:
         raise dash.exceptions.PreventUpdate
 
@@ -1888,7 +2334,7 @@ def update_workout_charts(cell_changed, row_data, _ver):
 
     # Summary stats
     total_s = len(records)
-    np_val  = normalized_power(power)
+    np_val  = _normalized_power(power)
     tss     = (total_s / 3600.0) * (np_val / ftp_w) ** 2 * 100.0 if ftp_w > 0 else 0.0
     if_val  = np_val / ftp_w if ftp_w > 0 else 0.0
     avg_w   = float(np.nanmean(power))
